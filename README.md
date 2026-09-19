@@ -16,7 +16,7 @@ Ctrl+C หยุดได้ทุกเมื่อ: state ถูกบัน�
 ## flow
 1. REQUIREMENTS: คุยกับ PM (ถามตอบ/เสนอไอเดีย) จนคุณกด confirm requirements
 2. DESIGN: Planning ออกแบบและแตก task (frontend / backend)
-3. REVIEW: PM สรุปแบบให้คุณ confirm หรือขอแก้ (ขอแก้ = วนกลับข้อ 1-3)
+3. REVIEW: PM สรุปแบบให้คุณ confirm หรือขอแก้ (ขอแก้ = วนกลับข้อ 1-3 โดยข้อความที่ขอแก้จะส่งให้ทั้ง PM และ Planning)
 4. BUILD: worker ทำทีละ task ตามลำดับ dependency แล้ว QA ตรวจ
    QA ไม่ผ่านให้ worker แก้ใหม่ สูงสุด 5 รอบต่อ task ถ้าครบแล้วไม่ผ่าน PM จะถามคุณว่า
    continue (ทำต่ออีก 5 รอบ) / accept (รับตามสภาพ) / abort

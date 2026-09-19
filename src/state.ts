@@ -25,6 +25,7 @@ export interface State {
   phase: Phase;
   pmSessionId?: string;
   pendingPrompt?: string;
+  designFeedback?: string;
   requirements?: Requirements;
   design?: Design;
   progress: Record<string, TaskProgress>;

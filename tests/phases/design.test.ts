@@ -55,6 +55,58 @@ describe('runDesign', () => {
   });
 });
 
+describe('runDesign: designFeedback (คำขอแก้ design จาก user)', () => {
+  const cyclic = () => makeDesign([makeTask('a', 'backend', ['b']), makeTask('b', 'backend', ['a'])]);
+
+  it('ไม่มี designFeedback: call แรกของ Planning ไม่มี feedback', async () => {
+    const { deps, runner } = makeDeps({ plans: [makeDesign()] }, []);
+    await runDesign(deps, stateAt('DESIGN'));
+    expect((runner.calls[0]!.input as PlanInput).feedback).toBeUndefined();
+  });
+
+  it('call แรกของ Planning ได้ designFeedback เป็น feedback', async () => {
+    const { deps, runner } = makeDeps({ plans: [makeDesign()] }, []);
+    const state = stateAt('DESIGN');
+    state.designFeedback = 'เพิ่มหน้า login';
+    await runDesign(deps, state);
+
+    expect((runner.calls[0]!.input as PlanInput).feedback).toBe('เพิ่มหน้า login');
+  });
+
+  it('ได้ design ที่ถูกต้อง -> ล้าง designFeedback ทั้งใน state และที่บันทึก', async () => {
+    const { deps, store } = makeDeps({ plans: [makeDesign()] }, []);
+    const state = stateAt('DESIGN');
+    state.designFeedback = 'เพิ่มหน้า login';
+    await runDesign(deps, state);
+
+    expect(state.phase).toBe('REVIEW');
+    expect(state.designFeedback).toBeUndefined();
+    expect(store.state?.designFeedback).toBeUndefined();
+  });
+
+  it('DesignError รอบแรก: retry ได้ทั้ง designFeedback และข้อความ DesignError', async () => {
+    const { deps, runner } = makeDeps({ plans: [cyclic(), makeDesign()] }, []);
+    const state = stateAt('DESIGN');
+    state.designFeedback = 'เพิ่มหน้า login';
+    await runDesign(deps, state);
+
+    expect((runner.calls[0]!.input as PlanInput).feedback).toBe('เพิ่มหน้า login');
+    const retry = (runner.calls[1]!.input as PlanInput).feedback;
+    expect(retry).toContain('เพิ่มหน้า login');
+    expect(retry).toContain('dependency วน');
+    expect(state.designFeedback).toBeUndefined();
+  });
+
+  it('design ผิดซ้ำ 2 ครั้ง: ยังเก็บ designFeedback ไว้ (ยังไม่ได้ design ที่ใช้ได้)', async () => {
+    const { deps } = makeDeps({ plans: [cyclic(), cyclic()] }, []);
+    const state = stateAt('DESIGN');
+    state.designFeedback = 'เพิ่มหน้า login';
+    await expect(runDesign(deps, state)).rejects.toThrow(DesignError);
+
+    expect(state.designFeedback).toBe('เพิ่มหน้า login');
+  });
+});
+
 describe('runReview', () => {
   it('user confirm -> BUILD พร้อม progress ของทุก task', async () => {
     const { deps, io } = makeDeps({ pm: [asking('สรุป design ให้ฟัง')] }, ['confirm']);
@@ -98,5 +150,41 @@ describe('runReview', () => {
 
     expect(state.phase).toBe('REQUIREMENTS');
     expect(state.pendingPrompt).toBe('เพิ่มหน้า login');
+  });
+
+  it('บันทึก pmSessionId ลง store ก่อนถาม user', async () => {
+    const { deps, io, store } = makeDeps({ pm: [asking('สรุป')] }, ['confirm']);
+    let persistedWhenAsked: string | undefined;
+    const choose = io.choose.bind(io);
+    io.choose = async (prompt, options) => {
+      persistedWhenAsked = store.state?.pmSessionId;
+      return choose(prompt, options);
+    };
+    const state = stateAt('REVIEW');
+    state.design = makeDesign();
+    await runReview(deps, state);
+
+    expect(persistedWhenAsked).toBe('pm-session');
+    expect(store.state?.pmSessionId).toBe('pm-session');
+  });
+
+  it('user ขอแก้ -> เก็บข้อความเดียวกันใน designFeedback และบันทึกลง store', async () => {
+    const { deps, store } = makeDeps({ pm: [asking('สรุป')] }, ['revise', 'เพิ่มหน้า login']);
+    const state = stateAt('REVIEW');
+    state.design = makeDesign();
+    await runReview(deps, state);
+
+    expect(state.pendingPrompt).toBe('เพิ่มหน้า login');
+    expect(state.designFeedback).toBe('เพิ่มหน้า login');
+    expect(store.state?.designFeedback).toBe('เพิ่มหน้า login');
+  });
+
+  it('user confirm -> ไม่ตั้ง designFeedback', async () => {
+    const { deps } = makeDeps({ pm: [asking('สรุป')] }, ['confirm']);
+    const state = stateAt('REVIEW');
+    state.design = makeDesign();
+    await runReview(deps, state);
+
+    expect(state.designFeedback).toBeUndefined();
   });
 });
