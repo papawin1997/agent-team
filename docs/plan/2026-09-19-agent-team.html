@@ -1,0 +1,3381 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>Agent Team (PM / Planning / Frontend / Backend / QA) Implementation Plan</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; line-height: 1.55;
+         max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1f2933;
+         background: #f5f7fa; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  pre { background: #1f2933; color: #e4e7eb; padding: .9rem 1rem;
+        border-radius: 6px; overflow-x: auto; }
+  code { background: #e4e7eb; padding: .1rem .35rem; border-radius: 4px; }
+  pre code { background: none; padding: 0; color: inherit; }
+  .frame { border-left: 6px solid; border-radius: 8px; padding: 1rem 1.25rem;
+           margin: 1.25rem 0; background: #ffffff;
+           box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .frame-header     { border-color: #2563eb; background: #eff6ff; }  /* blue  */
+  .frame-constraints{ border-color: #d97706; background: #fffbeb; }  /* amber */
+  .frame-task       { border-color: #059669; background: #ecfdf5; }  /* green */
+  .frame h1, .frame h2, .frame h3 { margin-top: 0; }
+  .note { border-color: #7c3aed; background: #f5f3ff; }              /* violet */
+  .step { display: flex; gap: .5rem; align-items: baseline;
+          margin: .75rem 0 .25rem; }
+  .step input { transform: scale(1.2); margin-top: .15rem; }
+  .meta { color: #52606d; font-size: .9rem; }
+</style>
+</head>
+<body>
+
+<div class="frame frame-header">
+  <h1>Agent Team (PM / Planning / Frontend / Backend / QA) Implementation Plan</h1>
+  <p><strong>เป้าหมาย:</strong> สร้างเครื่องมือ CLI ที่รันทีม agent 5 บทบาท (PM, Planning, Worker frontend, Worker backend, QA) บน Claude Agent SDK เพื่อรับ requirement จาก user, ออกแบบ, ลงมือทำ, ตรวจ QA (วนไม่เกิน 5 รอบต่อ task) แล้วส่งมอบกลับ user</p>
+  <p><strong>สถาปัตยกรรม:</strong> orchestrator เป็น state machine ใน TypeScript ที่คุม flow และ gate ทั้งหมดด้วยโค้ด แต่ละ role เป็นการเรียก <code>query()</code> ของ SDK แยกกัน (มี system prompt, tools, model, skills ของตัวเอง) ส่วน PM เป็นตัวเดียวที่คุยกับ user แบบโต้ตอบ ทุก role คืนผลเป็น structured output (JSON Schema จาก zod) และมี PreToolUse guard hook เป็นด่านสุดท้ายของสิทธิ์</p>
+  <p><strong>Tech Stack:</strong> Node.js (ESM), TypeScript ~5.9, <code>@anthropic-ai/claude-agent-sdk</code> 0.3.278, zod 4, tsx, vitest</p>
+</div>
+
+<div class="frame note">
+  <strong>For agentic workers:</strong> REQUIRED SUB-SKILL: Use
+  tb-subagent-driven-development (recommended) or
+  tb-executing-plans to implement this plan task-by-task. Steps keep
+  the <code>- [ ]</code> marker next to each checkbox for tracking.
+</div>
+
+<div class="frame frame-constraints">
+  <h2>Global Constraints</h2>
+  <ul>
+    <li>Runtime: Node.js &gt;= 20 (เครื่องนี้มี Node 25.4.0), package เป็น ESM (<code>"type": "module"</code>), TypeScript ตรึงที่ <code>~5.9.3</code> (ห้ามใช้ TypeScript 7), <code>moduleResolution: "Bundler"</code> จึง import แบบไม่ใส่นามสกุลไฟล์</li>
+    <li>SDK ตรึงเวอร์ชัน <code>@anthropic-ai/claude-agent-sdk@0.3.278</code> และ <code>zod@^4.6.5</code> (peer dependency ของ SDK คือ <code>zod ^4.0.0</code>)</li>
+    <li>แปลง zod เป็น JSON Schema ด้วย <code>z.toJSONSchema(schema, { target: "draft-7" })</code> เท่านั้น (SDK ตรวจ draft-07)</li>
+    <li>Model: <code>claude-sonnet-5</code> สำหรับ pm / frontend / backend / qa และ <code>claude-opus-5</code> สำหรับ planning</li>
+    <li>ทุก role ต้องตั้ง <code>permissionMode: "dontAsk"</code>, <code>settingSources: ["project"]</code>, <code>strictMcpConfig: true</code>, env <code>CLAUDE_CODE_DISABLE_AUTO_MEMORY=1</code> และต้องมี PreToolUse guard hook</li>
+    <li>ห้ามใช้ <code>skills: "all"</code> ค่าเริ่มต้นของทุก role คือ <code>skills: []</code> และไม่แถม skill มาให้ในเวอร์ชันแรก</li>
+    <li>limit วน QA = 5 รอบต่อ task บังคับด้วยโค้ด (1 รอบ = worker 1 ครั้ง + QA 1 ครั้ง) ถ้าครบแล้วยัง FAIL ให้ PM ถาม user: <code>continue</code> (ทำต่ออีก 5 รอบ) / <code>accept</code> (รับตามสภาพ) / <code>abort</code></li>
+    <li>QA เขียนได้เฉพาะไฟล์ test ห้ามแก้ source ส่วน PM กับ Planning อ่านอย่างเดียว</li>
+    <li>agent ใช้ git ได้เฉพาะคำสั่งอ่าน (<code>status</code>, <code>diff</code>, <code>log</code>, <code>show</code>, <code>ls-files</code>, <code>rev-parse</code>, <code>blame</code>) ห้าม commit / push</li>
+    <li>เขียนไฟล์ได้เฉพาะในโฟลเดอร์โปรเจกต์ปลายทาง และห้ามแตะ <code>.git/</code>, <code>.agent-team/</code>, <code>.claude/</code></li>
+    <li>state ทั้งหมดอยู่ใน <code>&lt;project&gt;/.agent-team/</code> (<code>state.json</code>, <code>requirements.json</code>, <code>design.json</code>, <code>reports/&lt;taskId&gt;-round&lt;n&gt;.json</code>)</li>
+    <li>ข้อความที่แสดงให้ user และ prompt ที่ PM ใช้คุยกับ user เป็นภาษาไทย ส่วนชื่อ identifier, path, คำสั่ง เป็นภาษาอังกฤษ</li>
+    <li>ข้อจำกัดที่รู้: guard ของ Bash คือ allowlist คำสั่ง + pattern ที่บล็อก ไม่ใช่ sandbox ระดับ OS</li>
+    <li>ก่อนใช้งานจริงต้องยืนยันว่า auth ทำงาน (Task 1) เครื่องนี้ยังไม่ได้ตั้ง <code>ANTHROPIC_API_KEY</code></li>
+  </ul>
+</div>
+
+<div class="frame note">
+  <h2>โครงสร้างไฟล์ (File Structure)</h2>
+  <ul>
+    <li><code>package.json</code>, <code>tsconfig.json</code>, <code>vitest.config.ts</code>, <code>.gitignore</code>: ตั้งค่าโปรเจกต์</li>
+    <li><code>scripts/smoke-auth.ts</code>: ตรวจว่า SDK เรียก model ได้จริง</li>
+    <li><code>src/schemas.ts</code>: zod schema + type ของข้อมูลที่ส่งต่อกัน (Requirements, Design/Task, WorkerResult, QAReport, PmTurn) และ <code>toJsonSchema</code></li>
+    <li><code>src/state.ts</code>: type ของ State และ <code>FileStateStore</code> (บันทึกลง <code>.agent-team/</code>)</li>
+    <li><code>src/domain.ts</code>: ฟังก์ชันล้วน <code>orderTasks</code>, <code>isPass</code>, <code>initProgress</code></li>
+    <li><code>src/config.ts</code>: config ต่อ role, ค่าคงที่, <code>mergeConfig</code> / <code>loadConfig</code></li>
+    <li><code>src/guard.ts</code>: <code>checkToolUse</code> และ <code>createGuardHook</code> (ด่านสิทธิ์)</li>
+    <li><code>src/prompts.ts</code>: system prompt ของแต่ละ role และตัวสร้าง prompt ต่อ task</li>
+    <li><code>src/options.ts</code>: <code>buildQueryOptions</code> ประกอบ options ของ SDK</li>
+    <li><code>src/deps.ts</code>: interface <code>RoleRunner</code>, <code>UserIO</code>, <code>StateStore</code>, <code>Deps</code></li>
+    <li><code>src/format.ts</code>: จัดรูปข้อความ requirements / design ให้ user อ่าน</li>
+    <li><code>src/phases/requirements.ts</code>, <code>design.ts</code>, <code>build.ts</code>, <code>deliver.ts</code>: ตรรกะของแต่ละเฟส</li>
+    <li><code>src/orchestrator.ts</code>: <code>runTeam</code> (ตัววนเฟส + resume)</li>
+    <li><code>src/runner.ts</code>: <code>SdkRoleRunner</code> (เรียก SDK จริง, retry, ตรวจ schema)</li>
+    <li><code>src/cli.ts</code>, <code>src/args.ts</code>, <code>src/index.ts</code>: ส่วนติดต่อ user, อ่านอาร์กิวเมนต์, จุดเริ่มโปรแกรม</li>
+    <li><code>skills/</code>: plugin ของทีม (<code>.claude-plugin/plugin.json</code>) สำหรับวาง skill ในอนาคต</li>
+    <li><code>tests/**</code>: เทสต์ทั้งหมด พร้อม <code>tests/helpers/builders.ts</code> และ <code>tests/helpers/fakes.ts</code></li>
+  </ul>
+</div>
+
+<div class="frame note">
+  <h2>ภาพรวม Task</h2>
+  <ul>
+    <li>Task 1: Scaffold โปรเจกต์ + ยืนยัน auth</li>
+    <li>Task 2: schemas (ข้อมูลที่ส่งต่อกัน)</li>
+    <li>Task 3: state และการบันทึกลงดิสก์</li>
+    <li>Task 4: domain (เรียง task, ตัดสิน PASS, เตรียม progress) + test builders</li>
+    <li>Task 5: config ต่อ role + skills plugin</li>
+    <li>Task 6: guard (ด่านสิทธิ์)</li>
+    <li>Task 7: prompts</li>
+    <li>Task 8: buildQueryOptions</li>
+    <li>Task 9: deps + test fakes</li>
+    <li>Task 10: เฟส REQUIREMENTS</li>
+    <li>Task 11: เฟส DESIGN และ REVIEW</li>
+    <li>Task 12: เฟส BUILD ⇄ QA (limit 5 รอบ)</li>
+    <li>Task 13: เฟส DELIVER + orchestrator (resume, change request)</li>
+    <li>Task 14: SdkRoleRunner (เรียก SDK จริง)</li>
+    <li>Task 15: CLI + จุดเริ่มโปรแกรม</li>
+    <li>Task 16: README + ทดสอบ end-to-end จริง</li>
+  </ul>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 1: Scaffold โปรเจกต์ + ยืนยัน auth</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>package.json</code>, <code>tsconfig.json</code>, <code>vitest.config.ts</code>, <code>.gitignore</code></li>
+    <li>สร้าง: <code>scripts/smoke-auth.ts</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): ไม่มี</li>
+    <li>ส่งต่อ (Produces): คำสั่ง <code>npm test</code> (vitest), <code>npm run typecheck</code> (tsc --noEmit), <code>npm start</code> (tsx src/index.ts), <code>npm run smoke:auth</code> ที่ task ถัดไปใช้ และ dependency ที่ติดตั้งแล้วทั้งหมด</li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เริ่ม git และสร้าง <code>package.json</code></strong></span></p>
+  <p>โฟลเดอร์ <code>C:/work/my/agent-team</code> ยังไม่เป็น git repository</p>
+<pre><code>git init</code></pre>
+  <p>สร้างไฟล์ <code>package.json</code> (ส่วน dependencies จะถูกเติมโดย <code>npm install</code> ในขั้นถัดไป):</p>
+<pre><code>{
+  "name": "agent-team",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": "&gt;=20" },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "smoke:auth": "tsx scripts/smoke-auth.ts"
+  }
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: ติดตั้ง dependencies</strong></span></p>
+<pre><code>npm install @anthropic-ai/claude-agent-sdk@0.3.278 zod@^4.6.5
+npm install -D typescript@~5.9.3 tsx vitest @types/node</code></pre>
+  <p>คาดหวัง: คำสั่งจบด้วย exit code 0 และ <code>package.json</code> มี <code>dependencies</code> กับ <code>devDependencies</code> ครบ (npm 7+ จะติดตั้ง peer dependency <code>@anthropic-ai/sdk</code> และ <code>@modelcontextprotocol/sdk</code> ให้เอง)</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: สร้างไฟล์ตั้งค่า</strong></span></p>
+  <p><code>tsconfig.json</code>:</p>
+<pre><code>{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["src", "tests", "scripts", "vitest.config.ts"]
+}</code></pre>
+  <p><code>vitest.config.ts</code>:</p>
+<pre><code>import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    include: ['tests/**/*.test.ts'],
+    passWithNoTests: true,
+  },
+});</code></pre>
+  <p><code>.gitignore</code>:</p>
+<pre><code>node_modules/
+.agent-team/
+*.log</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: สร้างสคริปต์ตรวจ auth</strong></span></p>
+  <p><code>scripts/smoke-auth.ts</code>:</p>
+<pre><code>import { query } from '@anthropic-ai/claude-agent-sdk';
+
+async function main(): Promise&lt;void&gt; {
+  for await (const msg of query({
+    prompt: 'ตอบสั้น ๆ ว่า OK',
+    options: {
+      model: 'claude-sonnet-5',
+      maxTurns: 1,
+      tools: [],
+      settingSources: [],
+      env: { ...process.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' },
+    },
+  })) {
+    if (msg.type === 'result') {
+      if (msg.subtype === 'success') {
+        console.log('AUTH OK:', msg.result);
+        return;
+      }
+      console.error('AUTH/RUN FAILED:', msg.subtype);
+      process.exitCode = 1;
+    }
+  }
+}
+
+main().catch((e) =&gt; {
+  console.error('AUTH/RUN FAILED:', e instanceof Error ? e.message : e);
+  process.exitCode = 1;
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: ตรวจ typecheck และ auth</strong></span></p>
+  <p>รัน: <code>npm run typecheck</code><br>
+     คาดหวัง: จบโดยไม่มี error</p>
+  <p>รัน: <code>npm run smoke:auth</code><br>
+     คาดหวัง: พิมพ์ <code>AUTH OK: OK</code> (หรือข้อความสั้น ๆ ที่ model ตอบ)</p>
+  <p>ถ้าขึ้น <code>AUTH/RUN FAILED</code> ที่เกี่ยวกับ authentication / API key แปลว่า SDK ยังไม่มี credential ให้ <strong>user</strong> ตั้ง key เองใน terminal แล้วรันใหม่ (ห้ามเขียน key ลงไฟล์ในโปรเจกต์):</p>
+<pre><code>$env:ANTHROPIC_API_KEY = "sk-ant-..."
+npm run smoke:auth</code></pre>
+  <p>ถ้ายังไม่ผ่าน ให้หยุดและแจ้ง user ห้ามไปต่อ task ถัดไป เพราะทุก role พึ่ง auth นี้</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: Commit</strong></span></p>
+<pre><code>git add package.json package-lock.json tsconfig.json vitest.config.ts .gitignore scripts/smoke-auth.ts
+git commit -m "chore: scaffold agent-team project"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 2: schemas (ข้อมูลที่ส่งต่อกัน)</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/schemas.ts</code></li>
+    <li>เทสต์: <code>tests/schemas.test.ts</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>zod</code></li>
+    <li>ส่งต่อ (Produces): <code>RequirementsSchema</code>/<code>Requirements</code>, <code>TaskSchema</code>/<code>Task</code> (owner: <code>'frontend' | 'backend'</code>, มี <code>changed: boolean</code>), <code>DesignSchema</code>/<code>Design</code>, <code>WorkerResultSchema</code>/<code>WorkerResult</code>, <code>QAIssueSchema</code>, <code>QACheckSchema</code>, <code>QAReportSchema</code>/<code>QAReport</code> (verdict: <code>'PASS' | 'FAIL'</code>), <code>PmTurnSchema</code>/<code>PmTurn</code> (status: <code>'asking' | 'proposal'</code>, <code>requirements?</code>) และ <code>toJsonSchema(schema: z.ZodType): Record&lt;string, unknown&gt;</code></li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p><code>tests/schemas.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import {
+  DesignSchema,
+  PmTurnSchema,
+  QAReportSchema,
+  RequirementsSchema,
+  TaskSchema,
+  toJsonSchema,
+} from '../src/schemas';
+
+const validRequirements = {
+  goal: 'todo list',
+  features: ['เพิ่ม/ลบ todo'],
+  constraints: [],
+  outOfScope: [],
+  acceptanceCriteria: ['เพิ่ม todo แล้วเห็นในรายการ'],
+};
+
+const validTask = {
+  id: 'api-todos',
+  title: 'API todos',
+  owner: 'backend',
+  dependsOn: [],
+  description: 'สร้าง endpoint',
+  acceptanceCriteria: ['GET /todos คืนรายการ'],
+  changed: true,
+};
+
+describe('schemas', () =&gt; {
+  it('รับ requirements ที่ครบถ้วน', () =&gt; {
+    expect(RequirementsSchema.safeParse(validRequirements).success).toBe(true);
+  });
+
+  it('ปฏิเสธ requirements ที่ไม่มี acceptanceCriteria', () =&gt; {
+    const bad = { ...validRequirements, acceptanceCriteria: [] };
+    expect(RequirementsSchema.safeParse(bad).success).toBe(false);
+  });
+
+  it('task id ต้องเป็น kebab-case', () =&gt; {
+    expect(TaskSchema.safeParse({ ...validTask, id: 'Bad ID' }).success).toBe(false);
+  });
+
+  it('task owner ต้องเป็น frontend หรือ backend', () =&gt; {
+    expect(TaskSchema.safeParse({ ...validTask, owner: 'qa' }).success).toBe(false);
+  });
+
+  it('design ต้องมี task อย่างน้อย 1 รายการ', () =&gt; {
+    const design = { overview: 'o', architecture: 'a', apiContract: 'n/a', dataModel: 'n/a', tasks: [] };
+    expect(DesignSchema.safeParse(design).success).toBe(false);
+  });
+
+  it('QAReport verdict ต้องเป็น PASS หรือ FAIL', () =&gt; {
+    const report = { taskId: 't', verdict: 'MAYBE', checks: [], issues: [], testsAdded: [] };
+    expect(QAReportSchema.safeParse(report).success).toBe(false);
+  });
+
+  it('toJsonSchema สร้าง JSON Schema draft-07 ที่มี required', () =&gt; {
+    const js = toJsonSchema(RequirementsSchema);
+    expect(String(js.$schema)).toContain('draft-07');
+    expect(js.type).toBe('object');
+    expect(js.required).toEqual(expect.arrayContaining(['goal', 'features']));
+  });
+
+  it('PmTurn: requirements เป็น optional ใน JSON Schema', () =&gt; {
+    const js = toJsonSchema(PmTurnSchema);
+    expect(js.required).toContain('message');
+    expect(js.required).not.toContain('requirements');
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/schemas.test.ts</code><br>
+     คาดหวัง: FAIL เพราะหา <code>../src/schemas</code> ไม่เจอ</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p><code>src/schemas.ts</code>:</p>
+<pre><code>import { z } from 'zod';
+
+export const RequirementsSchema = z.object({
+  goal: z.string().min(1),
+  features: z.array(z.string().min(1)).min(1),
+  constraints: z.array(z.string()),
+  outOfScope: z.array(z.string()),
+  acceptanceCriteria: z.array(z.string().min(1)).min(1),
+});
+export type Requirements = z.infer&lt;typeof RequirementsSchema&gt;;
+
+export const OwnerSchema = z.enum(['frontend', 'backend']);
+
+export const TaskSchema = z.object({
+  id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
+  title: z.string().min(1),
+  owner: OwnerSchema,
+  dependsOn: z.array(z.string()),
+  description: z.string().min(1),
+  acceptanceCriteria: z.array(z.string().min(1)).min(1),
+  changed: z.boolean(),
+});
+export type Task = z.infer&lt;typeof TaskSchema&gt;;
+
+export const DesignSchema = z.object({
+  overview: z.string().min(1),
+  architecture: z.string().min(1),
+  apiContract: z.string(),
+  dataModel: z.string(),
+  tasks: z.array(TaskSchema).min(1),
+});
+export type Design = z.infer&lt;typeof DesignSchema&gt;;
+
+export const WorkerResultSchema = z.object({
+  taskId: z.string().min(1),
+  summary: z.string().min(1),
+  filesChanged: z.array(z.string()),
+  howToVerify: z.string(),
+});
+export type WorkerResult = z.infer&lt;typeof WorkerResultSchema&gt;;
+
+export const QAIssueSchema = z.object({
+  severity: z.enum(['blocker', 'major', 'minor']),
+  file: z.string(),
+  description: z.string().min(1),
+  suggestedFix: z.string(),
+});
+
+export const QACheckSchema = z.object({
+  name: z.enum(['build', 'lint', 'test', 'review']),
+  status: z.enum(['pass', 'fail', 'skipped']),
+  output: z.string(),
+});
+
+export const QAReportSchema = z.object({
+  taskId: z.string().min(1),
+  verdict: z.enum(['PASS', 'FAIL']),
+  checks: z.array(QACheckSchema),
+  issues: z.array(QAIssueSchema),
+  testsAdded: z.array(z.string()),
+});
+export type QAReport = z.infer&lt;typeof QAReportSchema&gt;;
+
+export const PmTurnSchema = z.object({
+  message: z.string().min(1),
+  status: z.enum(['asking', 'proposal']),
+  requirements: RequirementsSchema.optional(),
+});
+export type PmTurn = z.infer&lt;typeof PmTurnSchema&gt;;
+
+export function toJsonSchema(schema: z.ZodType): Record&lt;string, unknown&gt; {
+  return z.toJSONSchema(schema, { target: 'draft-7' }) as Record&lt;string, unknown&gt;;
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/schemas.test.ts</code> และ <code>npm run typecheck</code><br>
+     คาดหวัง: 8 tests PASS และ typecheck ไม่มี error</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/schemas.ts tests/schemas.test.ts
+git commit -m "feat: add handoff schemas with zod"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 3: state และการบันทึกลงดิสก์</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/state.ts</code></li>
+    <li>เทสต์: <code>tests/state.test.ts</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>Design</code>, <code>QAReport</code>, <code>Requirements</code> จาก <code>src/schemas.ts</code></li>
+    <li>ส่งต่อ (Produces): <code>type Phase = 'REQUIREMENTS' | 'DESIGN' | 'REVIEW' | 'BUILD' | 'DELIVER' | 'DONE' | 'ABORTED'</code>, <code>interface TaskProgress { rounds: number; maxRounds: number; done: boolean; acceptedWithIssues: boolean; lastReport?: QAReport }</code>, <code>interface State { version: 1; phase: Phase; pmSessionId?: string; pendingPrompt?: string; requirements?: Requirements; design?: Design; progress: Record&lt;string, TaskProgress&gt; }</code>, <code>newState(): State</code> และ <code>class FileStateStore(projectDir: string)</code> ที่มี <code>load(): Promise&lt;State | undefined&gt;</code>, <code>save(state: State): Promise&lt;void&gt;</code>, <code>saveArtifact(name: string, data: unknown): Promise&lt;void&gt;</code></li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p><code>tests/state.test.ts</code>:</p>
+<pre><code>import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { FileStateStore, newState } from '../src/state';
+
+let projectDir: string;
+
+beforeEach(async () =&gt; {
+  projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-team-'));
+});
+
+describe('FileStateStore', () =&gt; {
+  it('load คืน undefined เมื่อยังไม่มี state', async () =&gt; {
+    expect(await new FileStateStore(projectDir).load()).toBeUndefined();
+  });
+
+  it('save แล้ว load ได้ข้อมูลเดิม', async () =&gt; {
+    const store = new FileStateStore(projectDir);
+    const state = newState();
+    state.phase = 'BUILD';
+    state.pmSessionId = 'abc';
+    await store.save(state);
+    expect(await store.load()).toEqual(state);
+  });
+
+  it('save เขียนที่ .agent-team/state.json', async () =&gt; {
+    await new FileStateStore(projectDir).save(newState());
+    const raw = await fs.readFile(path.join(projectDir, '.agent-team', 'state.json'), 'utf8');
+    expect(JSON.parse(raw).version).toBe(1);
+  });
+
+  it('saveArtifact สร้างโฟลเดอร์ย่อยให้อัตโนมัติ', async () =&gt; {
+    await new FileStateStore(projectDir).saveArtifact('reports/api-round1.json', { ok: true });
+    const raw = await fs.readFile(
+      path.join(projectDir, '.agent-team', 'reports', 'api-round1.json'),
+      'utf8',
+    );
+    expect(JSON.parse(raw)).toEqual({ ok: true });
+  });
+
+  it('load ปฏิเสธ state ที่ version ไม่ตรง', async () =&gt; {
+    const dir = path.join(projectDir, '.agent-team');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'state.json'), JSON.stringify({ version: 99 }), 'utf8');
+    await expect(new FileStateStore(projectDir).load()).rejects.toThrow('version');
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/state.test.ts</code><br>
+     คาดหวัง: FAIL เพราะหา <code>../src/state</code> ไม่เจอ</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p><code>src/state.ts</code>:</p>
+<pre><code>import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
+import type { StateStore } from './deps';
+import type { Design, QAReport, Requirements } from './schemas';
+
+export type Phase =
+  | 'REQUIREMENTS'
+  | 'DESIGN'
+  | 'REVIEW'
+  | 'BUILD'
+  | 'DELIVER'
+  | 'DONE'
+  | 'ABORTED';
+
+export interface TaskProgress {
+  rounds: number;
+  maxRounds: number;
+  done: boolean;
+  acceptedWithIssues: boolean;
+  lastReport?: QAReport;
+}
+
+export interface State {
+  version: 1;
+  phase: Phase;
+  pmSessionId?: string;
+  pendingPrompt?: string;
+  requirements?: Requirements;
+  design?: Design;
+  progress: Record&lt;string, TaskProgress&gt;;
+}
+
+export function newState(): State {
+  return { version: 1, phase: 'REQUIREMENTS', progress: {} };
+}
+
+export class FileStateStore implements StateStore {
+  private readonly dir: string;
+
+  constructor(projectDir: string) {
+    this.dir = path.join(projectDir, '.agent-team');
+  }
+
+  async load(): Promise&lt;State | undefined&gt; {
+    let raw: string;
+    try {
+      raw = await fs.readFile(path.join(this.dir, 'state.json'), 'utf8');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw e;
+    }
+    const parsed = JSON.parse(raw) as { version?: number };
+    if (parsed.version !== 1) {
+      throw new Error(`state.json มี version ที่ไม่รองรับ: ${String(parsed.version)}`);
+    }
+    return parsed as State;
+  }
+
+  async save(state: State): Promise&lt;void&gt; {
+    await fs.mkdir(this.dir, { recursive: true });
+    const file = path.join(this.dir, 'state.json');
+    const tmp = `${file}.tmp`;
+    await fs.writeFile(tmp, JSON.stringify(state, null, 2), 'utf8');
+    await fs.rename(tmp, file);
+  }
+
+  async saveArtifact(name: string, data: unknown): Promise&lt;void&gt; {
+    const file = path.join(this.dir, name);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, JSON.stringify(data, null, 2), 'utf8');
+  }
+}</code></pre>
+  <p><code>src/state.ts</code> import type จาก <code>./deps</code> ซึ่งยังไม่มี typecheck จะยังไม่ผ่านจนกว่าจะถึง Task 9 แต่ vitest รันได้เพราะเป็น <code>import type</code> (ถูกลบตอน transpile)</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/state.test.ts</code><br>
+     คาดหวัง: 5 tests PASS</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/state.ts tests/state.test.ts
+git commit -m "feat: add state model and file-backed state store"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 4: domain (เรียง task, ตัดสิน PASS, เตรียม progress) + test builders</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/domain.ts</code></li>
+    <li>สร้าง: <code>tests/helpers/builders.ts</code></li>
+    <li>เทสต์: <code>tests/domain.test.ts</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>Design</code>, <code>QAReport</code>, <code>Requirements</code>, <code>Task</code> จาก <code>src/schemas.ts</code>; <code>TaskProgress</code>, <code>State</code>, <code>newState</code> จาก <code>src/state.ts</code></li>
+    <li>ส่งต่อ (Produces): <code>class DesignError extends Error</code>, <code>orderTasks(tasks: readonly Task[]): Task[]</code> (เรียงตาม dependsOn, โยน <code>DesignError</code> เมื่อ id ซ้ำ / อ้าง id ที่ไม่มี / พึ่งตัวเอง / วน), <code>isPass(report: QAReport): boolean</code>, <code>initProgress(design: Design, previous: Record&lt;string, TaskProgress&gt;, maxRounds: number): Record&lt;string, TaskProgress&gt;</code></li>
+    <li>ส่งต่อ (Produces, test helpers): <code>makeRequirements()</code>, <code>makeTask(id, owner?, dependsOn?, changed?)</code>, <code>makeDesign(tasks?)</code>, <code>passReport(taskId)</code>, <code>failReport(taskId, severity?)</code>, <code>asking(message)</code>, <code>proposal(requirements?, message?)</code>, <code>buildState(design?)</code> (State ที่อยู่เฟส BUILD พร้อม progress)</li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test helpers</strong></span></p>
+  <p><code>tests/helpers/builders.ts</code>:</p>
+<pre><code>import { initProgress } from '../../src/domain';
+import type { Design, PmTurn, QAReport, Requirements, Task } from '../../src/schemas';
+import { newState, type State } from '../../src/state';
+
+export function makeRequirements(): Requirements {
+  return {
+    goal: 'todo list',
+    features: ['เพิ่ม/ลบ todo'],
+    constraints: [],
+    outOfScope: [],
+    acceptanceCriteria: ['เพิ่ม todo แล้วเห็นในรายการ'],
+  };
+}
+
+export function makeTask(
+  id: string,
+  owner: Task['owner'] = 'backend',
+  dependsOn: string[] = [],
+  changed = true,
+): Task {
+  return {
+    id,
+    title: `task ${id}`,
+    owner,
+    dependsOn,
+    description: `ทำ ${id}`,
+    acceptanceCriteria: [`${id} ทำงานถูกต้อง`],
+    changed,
+  };
+}
+
+export function makeDesign(
+  tasks: Task[] = [makeTask('api'), makeTask('ui', 'frontend', ['api'])],
+): Design {
+  return {
+    overview: 'ภาพรวมของระบบ',
+    architecture: 'client-server',
+    apiContract: 'GET /todos',
+    dataModel: 'Todo { id, text }',
+    tasks,
+  };
+}
+
+export function passReport(taskId: string): QAReport {
+  return {
+    taskId,
+    verdict: 'PASS',
+    checks: [{ name: 'test', status: 'pass', output: 'ok' }],
+    issues: [],
+    testsAdded: [],
+  };
+}
+
+export function failReport(
+  taskId: string,
+  severity: 'blocker' | 'major' | 'minor' = 'major',
+): QAReport {
+  return {
+    taskId,
+    verdict: 'FAIL',
+    checks: [{ name: 'test', status: 'fail', output: '1 failed' }],
+    issues: [{ severity, file: 'src/x.ts', description: 'ผิด', suggestedFix: 'แก้' }],
+    testsAdded: [],
+  };
+}
+
+export const asking = (message: string): PmTurn =&gt; ({ message, status: 'asking' });
+
+export const proposal = (
+  requirements: Requirements = makeRequirements(),
+  message = 'สรุป requirements',
+): PmTurn =&gt; ({ message, status: 'proposal', requirements });
+
+export function buildState(design: Design = makeDesign()): State {
+  const state = newState();
+  state.phase = 'BUILD';
+  state.requirements = makeRequirements();
+  state.design = design;
+  state.progress = initProgress(design, {}, 5);
+  return state;
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: เขียน test ที่ต้อง fail</strong></span></p>
+  <p><code>tests/domain.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import { DesignError, initProgress, isPass, orderTasks } from '../src/domain';
+import { failReport, makeDesign, makeTask, passReport } from './helpers/builders';
+
+describe('orderTasks', () =&gt; {
+  it('เรียง task ที่ถูกพึ่งพาไว้ก่อน', () =&gt; {
+    const ordered = orderTasks([makeTask('ui', 'frontend', ['api']), makeTask('api')]);
+    expect(ordered.map((t) =&gt; t.id)).toEqual(['api', 'ui']);
+  });
+
+  it('คงลำดับเดิมเมื่อไม่มี dependency', () =&gt; {
+    const ordered = orderTasks([makeTask('b'), makeTask('a')]);
+    expect(ordered.map((t) =&gt; t.id)).toEqual(['b', 'a']);
+  });
+
+  it('โยน DesignError เมื่อ id ซ้ำ', () =&gt; {
+    expect(() =&gt; orderTasks([makeTask('a'), makeTask('a')])).toThrow(DesignError);
+  });
+
+  it('โยน DesignError เมื่ออ้าง id ที่ไม่มี', () =&gt; {
+    expect(() =&gt; orderTasks([makeTask('a', 'backend', ['zzz'])])).toThrow('zzz');
+  });
+
+  it('โยน DesignError เมื่อพึ่งตัวเอง', () =&gt; {
+    expect(() =&gt; orderTasks([makeTask('a', 'backend', ['a'])])).toThrow(DesignError);
+  });
+
+  it('โยน DesignError เมื่อ dependency วน', () =&gt; {
+    const cyclic = [makeTask('a', 'backend', ['b']), makeTask('b', 'backend', ['a'])];
+    expect(() =&gt; orderTasks(cyclic)).toThrow('dependency วน');
+  });
+});
+
+describe('isPass', () =&gt; {
+  it('PASS ที่ไม่มีปัญหา = ผ่าน', () =&gt; {
+    expect(isPass(passReport('a'))).toBe(true);
+  });
+
+  it('FAIL = ไม่ผ่าน', () =&gt; {
+    expect(isPass(failReport('a'))).toBe(false);
+  });
+
+  it('PASS แต่มี blocker = ไม่ผ่าน', () =&gt; {
+    const report = { ...passReport('a'), issues: failReport('a', 'blocker').issues };
+    expect(isPass(report)).toBe(false);
+  });
+
+  it('PASS แต่มี check ที่ fail = ไม่ผ่าน', () =&gt; {
+    const report = { ...passReport('a'), checks: [{ name: 'test' as const, status: 'fail' as const, output: 'x' }] };
+    expect(isPass(report)).toBe(false);
+  });
+
+  it('PASS ที่มีแค่ minor issue = ผ่าน', () =&gt; {
+    const report = { ...passReport('a'), issues: failReport('a', 'minor').issues };
+    expect(isPass(report)).toBe(true);
+  });
+});
+
+describe('initProgress', () =&gt; {
+  it('สร้าง progress ใหม่ให้ทุก task', () =&gt; {
+    const progress = initProgress(makeDesign(), {}, 5);
+    expect(progress.api).toEqual({ rounds: 0, maxRounds: 5, done: false, acceptedWithIssues: false });
+    expect(Object.keys(progress)).toEqual(['api', 'ui']);
+  });
+
+  it('เก็บ progress ที่เสร็จแล้วของ task ที่ changed=false', () =&gt; {
+    const design = makeDesign([makeTask('api', 'backend', [], false), makeTask('ui', 'frontend', ['api'])]);
+    const previous = {
+      api: { rounds: 2, maxRounds: 5, done: true, acceptedWithIssues: false },
+      ui: { rounds: 1, maxRounds: 5, done: true, acceptedWithIssues: false },
+    };
+    const progress = initProgress(design, previous, 5);
+    expect(progress.api?.done).toBe(true);
+    expect(progress.ui?.done).toBe(false);
+    expect(progress.ui?.rounds).toBe(0);
+  });
+
+  it('task ที่ changed=false แต่ยังไม่เคยเสร็จ ต้องเริ่มใหม่', () =&gt; {
+    const design = makeDesign([makeTask('api', 'backend', [], false)]);
+    const progress = initProgress(design, {}, 5);
+    expect(progress.api?.done).toBe(false);
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/domain.test.ts</code><br>
+     คาดหวัง: FAIL เพราะหา <code>../src/domain</code> ไม่เจอ</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: เขียน implementation</strong></span></p>
+  <p><code>src/domain.ts</code>:</p>
+<pre><code>import type { Design, QAReport, Task } from './schemas';
+import type { TaskProgress } from './state';
+
+export class DesignError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DesignError';
+  }
+}
+
+export function orderTasks(tasks: readonly Task[]): Task[] {
+  const ids = new Set&lt;string&gt;();
+  for (const task of tasks) {
+    if (ids.has(task.id)) throw new DesignError(`task id ซ้ำ: ${task.id}`);
+    ids.add(task.id);
+  }
+  for (const task of tasks) {
+    for (const dep of task.dependsOn) {
+      if (dep === task.id) throw new DesignError(`task ${task.id} พึ่งพาตัวเอง`);
+      if (!ids.has(dep)) throw new DesignError(`task ${task.id} พึ่งพา ${dep} ซึ่งไม่มีอยู่`);
+    }
+  }
+  const ordered: Task[] = [];
+  const done = new Set&lt;string&gt;();
+  let remaining = [...tasks];
+  while (remaining.length &gt; 0) {
+    const next = remaining.find((t) =&gt; t.dependsOn.every((d) =&gt; done.has(d)));
+    if (!next) {
+      throw new DesignError(`พบ dependency วน: ${remaining.map((t) =&gt; t.id).join(', ')}`);
+    }
+    ordered.push(next);
+    done.add(next.id);
+    remaining = remaining.filter((t) =&gt; t.id !== next.id);
+  }
+  return ordered;
+}
+
+export function isPass(report: QAReport): boolean {
+  return (
+    report.verdict === 'PASS' &amp;&amp;
+    report.checks.every((c) =&gt; c.status !== 'fail') &amp;&amp;
+    report.issues.every((i) =&gt; i.severity === 'minor')
+  );
+}
+
+export function initProgress(
+  design: Design,
+  previous: Record&lt;string, TaskProgress&gt;,
+  maxRounds: number,
+): Record&lt;string, TaskProgress&gt; {
+  const next: Record&lt;string, TaskProgress&gt; = {};
+  for (const task of design.tasks) {
+    const prev = previous[task.id];
+    next[task.id] =
+      !task.changed &amp;&amp; prev?.done
+        ? prev
+        : { rounds: 0, maxRounds, done: false, acceptedWithIssues: false };
+  }
+  return next;
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/domain.test.ts</code><br>
+     คาดหวัง: 14 tests PASS</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: Commit</strong></span></p>
+<pre><code>git add src/domain.ts tests/domain.test.ts tests/helpers/builders.ts
+git commit -m "feat: add task ordering, QA pass rule and progress init"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 5: config ต่อ role + skills plugin</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/config.ts</code></li>
+    <li>สร้าง: <code>skills/.claude-plugin/plugin.json</code>, <code>skills/README.md</code></li>
+    <li>เทสต์: <code>tests/config.test.ts</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>zod</code></li>
+    <li>ส่งต่อ (Produces): <code>type RoleName = 'pm' | 'planning' | 'frontend' | 'backend' | 'qa'</code>, <code>ROLE_NAMES</code>, <code>interface RoleConfig { model: string; maxTurns: number; maxBudgetUsd: number; tools: string[]; allowedTools: string[]; skills: string[] }</code>, <code>interface TeamConfig { maxQaRounds: number; extraRoundsOnContinue: number; roles: Record&lt;RoleName, RoleConfig&gt; }</code>, <code>TEAM_ROOT</code>, <code>SKILLS_PLUGIN_DIR</code>, <code>TEST_PATH_PATTERNS: readonly RegExp[]</code>, <code>DEFAULT_CONFIG: TeamConfig</code>, <code>mergeConfig(base: TeamConfig, override: unknown): TeamConfig</code>, <code>loadConfig(file?: string): TeamConfig</code></li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p><code>tests/config.test.ts</code>:</p>
+<pre><code>import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { DEFAULT_CONFIG, loadConfig, mergeConfig, ROLE_NAMES } from '../src/config';
+
+describe('DEFAULT_CONFIG', () =&gt; {
+  it('limit QA = 5 รอบ และ continue เพิ่ม 5 รอบ', () =&gt; {
+    expect(DEFAULT_CONFIG.maxQaRounds).toBe(5);
+    expect(DEFAULT_CONFIG.extraRoundsOnContinue).toBe(5);
+  });
+
+  it('มีครบทุก role และทุก role ไม่เปิด skill', () =&gt; {
+    for (const role of ROLE_NAMES) {
+      expect(DEFAULT_CONFIG.roles[role].skills).toEqual([]);
+    }
+  });
+
+  it('pm กับ planning ใช้เครื่องมืออ่านอย่างเดียว', () =&gt; {
+    for (const role of ['pm', 'planning'] as const) {
+      expect(DEFAULT_CONFIG.roles[role].tools).toEqual(['Read', 'Glob', 'Grep']);
+    }
+  });
+
+  it('worker และ qa มี Edit/Write/Bash', () =&gt; {
+    for (const role of ['frontend', 'backend', 'qa'] as const) {
+      expect(DEFAULT_CONFIG.roles[role].tools).toEqual(
+        expect.arrayContaining(['Edit', 'Write', 'Bash']),
+      );
+    }
+  });
+
+  it('planning ใช้ claude-opus-5 ส่วน role อื่นใช้ claude-sonnet-5', () =&gt; {
+    expect(DEFAULT_CONFIG.roles.planning.model).toBe('claude-opus-5');
+    expect(DEFAULT_CONFIG.roles.qa.model).toBe('claude-sonnet-5');
+  });
+});
+
+describe('mergeConfig', () =&gt; {
+  it('override skills ของ frontend โดยไม่กระทบ role อื่น', () =&gt; {
+    const merged = mergeConfig(DEFAULT_CONFIG, {
+      roles: { frontend: { skills: ['team:frontend-conventions'] } },
+    });
+    expect(merged.roles.frontend.skills).toEqual(['team:frontend-conventions']);
+    expect(merged.roles.frontend.model).toBe('claude-sonnet-5');
+    expect(merged.roles.backend.skills).toEqual([]);
+  });
+
+  it('override maxQaRounds ได้', () =&gt; {
+    expect(mergeConfig(DEFAULT_CONFIG, { maxQaRounds: 3 }).maxQaRounds).toBe(3);
+  });
+
+  it('ปฏิเสธ key ที่ไม่รู้จัก', () =&gt; {
+    expect(() =&gt; mergeConfig(DEFAULT_CONFIG, { nope: 1 })).toThrow();
+    expect(() =&gt; mergeConfig(DEFAULT_CONFIG, { roles: { pm: { tools: ['Bash'] } } })).toThrow();
+  });
+});
+
+describe('loadConfig', () =&gt; {
+  it('คืนค่า default เมื่อไม่มีไฟล์', () =&gt; {
+    expect(loadConfig(path.join(os.tmpdir(), 'no-such-agent-team-config.json'))).toBe(DEFAULT_CONFIG);
+  });
+
+  it('อ่านและ merge ไฟล์ config', () =&gt; {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-team-cfg-')), 'c.json');
+    fs.writeFileSync(file, JSON.stringify({ roles: { qa: { maxTurns: 10 } } }));
+    expect(loadConfig(file).roles.qa.maxTurns).toBe(10);
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/config.test.ts</code><br>
+     คาดหวัง: FAIL เพราะหา <code>../src/config</code> ไม่เจอ</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p><code>src/config.ts</code>:</p>
+<pre><code>import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { z } from 'zod';
+
+export type RoleName = 'pm' | 'planning' | 'frontend' | 'backend' | 'qa';
+export const ROLE_NAMES: readonly RoleName[] = ['pm', 'planning', 'frontend', 'backend', 'qa'];
+
+export interface RoleConfig {
+  model: string;
+  maxTurns: number;
+  maxBudgetUsd: number;
+  tools: string[];
+  allowedTools: string[];
+  skills: string[];
+}
+
+export interface TeamConfig {
+  maxQaRounds: number;
+  extraRoundsOnContinue: number;
+  roles: Record&lt;RoleName, RoleConfig&gt;;
+}
+
+export const TEAM_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+export const SKILLS_PLUGIN_DIR = path.join(TEAM_ROOT, 'skills');
+
+export const TEST_PATH_PATTERNS: readonly RegExp[] = [
+  /(^|\/)(tests?|__tests__|spec)\//,
+  /\.(test|spec)\.[cm]?[jt]sx?$/,
+  /(^|\/)test_[^/]+\.py$/,
+  /_test\.(py|go)$/,
+];
+
+const READ_TOOLS = ['Read', 'Glob', 'Grep'];
+const WORK_TOOLS = [...READ_TOOLS, 'Edit', 'Write', 'Bash'];
+const BASH_ALLOW = [
+  'Bash(npm *)',
+  'Bash(npx *)',
+  'Bash(pnpm *)',
+  'Bash(yarn *)',
+  'Bash(node *)',
+  'Bash(python *)',
+  'Bash(pytest *)',
+  'Bash(pip *)',
+];
+const WORK_ALLOWED = [...READ_TOOLS, 'Edit', 'Write', ...BASH_ALLOW];
+
+const SONNET = 'claude-sonnet-5';
+const OPUS = 'claude-opus-5';
+
+export const DEFAULT_CONFIG: TeamConfig = {
+  maxQaRounds: 5,
+  extraRoundsOnContinue: 5,
+  roles: {
+    pm: { model: SONNET, maxTurns: 20, maxBudgetUsd: 2, tools: READ_TOOLS, allowedTools: READ_TOOLS, skills: [] },
+    planning: { model: OPUS, maxTurns: 40, maxBudgetUsd: 5, tools: READ_TOOLS, allowedTools: READ_TOOLS, skills: [] },
+    frontend: { model: SONNET, maxTurns: 80, maxBudgetUsd: 5, tools: WORK_TOOLS, allowedTools: WORK_ALLOWED, skills: [] },
+    backend: { model: SONNET, maxTurns: 80, maxBudgetUsd: 5, tools: WORK_TOOLS, allowedTools: WORK_ALLOWED, skills: [] },
+    qa: { model: SONNET, maxTurns: 60, maxBudgetUsd: 4, tools: WORK_TOOLS, allowedTools: WORK_ALLOWED, skills: [] },
+  },
+};
+
+const RoleOverrideSchema = z
+  .object({
+    model: z.string().optional(),
+    maxTurns: z.number().int().positive().optional(),
+    maxBudgetUsd: z.number().positive().optional(),
+    skills: z.array(z.string()).optional(),
+  })
+  .strict();
+
+const ConfigOverrideSchema = z
+  .object({
+    maxQaRounds: z.number().int().positive().optional(),
+    extraRoundsOnContinue: z.number().int().positive().optional(),
+    roles: z
+      .object({
+        pm: RoleOverrideSchema.optional(),
+        planning: RoleOverrideSchema.optional(),
+        frontend: RoleOverrideSchema.optional(),
+        backend: RoleOverrideSchema.optional(),
+        qa: RoleOverrideSchema.optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+export function mergeConfig(base: TeamConfig, override: unknown): TeamConfig {
+  const parsed = ConfigOverrideSchema.parse(override);
+  const roles = { ...base.roles };
+  for (const name of ROLE_NAMES) {
+    const patch = parsed.roles?.[name];
+    if (!patch) continue;
+    const defined = Object.fromEntries(
+      Object.entries(patch).filter(([, value]) =&gt; value !== undefined),
+    );
+    roles[name] = { ...roles[name], ...defined };
+  }
+  return {
+    maxQaRounds: parsed.maxQaRounds ?? base.maxQaRounds,
+    extraRoundsOnContinue: parsed.extraRoundsOnContinue ?? base.extraRoundsOnContinue,
+    roles,
+  };
+}
+
+export function loadConfig(file: string = path.join(TEAM_ROOT, 'agent-team.config.json')): TeamConfig {
+  if (!fs.existsSync(file)) return DEFAULT_CONFIG;
+  return mergeConfig(DEFAULT_CONFIG, JSON.parse(fs.readFileSync(file, 'utf8')));
+}</code></pre>
+  <p>สร้าง plugin ของทีม (plugin root คือโฟลเดอร์ <code>skills/</code>) <code>skills/.claude-plugin/plugin.json</code>:</p>
+<pre><code>{
+  "name": "team",
+  "description": "Skills ที่ใช้ร่วมกันใน agent-team",
+  "version": "0.1.0"
+}</code></pre>
+  <p><code>skills/README.md</code>:</p>
+<pre><code># Skills ของ agent-team
+
+โฟลเดอร์นี้เป็น plugin ชื่อ `team` (ดู `.claude-plugin/plugin.json`)
+
+เพิ่ม skill โดยสร้าง `skills/&lt;ชื่อ-skill&gt;/SKILL.md` (จะได้พาธ `skills/skills/&lt;ชื่อ-skill&gt;/SKILL.md`)
+แล้วเปิดให้ role ใช้ผ่านไฟล์ `agent-team.config.json` ที่ราก repo:
+
+{ "roles": { "frontend": { "skills": ["team:&lt;ชื่อ-skill&gt;"] } } }
+
+ชื่อ skill ของ plugin ต้องขึ้นต้นด้วย `team:` และเปิดได้ทีละชื่อเท่านั้น (ห้ามใช้ "all")</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/config.test.ts</code><br>
+     คาดหวัง: 10 tests PASS</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/config.ts tests/config.test.ts skills
+git commit -m "feat: add per-role config and team skills plugin"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 6: guard (ด่านสิทธิ์)</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/guard.ts</code></li>
+    <li>เทสต์: <code>tests/guard.test.ts</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>RoleName</code> จาก <code>src/config.ts</code>; <code>HookCallback</code>, <code>PreToolUseHookInput</code> จาก <code>@anthropic-ai/claude-agent-sdk</code></li>
+    <li>ส่งต่อ (Produces): <code>interface GuardContext { role: RoleName; projectDir: string; skillsDir: string; testPathPatterns: readonly RegExp[] }</code>, <code>type Verdict = { ok: true } | { ok: false; reason: string }</code>, <code>checkToolUse(ctx: GuardContext, toolName: string, input: Record&lt;string, unknown&gt;): Verdict</code>, <code>createGuardHook(ctx: GuardContext): HookCallback</code></li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p><code>tests/guard.test.ts</code>:</p>
+<pre><code>import * as path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { type RoleName, TEST_PATH_PATTERNS } from '../src/config';
+import { checkToolUse, createGuardHook, type GuardContext } from '../src/guard';
+
+const projectDir = path.resolve('guard-test-project');
+const skillsDir = path.resolve('guard-test-skills');
+const ctx = (role: RoleName): GuardContext =&gt; ({
+  role,
+  projectDir,
+  skillsDir,
+  testPathPatterns: TEST_PATH_PATTERNS,
+});
+const inside = (...p: string[]) =&gt; path.join(projectDir, ...p);
+const outside = path.resolve(projectDir, '..', 'elsewhere', 'x.ts');
+
+const allowed = (role: RoleName, tool: string, input: Record&lt;string, unknown&gt;) =&gt;
+  checkToolUse(ctx(role), tool, input).ok;
+
+describe('Bash', () =&gt; {
+  it('อนุญาตคำสั่งทั่วไป', () =&gt; {
+    expect(allowed('backend', 'Bash', { command: 'npm test' })).toBe(true);
+  });
+
+  it.each([
+    'rm -rf node_modules',
+    'rm -fr build',
+    'rm --recursive dist',
+    'git push origin main',
+    'git commit -m x',
+    'git reset --hard',
+    'npm publish',
+    'sudo apt install x',
+    'Remove-Item -Recurse -Force build',
+  ])('บล็อก: %s', (command) =&gt; {
+    expect(allowed('backend', 'Bash', { command })).toBe(false);
+  });
+
+  it.each(['git status', 'git diff --stat', 'git log -5'])('อนุญาต git อ่านอย่างเดียว: %s', (command) =&gt; {
+    expect(allowed('backend', 'Bash', { command })).toBe(true);
+  });
+});
+
+describe('เขียนไฟล์', () =&gt; {
+  it('อนุญาตในโปรเจกต์ (พาธเต็มและพาธสัมพัทธ์)', () =&gt; {
+    expect(allowed('frontend', 'Write', { file_path: inside('src', 'a.ts') })).toBe(true);
+    expect(allowed('frontend', 'Edit', { file_path: 'src/a.ts' })).toBe(true);
+  });
+
+  it('บล็อกนอกโปรเจกต์', () =&gt; {
+    expect(allowed('frontend', 'Write', { file_path: outside })).toBe(false);
+    expect(allowed('frontend', 'Write', { file_path: '../x.ts' })).toBe(false);
+  });
+
+  it('บล็อกโฟลเดอร์ที่ป้องกัน', () =&gt; {
+    for (const dir of ['.git', '.agent-team', '.claude']) {
+      expect(allowed('backend', 'Write', { file_path: inside(dir, 'x') })).toBe(false);
+    }
+  });
+
+  it('บล็อกเมื่อไม่มี file_path', () =&gt; {
+    expect(allowed('backend', 'Write', {})).toBe(false);
+  });
+});
+
+describe('QA เขียนได้เฉพาะไฟล์ test', () =&gt; {
+  it.each(['tests/a.test.ts', 'src/a.test.ts', '__tests__/a.ts', 'pkg/test_x.py', 'pkg/x_test.go'])(
+    'อนุญาต %s',
+    (file) =&gt; {
+      expect(allowed('qa', 'Write', { file_path: file })).toBe(true);
+    },
+  );
+
+  it.each(['src/a.ts', 'package.json', 'README.md'])('บล็อก %s', (file) =&gt; {
+    expect(allowed('qa', 'Edit', { file_path: file })).toBe(false);
+  });
+});
+
+describe('pm และ planning อ่านอย่างเดียว', () =&gt; {
+  it.each(['pm', 'planning'] as const)('%s เขียนหรือรัน Bash ไม่ได้', (role) =&gt; {
+    expect(allowed(role, 'Write', { file_path: 'a.ts' })).toBe(false);
+    expect(allowed(role, 'Bash', { command: 'ls' })).toBe(false);
+    expect(allowed(role, 'Read', { file_path: 'a.ts' })).toBe(true);
+  });
+});
+
+describe('อ่านไฟล์', () =&gt; {
+  it('บล็อกการอ่านนอกโปรเจกต์', () =&gt; {
+    expect(allowed('frontend', 'Read', { file_path: outside })).toBe(false);
+    expect(allowed('frontend', 'Grep', { path: outside })).toBe(false);
+  });
+
+  it('อนุญาตอ่านในโฟลเดอร์ skills ของทีม', () =&gt; {
+    expect(allowed('frontend', 'Read', { file_path: path.join(skillsDir, 'skills', 'x', 'SKILL.md') })).toBe(true);
+  });
+
+  it('Glob ที่ไม่ระบุ path = อนุญาต', () =&gt; {
+    expect(allowed('frontend', 'Glob', { pattern: '**/*.ts' })).toBe(true);
+  });
+});
+
+describe('createGuardHook', () =&gt; {
+  const signal = new AbortController().signal;
+  type Out = { hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string } };
+
+  it('คืน deny เมื่อผิดกฎ', async () =&gt; {
+    const hook = createGuardHook(ctx('backend'));
+    const out = (await hook(
+      { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'rm -rf /' } } as never,
+      undefined,
+      { signal },
+    )) as Out;
+    expect(out.hookSpecificOutput?.permissionDecision).toBe('deny');
+    expect(out.hookSpecificOutput?.permissionDecisionReason).toContain('rm');
+  });
+
+  it('คืน {} เมื่อผ่าน', async () =&gt; {
+    const hook = createGuardHook(ctx('backend'));
+    const out = await hook(
+      { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm test' } } as never,
+      undefined,
+      { signal },
+    );
+    expect(out).toEqual({});
+  });
+
+  it('ไม่ยุ่งกับ event อื่น', async () =&gt; {
+    const hook = createGuardHook(ctx('backend'));
+    expect(await hook({ hook_event_name: 'PostToolUse' } as never, undefined, { signal })).toEqual({});
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/guard.test.ts</code><br>
+     คาดหวัง: FAIL เพราะหา <code>../src/guard</code> ไม่เจอ</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p><code>src/guard.ts</code>:</p>
+<pre><code>import * as path from 'node:path';
+import type { HookCallback, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
+import type { RoleName } from './config';
+
+export interface GuardContext {
+  role: RoleName;
+  projectDir: string;
+  skillsDir: string;
+  testPathPatterns: readonly RegExp[];
+}
+
+export type Verdict = { ok: true } | { ok: false; reason: string };
+
+const OK: Verdict = { ok: true };
+const deny = (reason: string): Verdict =&gt; ({ ok: false, reason });
+
+const WRITE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
+const READ_TOOLS = new Set(['Read', 'Glob', 'Grep']);
+const ALLOWED_GIT = new Set(['status', 'diff', 'log', 'show', 'ls-files', 'rev-parse', 'blame']);
+const PROTECTED_DIRS = ['.git', '.agent-team', '.claude'];
+
+const DANGEROUS_BASH: ReadonlyArray&lt;{ pattern: RegExp; reason: string }&gt; = [
+  { pattern: /\brm\s+-[a-zA-Z]*[rRfF]/, reason: 'rm แบบ recursive/force ถูกบล็อก' },
+  { pattern: /\brm\s+--(recursive|force)/, reason: 'rm แบบ recursive/force ถูกบล็อก' },
+  { pattern: /\b(rmdir|rd)\s+\/s/i, reason: 'ลบโฟลเดอร์แบบ recursive ถูกบล็อก' },
+  { pattern: /\bdel\s+.*\/[sfq]/i, reason: 'del แบบ force/recursive ถูกบล็อก' },
+  { pattern: /Remove-Item\b.*-Recurse/i, reason: 'Remove-Item -Recurse ถูกบล็อก' },
+  { pattern: /\bsudo\b/, reason: 'sudo ถูกบล็อก' },
+  { pattern: /\bnpm\s+(publish|login|adduser)\b/, reason: 'คำสั่ง npm นี้ถูกบล็อก' },
+];
+
+const GIT_RE = /\bgit\s+(?:-[^\s]+\s+)*([a-z][a-z-]*)/g;
+
+function checkBash(command: string): Verdict {
+  for (const { pattern, reason } of DANGEROUS_BASH) {
+    if (pattern.test(command)) return deny(reason);
+  }
+  for (const match of command.matchAll(GIT_RE)) {
+    const sub = match[1] ?? '';
+    if (!ALLOWED_GIT.has(sub)) {
+      return deny(`git ${sub} ไม่อนุญาต (agent ใช้ git ได้เฉพาะคำสั่งอ่าน)`);
+    }
+  }
+  return OK;
+}
+
+function isInside(root: string, target: string): boolean {
+  const rel = path.relative(root, target);
+  return rel === '' || (rel !== '..' &amp;&amp; !rel.startsWith(`..${path.sep}`) &amp;&amp; !path.isAbsolute(rel));
+}
+
+function checkWrite(ctx: GuardContext, filePath: string): Verdict {
+  const abs = path.resolve(ctx.projectDir, filePath);
+  if (!isInside(ctx.projectDir, abs)) return deny(`เขียนนอกโฟลเดอร์โปรเจกต์ไม่ได้: ${filePath}`);
+  if (PROTECTED_DIRS.some((d) =&gt; isInside(path.join(ctx.projectDir, d), abs))) {
+    return deny(`โฟลเดอร์นี้ถูกป้องกัน: ${filePath}`);
+  }
+  if (ctx.role === 'qa') {
+    const rel = path.relative(ctx.projectDir, abs).split(path.sep).join('/');
+    if (!ctx.testPathPatterns.some((re) =&gt; re.test(rel))) {
+      return deny(`QA เขียนได้เฉพาะไฟล์ test เท่านั้น: ${rel}`);
+    }
+  }
+  return OK;
+}
+
+function checkRead(ctx: GuardContext, target: string | undefined): Verdict {
+  if (!target) return OK;
+  const abs = path.resolve(ctx.projectDir, target);
+  if (isInside(ctx.projectDir, abs) || isInside(ctx.skillsDir, abs)) return OK;
+  return deny(`อ่านนอกโฟลเดอร์โปรเจกต์ไม่ได้: ${target}`);
+}
+
+export function checkToolUse(
+  ctx: GuardContext,
+  toolName: string,
+  input: Record&lt;string, unknown&gt;,
+): Verdict {
+  const readOnlyRole = ctx.role === 'pm' || ctx.role === 'planning';
+  if (readOnlyRole &amp;&amp; (WRITE_TOOLS.has(toolName) || toolName === 'Bash')) {
+    return deny(`role ${ctx.role} เป็นแบบอ่านอย่างเดียว`);
+  }
+  if (toolName === 'Bash') return checkBash(String(input.command ?? ''));
+  if (WRITE_TOOLS.has(toolName)) {
+    const p = input.file_path ?? input.notebook_path;
+    if (typeof p !== 'string' || p === '') return deny('ไม่พบ path ของไฟล์ที่จะเขียน');
+    return checkWrite(ctx, p);
+  }
+  if (READ_TOOLS.has(toolName)) {
+    const p = input.file_path ?? input.path;
+    return checkRead(ctx, typeof p === 'string' ? p : undefined);
+  }
+  return OK;
+}
+
+export function createGuardHook(ctx: GuardContext): HookCallback {
+  return async (input) =&gt; {
+    if (input.hook_event_name !== 'PreToolUse') return {};
+    const pre = input as PreToolUseHookInput;
+    const verdict = checkToolUse(ctx, pre.tool_name, (pre.tool_input ?? {}) as Record&lt;string, unknown&gt;);
+    if (verdict.ok) return {};
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse' as const,
+        permissionDecision: 'deny' as const,
+        permissionDecisionReason: verdict.reason,
+      },
+    };
+  };
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/guard.test.ts</code><br>
+     คาดหวัง: ทุก test PASS ถ้า test ของ Windows path ใด fail ให้แก้ที่ implementation (ห้ามลดเงื่อนไขของเทสต์)</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/guard.ts tests/guard.test.ts
+git commit -m "feat: add PreToolUse guard for tool permissions"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 7: prompts</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/prompts.ts</code></li>
+    <li>เทสต์: <code>tests/prompts.test.ts</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>RoleName</code> จาก <code>src/config.ts</code>; <code>PlanInput</code>, <code>WorkInput</code>, <code>QaInput</code> จาก <code>src/deps.ts</code> (สร้างใน Task 9 ตอนนี้ใช้เป็น <code>import type</code> เท่านั้น)</li>
+    <li>ส่งต่อ (Produces): <code>SYSTEM_PROMPTS: Record&lt;RoleName, string&gt;</code>, <code>buildPlanPrompt(input: PlanInput): string</code>, <code>buildWorkPrompt(input: WorkInput): string</code>, <code>buildQaPrompt(input: QaInput): string</code></li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p><code>tests/prompts.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import { ROLE_NAMES } from '../src/config';
+import { buildPlanPrompt, buildQaPrompt, buildWorkPrompt, SYSTEM_PROMPTS } from '../src/prompts';
+import { failReport, makeDesign, makeRequirements, makeTask } from './helpers/builders';
+
+const task = makeTask('api');
+const design = makeDesign();
+const requirements = makeRequirements();
+
+describe('SYSTEM_PROMPTS', () =&gt; {
+  it('มีครบทุก role และไม่ว่าง', () =&gt; {
+    for (const role of ROLE_NAMES) expect(SYSTEM_PROMPTS[role].length).toBeGreaterThan(200);
+  });
+
+  it('PM คุยกับ user เป็นภาษาไทย', () =&gt; {
+    expect(SYSTEM_PROMPTS.pm).toContain('Thai');
+  });
+
+  it('QA ห้ามแก้ source code', () =&gt; {
+    expect(SYSTEM_PROMPTS.qa).toContain('must NOT change source code');
+  });
+
+  it('worker แต่ละฝั่งระบุขอบเขตของตัวเอง', () =&gt; {
+    expect(SYSTEM_PROMPTS.frontend).toContain('frontend worker');
+    expect(SYSTEM_PROMPTS.backend).toContain('backend worker');
+  });
+});
+
+describe('prompt builders', () =&gt; {
+  it('buildPlanPrompt ใส่ requirements และ feedback', () =&gt; {
+    const prompt = buildPlanPrompt({ requirements, feedback: 'แก้ dependency วน' });
+    expect(prompt).toContain('todo list');
+    expect(prompt).toContain('แก้ dependency วน');
+    expect(prompt).not.toContain('Previous design');
+  });
+
+  it('buildPlanPrompt ใส่ design เดิมเมื่อมี', () =&gt; {
+    expect(buildPlanPrompt({ requirements, previousDesign: design })).toContain('Previous design');
+  });
+
+  it('buildWorkPrompt ใส่ task และ QA report ของรอบก่อนเมื่อมี', () =&gt; {
+    const first = buildWorkPrompt({ task, design, requirements });
+    expect(first).toContain('"id": "api"');
+    expect(first).not.toContain('Previous QA report');
+    const retry = buildWorkPrompt({ task, design, requirements, previousReport: failReport('api') });
+    expect(retry).toContain('Previous QA report');
+    expect(retry).toContain('ผิด');
+  });
+
+  it('buildQaPrompt ใส่ผลงานของ worker', () =&gt; {
+    const prompt = buildQaPrompt({
+      task,
+      design,
+      requirements,
+      result: { taskId: 'api', summary: 'เสร็จ', filesChanged: ['src/api.ts'], howToVerify: 'npm test' },
+    });
+    expect(prompt).toContain('src/api.ts');
+    expect(prompt).toContain('npm test');
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/prompts.test.ts</code><br>
+     คาดหวัง: FAIL เพราะหา <code>../src/prompts</code> ไม่เจอ</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p><code>src/prompts.ts</code>:</p>
+<pre><code>import type { RoleName } from './config';
+import type { PlanInput, QaInput, WorkInput } from './deps';
+
+const json = (value: unknown): string =&gt; JSON.stringify(value, null, 2);
+
+const PM_PROMPT = [
+  'You are the Project Manager (PM) of a software agent team. You are the ONLY agent that talks to the human user. Always talk to the user in Thai.',
+  '',
+  'What you do in this conversation:',
+  '1. Understand the requirement. Ask ONE focused question at a time about anything unclear (goal, users, features, constraints, out-of-scope, acceptance criteria). Suggest better ideas when you see them and say briefly why.',
+  '2. When you understand enough, answer with status "proposal" and fill "requirements" completely. Otherwise use status "asking" and omit "requirements".',
+  '3. When asked to present a design, a blocked task or a delivery summary, write a clear Thai summary in "message" with status "asking" and no requirements.',
+  '',
+  'Rules:',
+  '- Never write or modify code. You may read the project (Read/Glob/Grep) to understand existing code.',
+  '- Keep "message" short, friendly and in Thai. Do not use markdown tables.',
+  '- Never claim that work is done or verified unless the prompt says it passed QA.',
+].join('\n');
+
+const PLANNING_PROMPT = [
+  'You are the Planning agent (system designer). Input: confirmed requirements (JSON), optionally the previous design and feedback. Output: a design in the required JSON schema.',
+  '',
+  'Rules:',
+  '- Explore the existing project read-only first (Read/Glob/Grep) and follow its conventions.',
+  '- architecture: components, responsibilities and how they interact.',
+  '- apiContract: exact endpoints or messages shared by frontend and backend (method, path, request, response, errors) so both sides can be built independently. Write "n/a" if there is no API.',
+  '- dataModel: entities and fields. Write "n/a" if there is none.',
+  '- tasks: small and independently verifiable. Each has a unique kebab-case id, owner "frontend" or "backend", dependsOn (ids, acyclic), a description detailed enough for a worker who never saw the requirements conversation, and acceptanceCriteria that QA can check by running code or tests.',
+  '- If a previous design exists, keep the ids of unchanged tasks and set changed=false for them; set changed=true for new or modified tasks. In a first design every task has changed=true.',
+  '- Do not write code.',
+].join('\n');
+
+const WORKER_AREA = {
+  frontend: 'UI, client-side code, styling and client-side calls to the API',
+  backend: 'server code, API endpoints, data layer, configuration and server-side tests',
+} as const;
+
+function workerPrompt(owner: 'frontend' | 'backend'): string {
+  return [
+    `You are the ${owner} worker. Implement exactly ONE task, given in the prompt, inside the project directory (your cwd).`,
+    '',
+    'Rules:',
+    `- Stay in your area: ${WORKER_AREA[owner]}. Do not edit files that belong to the other side unless the task says so.`,
+    "- Follow the design (architecture, apiContract, dataModel) and the project's existing conventions (CLAUDE.md if present).",
+    '- Write clean, minimal code that satisfies the acceptance criteria. Add tests for your code when the project has a test setup or the task needs them.',
+    '- Before finishing, run the relevant build/lint/test commands and fix failures you caused.',
+    '- If a QA report from a previous round is given, fix every blocker and major issue in it. Do not rework unrelated code.',
+    '- Never commit, push, delete the project, or touch .git, .agent-team and .claude.',
+    '- Finish by returning the JSON result: taskId, summary, filesChanged (relative paths) and howToVerify (exact commands).',
+  ].join('\n');
+}
+
+const QA_PROMPT = [
+  'You are the QA agent. Verify ONE task implemented by a worker against its acceptance criteria and the design.',
+  '',
+  'Rules:',
+  "- Read the changed files. Compare them with the task's acceptance criteria, the design (apiContract, dataModel) and the requirements.",
+  '- Run the project build, lint and test commands (discover them from package.json or config). If a check has no command, report it as "skipped" and say why in output. Do not invent commands.',
+  '- You may add tests for uncovered acceptance criteria. You may write ONLY test files (tests/, __tests__/, *.test.*, *.spec.*, test_*.py, *_test.go). You must NOT change source code - report problems instead.',
+  '- verdict "PASS" only if every check passed or was legitimately skipped and there is no blocker or major issue. Otherwise "FAIL" with concrete issues: severity (blocker|major|minor), file, description and suggestedFix.',
+  '- You cannot run a browser. For frontend work verify with build, lint, unit tests and code review, and state in the review check output that browser behavior was not verified.',
+  '- Be objective and specific. Style preferences are "minor" and never a reason to FAIL.',
+  '- Return the JSON report: taskId, verdict, checks (name build|lint|test|review, status pass|fail|skipped, output), issues and testsAdded.',
+].join('\n');
+
+export const SYSTEM_PROMPTS: Record&lt;RoleName, string&gt; = {
+  pm: PM_PROMPT,
+  planning: PLANNING_PROMPT,
+  frontend: workerPrompt('frontend'),
+  backend: workerPrompt('backend'),
+  qa: QA_PROMPT,
+};
+
+export function buildPlanPrompt(input: PlanInput): string {
+  const parts = [`Requirements (confirmed):\n${json(input.requirements)}`];
+  if (input.previousDesign) parts.push(`Previous design:\n${json(input.previousDesign)}`);
+  if (input.feedback) parts.push(`Feedback to address:\n${input.feedback}`);
+  parts.push('Produce the design now.');
+  return parts.join('\n\n');
+}
+
+export function buildWorkPrompt(input: WorkInput): string {
+  const parts = [
+    `Your task:\n${json(input.task)}`,
+    `Design:\n${json(input.design)}`,
+    `Requirements:\n${json(input.requirements)}`,
+  ];
+  if (input.previousReport) {
+    parts.push(`Previous QA report (fix the blocker and major issues):\n${json(input.previousReport)}`);
+  }
+  parts.push('Implement the task now.');
+  return parts.join('\n\n');
+}
+
+export function buildQaPrompt(input: QaInput): string {
+  return [
+    `Task under review:\n${json(input.task)}`,
+    `Worker result:\n${json(input.result)}`,
+    `Design:\n${json(input.design)}`,
+    `Requirements:\n${json(input.requirements)}`,
+    'Verify the task now.',
+  ].join('\n\n');
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/prompts.test.ts</code><br>
+     คาดหวัง: 8 tests PASS</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/prompts.ts tests/prompts.test.ts
+git commit -m "feat: add role system prompts and task prompt builders"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 8: buildQueryOptions</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/options.ts</code></li>
+    <li>เทสต์: <code>tests/options.test.ts</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>RoleConfig</code>, <code>RoleName</code>, <code>TEST_PATH_PATTERNS</code> จาก <code>src/config.ts</code>; <code>createGuardHook</code> จาก <code>src/guard.ts</code>; <code>Options</code> จาก <code>@anthropic-ai/claude-agent-sdk</code></li>
+    <li>ส่งต่อ (Produces): <code>interface BuildOptionsInput { role: RoleName; config: RoleConfig; projectDir: string; skillsPluginDir: string; systemPrompt: string; jsonSchema?: Record&lt;string, unknown&gt;; resume?: string; abortController?: AbortController }</code>, <code>buildQueryOptions(input: BuildOptionsInput): Options</code></li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p><code>tests/options.test.ts</code>:</p>
+<pre><code>import * as path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { DEFAULT_CONFIG } from '../src/config';
+import { buildQueryOptions } from '../src/options';
+
+const projectDir = path.resolve('options-test-project');
+const skillsPluginDir = path.resolve('options-test-skills');
+const base = { projectDir, skillsPluginDir, systemPrompt: 'sys' };
+
+describe('buildQueryOptions', () =&gt; {
+  it('role ที่ไม่มี skill: ไม่โหลด plugin และปิด skills', () =&gt; {
+    const o = buildQueryOptions({ ...base, role: 'pm', config: DEFAULT_CONFIG.roles.pm });
+    expect(o.cwd).toBe(projectDir);
+    expect(o.model).toBe('claude-sonnet-5');
+    expect(o.systemPrompt).toBe('sys');
+    expect(o.skills).toEqual([]);
+    expect(o.plugins).toEqual([]);
+    expect(o.additionalDirectories).toEqual([]);
+    expect(o.tools).toEqual(['Read', 'Glob', 'Grep']);
+  });
+
+  it('ตั้งค่าความปลอดภัยพื้นฐานให้ทุก role', () =&gt; {
+    const o = buildQueryOptions({ ...base, role: 'backend', config: DEFAULT_CONFIG.roles.backend });
+    expect(o.permissionMode).toBe('dontAsk');
+    expect(o.settingSources).toEqual(['project']);
+    expect(o.strictMcpConfig).toBe(true);
+    expect(o.env?.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
+    expect(o.hooks?.PreToolUse).toHaveLength(1);
+    expect(o.maxTurns).toBe(DEFAULT_CONFIG.roles.backend.maxTurns);
+    expect(o.maxBudgetUsd).toBe(DEFAULT_CONFIG.roles.backend.maxBudgetUsd);
+  });
+
+  it('role ที่เปิด skill: เพิ่ม Skill tool, plugin และสิทธิ์อ่านโฟลเดอร์ skill', () =&gt; {
+    const config = { ...DEFAULT_CONFIG.roles.frontend, skills: ['team:frontend-conventions'] };
+    const o = buildQueryOptions({ ...base, role: 'frontend', config });
+    expect(o.skills).toEqual(['team:frontend-conventions']);
+    expect(o.tools).toContain('Skill');
+    expect(o.plugins).toEqual([{ type: 'local', path: skillsPluginDir }]);
+    expect(o.additionalDirectories).toEqual([skillsPluginDir]);
+  });
+
+  it('ใส่ outputFormat, resume และ abortController เมื่อระบุ', () =&gt; {
+    const abortController = new AbortController();
+    const o = buildQueryOptions({
+      ...base,
+      role: 'qa',
+      config: DEFAULT_CONFIG.roles.qa,
+      jsonSchema: { type: 'object' },
+      resume: 'sess-1',
+      abortController,
+    });
+    expect(o.outputFormat).toEqual({ type: 'json_schema', schema: { type: 'object' } });
+    expect(o.resume).toBe('sess-1');
+    expect(o.abortController).toBe(abortController);
+  });
+
+  it('ไม่ใส่ outputFormat/resume เมื่อไม่ระบุ', () =&gt; {
+    const o = buildQueryOptions({ ...base, role: 'qa', config: DEFAULT_CONFIG.roles.qa });
+    expect(o.outputFormat).toBeUndefined();
+    expect(o.resume).toBeUndefined();
+  });
+
+  it('ไม่แก้ array ใน config ต้นฉบับ', () =&gt; {
+    const config = { ...DEFAULT_CONFIG.roles.frontend, skills: ['team:x'] };
+    const before = [...config.tools];
+    buildQueryOptions({ ...base, role: 'frontend', config });
+    expect(config.tools).toEqual(before);
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/options.test.ts</code><br>
+     คาดหวัง: FAIL เพราะหา <code>../src/options</code> ไม่เจอ</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p><code>src/options.ts</code>:</p>
+<pre><code>import type { Options } from '@anthropic-ai/claude-agent-sdk';
+import { type RoleConfig, type RoleName, TEST_PATH_PATTERNS } from './config';
+import { createGuardHook } from './guard';
+
+export interface BuildOptionsInput {
+  role: RoleName;
+  config: RoleConfig;
+  projectDir: string;
+  skillsPluginDir: string;
+  systemPrompt: string;
+  jsonSchema?: Record&lt;string, unknown&gt;;
+  resume?: string;
+  abortController?: AbortController;
+}
+
+export function buildQueryOptions(input: BuildOptionsInput): Options {
+  const { role, config, projectDir, skillsPluginDir } = input;
+  const useSkills = config.skills.length &gt; 0;
+
+  const options: Options = {
+    cwd: projectDir,
+    model: config.model,
+    systemPrompt: input.systemPrompt,
+    tools: useSkills ? [...config.tools, 'Skill'] : [...config.tools],
+    allowedTools: [...config.allowedTools],
+    permissionMode: 'dontAsk',
+    settingSources: ['project'],
+    skills: [...config.skills],
+    plugins: useSkills ? [{ type: 'local', path: skillsPluginDir }] : [],
+    additionalDirectories: useSkills ? [skillsPluginDir] : [],
+    maxTurns: config.maxTurns,
+    maxBudgetUsd: config.maxBudgetUsd,
+    strictMcpConfig: true,
+    env: { ...process.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' },
+    hooks: {
+      PreToolUse: [
+        {
+          hooks: [
+            createGuardHook({
+              role,
+              projectDir,
+              skillsDir: skillsPluginDir,
+              testPathPatterns: TEST_PATH_PATTERNS,
+            }),
+          ],
+        },
+      ],
+    },
+  };
+  if (input.jsonSchema) options.outputFormat = { type: 'json_schema', schema: input.jsonSchema };
+  if (input.resume) options.resume = input.resume;
+  if (input.abortController) options.abortController = input.abortController;
+  return options;
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/options.test.ts</code><br>
+     คาดหวัง: 6 tests PASS</p>
+  <p>ถ้ามี test ไหน fail เพราะชื่อ option ไม่ตรงกับ type ของ SDK เวอร์ชัน 0.3.278 (เช่น <code>tools</code>, <code>skills</code>, <code>strictMcpConfig</code>, <code>permissionMode: 'dontAsk'</code>) ให้เปิด type definition ใน <code>node_modules/@anthropic-ai/claude-agent-sdk</code> ตรวจชื่อจริง แล้วแก้ที่ <code>src/options.ts</code> โดยคงเจตนาเดิมของ Global Constraints</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/options.ts tests/options.test.ts
+git commit -m "feat: add SDK query options builder with skill scoping"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 9: deps (interface กลาง) + test fakes</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/deps.ts</code></li>
+    <li>สร้าง: <code>tests/helpers/fakes.ts</code></li>
+    <li>เทสต์: <code>tests/fakes.test.ts</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>TeamConfig</code> จาก <code>src/config.ts</code>; ชนิดข้อมูลจาก <code>src/schemas.ts</code>; <code>State</code> จาก <code>src/state.ts</code></li>
+    <li>ส่งต่อ (Produces): <code>PmInput</code>, <code>PlanInput</code>, <code>WorkInput</code>, <code>QaInput</code>, <code>RoleRunner</code>, <code>UserIO</code>, <code>StateStore</code>, <code>Deps</code> (ดูโค้ดด้านล่างสำหรับ signature ตรงตัว) และ test helpers <code>MemoryStore</code>, <code>ScriptedIO</code>, <code>FakeRunner</code>, <code>FakeScript</code>, <code>makeDeps(script, answers)</code> ที่คืน <code>{ deps, runner, io, store }</code></li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน interface กลาง</strong></span></p>
+  <p><code>src/deps.ts</code>:</p>
+<pre><code>import type { TeamConfig } from './config';
+import type { Design, PmTurn, QAReport, Requirements, Task, WorkerResult } from './schemas';
+import type { State } from './state';
+
+export interface PmInput {
+  prompt: string;
+  sessionId?: string;
+}
+
+export interface PlanInput {
+  requirements: Requirements;
+  previousDesign?: Design;
+  feedback?: string;
+}
+
+export interface WorkInput {
+  task: Task;
+  design: Design;
+  requirements: Requirements;
+  previousReport?: QAReport;
+}
+
+export interface QaInput {
+  task: Task;
+  result: WorkerResult;
+  design: Design;
+  requirements: Requirements;
+}
+
+export interface RoleRunner {
+  pmTurn(input: PmInput): Promise&lt;{ turn: PmTurn; sessionId: string }&gt;;
+  plan(input: PlanInput): Promise&lt;Design&gt;;
+  work(input: WorkInput): Promise&lt;WorkerResult&gt;;
+  qa(input: QaInput): Promise&lt;QAReport&gt;;
+}
+
+export interface UserIO {
+  say(text: string): void;
+  ask(prompt: string): Promise&lt;string&gt;;
+  choose&lt;T extends string&gt;(prompt: string, options: readonly T[]): Promise&lt;T&gt;;
+}
+
+export interface StateStore {
+  load(): Promise&lt;State | undefined&gt;;
+  save(state: State): Promise&lt;void&gt;;
+  saveArtifact(name: string, data: unknown): Promise&lt;void&gt;;
+}
+
+export interface Deps {
+  runner: RoleRunner;
+  io: UserIO;
+  store: StateStore;
+  config: TeamConfig;
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: เขียน test ที่ต้อง fail</strong></span></p>
+  <p><code>tests/fakes.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import { asking, makeDesign, passReport } from './helpers/builders';
+import { makeDeps, ScriptedIO } from './helpers/fakes';
+
+describe('ScriptedIO', () =&gt; {
+  it('ตอบตามลำดับและบันทึกคำถาม', async () =&gt; {
+    const io = new ScriptedIO(['a', 'confirm']);
+    expect(await io.ask('q1')).toBe('a');
+    expect(await io.choose('q2', ['confirm', 'revise'] as const)).toBe('confirm');
+    expect(io.asked).toEqual(['q1', 'q2']);
+  });
+
+  it('โยน error เมื่อคำตอบหมด', async () =&gt; {
+    await expect(new ScriptedIO([]).ask('q')).rejects.toThrow('ไม่มีคำตอบเหลือ');
+  });
+
+  it('choose โยน error เมื่อคำตอบไม่อยู่ในตัวเลือก', async () =&gt; {
+    await expect(new ScriptedIO(['zzz']).choose('q', ['a', 'b'] as const)).rejects.toThrow('ไม่อยู่ใน');
+  });
+});
+
+describe('FakeRunner / MemoryStore', () =&gt; {
+  it('ดึงจาก script ตามลำดับและบันทึก call', async () =&gt; {
+    const { runner } = makeDeps({ pm: [asking('x')], plans: [makeDesign()], qa: [passReport('a')] }, []);
+    expect((await runner.pmTurn({ prompt: 'p' })).turn.message).toBe('x');
+    expect((await runner.plan({ requirements: undefined as never })).tasks).toHaveLength(2);
+    expect(runner.calls.map((c) =&gt; c.role)).toEqual(['pm', 'planning']);
+  });
+
+  it('โยน error เมื่อ script หมด', async () =&gt; {
+    const { runner } = makeDeps({}, []);
+    await expect(runner.pmTurn({ prompt: 'p' })).rejects.toThrow('script หมด');
+  });
+
+  it('MemoryStore คัดลอกข้อมูลตอน save/load', async () =&gt; {
+    const { store } = makeDeps({}, []);
+    const state = { version: 1 as const, phase: 'BUILD' as const, progress: {} };
+    await store.save(state);
+    state.phase = 'DONE' as never;
+    expect((await store.load())?.phase).toBe('BUILD');
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/fakes.test.ts</code><br>
+     คาดหวัง: FAIL เพราะหา <code>./helpers/fakes</code> ไม่เจอ</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: เขียน test fakes</strong></span></p>
+  <p><code>tests/helpers/fakes.ts</code>:</p>
+<pre><code>import { DEFAULT_CONFIG } from '../../src/config';
+import type {
+  Deps,
+  PlanInput,
+  PmInput,
+  QaInput,
+  RoleRunner,
+  StateStore,
+  UserIO,
+  WorkInput,
+} from '../../src/deps';
+import type { Design, PmTurn, QAReport, WorkerResult } from '../../src/schemas';
+import type { State } from '../../src/state';
+
+export class MemoryStore implements StateStore {
+  state: State | undefined;
+  artifacts = new Map&lt;string, unknown&gt;();
+  saves = 0;
+
+  async load(): Promise&lt;State | undefined&gt; {
+    return this.state ? structuredClone(this.state) : undefined;
+  }
+
+  async save(state: State): Promise&lt;void&gt; {
+    this.state = structuredClone(state);
+    this.saves += 1;
+  }
+
+  async saveArtifact(name: string, data: unknown): Promise&lt;void&gt; {
+    this.artifacts.set(name, structuredClone(data));
+  }
+}
+
+export class ScriptedIO implements UserIO {
+  said: string[] = [];
+  asked: string[] = [];
+  private answers: string[];
+
+  constructor(answers: string[]) {
+    this.answers = [...answers];
+  }
+
+  say(text: string): void {
+    this.said.push(text);
+  }
+
+  async ask(prompt: string): Promise&lt;string&gt; {
+    this.asked.push(prompt);
+    const answer = this.answers.shift();
+    if (answer === undefined) throw new Error(`ScriptedIO: ไม่มีคำตอบเหลือสำหรับ "${prompt}"`);
+    return answer;
+  }
+
+  async choose&lt;T extends string&gt;(prompt: string, options: readonly T[]): Promise&lt;T&gt; {
+    const answer = await this.ask(prompt);
+    if (!options.includes(answer as T)) {
+      throw new Error(`ScriptedIO: "${answer}" ไม่อยู่ใน ${options.join(',')}`);
+    }
+    return answer as T;
+  }
+}
+
+export interface FakeScript {
+  pm?: PmTurn[];
+  plans?: Design[];
+  qa?: QAReport[];
+}
+
+export interface RecordedCall {
+  role: string;
+  input: unknown;
+}
+
+export class FakeRunner implements RoleRunner {
+  calls: RecordedCall[] = [];
+  private pm: PmTurn[];
+  private plans: Design[];
+  private qaReports: QAReport[];
+
+  constructor(script: FakeScript) {
+    this.pm = [...(script.pm ?? [])];
+    this.plans = [...(script.plans ?? [])];
+    this.qaReports = [...(script.qa ?? [])];
+  }
+
+  async pmTurn(input: PmInput): Promise&lt;{ turn: PmTurn; sessionId: string }&gt; {
+    this.calls.push({ role: 'pm', input });
+    const turn = this.pm.shift();
+    if (!turn) throw new Error('FakeRunner: pm script หมด');
+    return { turn, sessionId: 'pm-session' };
+  }
+
+  async plan(input: PlanInput): Promise&lt;Design&gt; {
+    this.calls.push({ role: 'planning', input });
+    const design = this.plans.shift();
+    if (!design) throw new Error('FakeRunner: plans script หมด');
+    return design;
+  }
+
+  async work(input: WorkInput): Promise&lt;WorkerResult&gt; {
+    this.calls.push({ role: input.task.owner, input });
+    return {
+      taskId: input.task.id,
+      summary: `ทำ ${input.task.id}`,
+      filesChanged: [`src/${input.task.id}.ts`],
+      howToVerify: 'npm test',
+    };
+  }
+
+  async qa(input: QaInput): Promise&lt;QAReport&gt; {
+    this.calls.push({ role: 'qa', input });
+    const report = this.qaReports.shift();
+    if (!report) throw new Error('FakeRunner: qa script หมด');
+    return report;
+  }
+}
+
+export function makeDeps(script: FakeScript, answers: string[]) {
+  const runner = new FakeRunner(script);
+  const io = new ScriptedIO(answers);
+  const store = new MemoryStore();
+  const deps: Deps = { runner, io, store, config: DEFAULT_CONFIG };
+  return { deps, runner, io, store };
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: รัน test และ typecheck เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/fakes.test.ts</code> และ <code>npm run typecheck</code><br>
+     คาดหวัง: 6 tests PASS และ typecheck ผ่านทั้งโปรเจกต์ (ตั้งแต่ตอนนี้ <code>src/state.ts</code> และ <code>src/prompts.ts</code> หา <code>./deps</code> เจอแล้ว) ถ้า typecheck มี error ใน <code>src/options.ts</code> หรือ <code>src/guard.ts</code> ที่เกี่ยวกับชนิดของ SDK ให้แก้ที่ไฟล์นั้นให้ตรงกับ type จริงใน <code>node_modules/@anthropic-ai/claude-agent-sdk</code></p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: Commit</strong></span></p>
+<pre><code>git add src/deps.ts tests/helpers/fakes.ts tests/fakes.test.ts
+git commit -m "feat: add role runner/io/store interfaces and test fakes"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 10: เฟส REQUIREMENTS</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/format.ts</code></li>
+    <li>สร้าง: <code>src/phases/requirements.ts</code></li>
+    <li>เทสต์: <code>tests/phases/requirements.test.ts</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>Deps</code> จาก <code>src/deps.ts</code>; <code>State</code> จาก <code>src/state.ts</code>; <code>Requirements</code> จาก <code>src/schemas.ts</code></li>
+    <li>ส่งต่อ (Produces): <code>formatRequirements(r: Requirements): string</code>, <code>runRequirements(deps: Deps, state: State): Promise&lt;void&gt;</code> (จบเมื่อ user confirm: ตั้ง <code>state.requirements</code>, <code>state.phase = 'DESIGN'</code>, บันทึก <code>requirements.json</code>)</li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p><code>tests/phases/requirements.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import type { PmInput } from '../../src/deps';
+import { runRequirements } from '../../src/phases/requirements';
+import { newState } from '../../src/state';
+import { asking, makeRequirements, proposal } from '../helpers/builders';
+import { makeDeps } from '../helpers/fakes';
+
+const pmInput = (runner: { calls: { input: unknown }[] }, i: number) =&gt; runner.calls[i]!.input as PmInput;
+
+describe('runRequirements', () =&gt; {
+  it('ถามต่อจน PM เสนอ requirements แล้ว user confirm -&gt; DESIGN', async () =&gt; {
+    const { deps, runner, store, io } = makeDeps(
+      { pm: [asking('ใช้ tech อะไร?'), proposal()] },
+      ['อยากได้ todo list', 'ใช้ Express', 'confirm'],
+    );
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(state.phase).toBe('DESIGN');
+    expect(state.requirements).toEqual(makeRequirements());
+    expect(state.pmSessionId).toBe('pm-session');
+    expect(store.artifacts.get('requirements.json')).toEqual(makeRequirements());
+    expect(pmInput(runner, 0).prompt).toBe('อยากได้ todo list');
+    expect(pmInput(runner, 1).prompt).toBe('ใช้ Express');
+    expect(pmInput(runner, 1).sessionId).toBe('pm-session');
+    expect(io.said.join('\n')).toContain('ใช้ tech อะไร?');
+    expect(io.said.join('\n')).toContain('todo list');
+  });
+
+  it('user ขอแก้ requirements: PM คุยต่อแล้วเสนอใหม่', async () =&gt; {
+    const { deps, runner } = makeDeps(
+      { pm: [proposal(), proposal()] },
+      ['x', 'revise', 'ปรับ scope', 'confirm'],
+    );
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(state.phase).toBe('DESIGN');
+    expect(runner.calls).toHaveLength(2);
+    expect(pmInput(runner, 1).prompt).toBe('ปรับ scope');
+  });
+
+  it('ใช้ pendingPrompt แทนการถามใหม่ และแนบ requirements เดิม', async () =&gt; {
+    const { deps, runner, io } = makeDeps({ pm: [proposal()] }, ['confirm']);
+    const state = newState();
+    state.requirements = makeRequirements();
+    state.pendingPrompt = 'แก้ให้มี login';
+    await runRequirements(deps, state);
+
+    expect(pmInput(runner, 0).prompt).toContain('แก้ให้มี login');
+    expect(pmInput(runner, 0).prompt).toContain('"goal":"todo list"');
+    expect(io.asked).toHaveLength(1);
+    expect(state.pendingPrompt).toBeUndefined();
+  });
+
+  it('proposal ที่ไม่มี requirements ถือเป็นการถามต่อ', async () =&gt; {
+    const { deps, runner } = makeDeps(
+      { pm: [{ message: 'ยังไม่ครบ', status: 'proposal' }, proposal()] },
+      ['เริ่ม', 'ต่อ', 'confirm'],
+    );
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(state.phase).toBe('DESIGN');
+    expect(pmInput(runner, 1).prompt).toBe('ต่อ');
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/phases/requirements.test.ts</code><br>
+     คาดหวัง: FAIL เพราะหา <code>../../src/phases/requirements</code> ไม่เจอ</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p><code>src/format.ts</code>:</p>
+<pre><code>import type { Requirements } from './schemas';
+
+const list = (items: string[]): string =&gt;
+  items.length &gt; 0 ? items.map((i) =&gt; `  - ${i}`).join('\n') : '  (ไม่มี)';
+
+export function formatRequirements(r: Requirements): string {
+  return [
+    '--- Requirements ---',
+    `เป้าหมาย: ${r.goal}`,
+    'ฟีเจอร์:',
+    list(r.features),
+    'ข้อจำกัด:',
+    list(r.constraints),
+    'ไม่ทำ (out of scope):',
+    list(r.outOfScope),
+    'เกณฑ์ตรวจรับ:',
+    list(r.acceptanceCriteria),
+    '',
+  ].join('\n');
+}</code></pre>
+  <p><code>src/phases/requirements.ts</code>:</p>
+<pre><code>import type { Deps } from '../deps';
+import { formatRequirements } from '../format';
+import type { State } from '../state';
+
+export async function runRequirements(deps: Deps, state: State): Promise&lt;void&gt; {
+  const { io, runner, store } = deps;
+
+  const opening = state.pmSessionId
+    ? 'พิมพ์ข้อความถึง PM เพื่อคุยต่อ\n&gt; '
+    : 'คุณอยากได้ระบบอะไร? เล่า requirement ให้ PM ฟังได้เลย\n&gt; ';
+  let prompt = state.pendingPrompt ?? (await io.ask(opening));
+  if (state.requirements) {
+    prompt = `requirements ปัจจุบัน:\n${JSON.stringify(state.requirements)}\n\nคำขอแก้ไขจาก user: ${prompt}`;
+  }
+  state.pendingPrompt = undefined;
+
+  for (;;) {
+    const { turn, sessionId } = await runner.pmTurn({ prompt, sessionId: state.pmSessionId });
+    state.pmSessionId = sessionId;
+    await store.save(state);
+    io.say(`\n[PM] ${turn.message}\n`);
+
+    if (turn.status === 'proposal' &amp;&amp; turn.requirements) {
+      io.say(formatRequirements(turn.requirements));
+      const decision = await io.choose('ยืนยัน requirements นี้ไหม?', ['confirm', 'revise'] as const);
+      if (decision === 'confirm') {
+        state.requirements = turn.requirements;
+        state.phase = 'DESIGN';
+        await store.saveArtifact('requirements.json', turn.requirements);
+        await store.save(state);
+        return;
+      }
+      prompt = await io.ask('อยากปรับอะไร?\n&gt; ');
+      continue;
+    }
+    prompt = await io.ask('&gt; ');
+  }
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/phases/requirements.test.ts</code><br>
+     คาดหวัง: 4 tests PASS</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/format.ts src/phases/requirements.ts tests/phases/requirements.test.ts
+git commit -m "feat: add REQUIREMENTS phase with user confirm gate"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 11: เฟส DESIGN และ REVIEW</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/format.ts</code> (เพิ่ม <code>formatDesign</code>)</li>
+    <li>สร้าง: <code>src/phases/design.ts</code></li>
+    <li>เทสต์: <code>tests/phases/design.test.ts</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>Deps</code> (<code>runner.plan</code>, <code>runner.pmTurn</code>); <code>orderTasks</code>, <code>DesignError</code>, <code>initProgress</code> จาก <code>src/domain.ts</code>; <code>formatDesign</code></li>
+    <li>ส่งต่อ (Produces): <code>formatDesign(d: Design): string</code>, <code>runDesign(deps: Deps, state: State): Promise&lt;void&gt;</code> (เรียก Planning สูงสุด 2 ครั้งถ้า design ไม่ถูกต้อง แล้วตั้ง <code>phase = 'REVIEW'</code>), <code>runReview(deps: Deps, state: State): Promise&lt;void&gt;</code> (confirm -&gt; <code>phase = 'BUILD'</code> + <code>state.progress</code>; revise -&gt; <code>pendingPrompt</code> + <code>phase = 'REQUIREMENTS'</code>)</li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p><code>tests/phases/design.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import type { PlanInput } from '../../src/deps';
+import { DesignError } from '../../src/domain';
+import { runDesign, runReview } from '../../src/phases/design';
+import { newState, type State } from '../../src/state';
+import { asking, makeDesign, makeRequirements, makeTask } from '../helpers/builders';
+import { makeDeps } from '../helpers/fakes';
+
+const stateAt = (phase: State['phase']): State =&gt; {
+  const state = newState();
+  state.phase = phase;
+  state.requirements = makeRequirements();
+  return state;
+};
+
+describe('runDesign', () =&gt; {
+  it('ได้ design ที่ถูกต้อง -&gt; REVIEW และบันทึก design.json', async () =&gt; {
+    const design = makeDesign();
+    const { deps, store } = makeDeps({ plans: [design] }, []);
+    const state = stateAt('DESIGN');
+    await runDesign(deps, state);
+
+    expect(state.phase).toBe('REVIEW');
+    expect(state.design).toEqual(design);
+    expect(store.artifacts.get('design.json')).toEqual(design);
+  });
+
+  it('design วน dependency: ส่ง feedback ให้ Planning แล้วได้ design ใหม่', async () =&gt; {
+    const cyclic = makeDesign([makeTask('a', 'backend', ['b']), makeTask('b', 'backend', ['a'])]);
+    const good = makeDesign();
+    const { deps, runner } = makeDeps({ plans: [cyclic, good] }, []);
+    const state = stateAt('DESIGN');
+    await runDesign(deps, state);
+
+    expect(state.design).toEqual(good);
+    expect((runner.calls[1]!.input as PlanInput).feedback).toContain('dependency วน');
+  });
+
+  it('ส่ง design ผิดซ้ำ 2 ครั้ง -&gt; โยน DesignError', async () =&gt; {
+    const cyclic = makeDesign([makeTask('a', 'backend', ['b']), makeTask('b', 'backend', ['a'])]);
+    const { deps } = makeDeps({ plans: [cyclic, cyclic] }, []);
+    await expect(runDesign(deps, stateAt('DESIGN'))).rejects.toThrow(DesignError);
+  });
+
+  it('ส่ง design เดิมและ requirements ให้ Planning', async () =&gt; {
+    const previous = makeDesign();
+    const { deps, runner } = makeDeps({ plans: [makeDesign()] }, []);
+    const state = stateAt('DESIGN');
+    state.design = previous;
+    await runDesign(deps, state);
+
+    const input = runner.calls[0]!.input as PlanInput;
+    expect(input.previousDesign).toEqual(previous);
+    expect(input.requirements).toEqual(makeRequirements());
+  });
+});
+
+describe('runReview', () =&gt; {
+  it('user confirm -&gt; BUILD พร้อม progress ของทุก task', async () =&gt; {
+    const { deps, io } = makeDeps({ pm: [asking('สรุป design ให้ฟัง')] }, ['confirm']);
+    const state = stateAt('REVIEW');
+    state.design = makeDesign();
+    await runReview(deps, state);
+
+    expect(state.phase).toBe('BUILD');
+    expect(state.progress.api).toEqual({ rounds: 0, maxRounds: 5, done: false, acceptedWithIssues: false });
+    expect(Object.keys(state.progress)).toEqual(['api', 'ui']);
+    expect(io.said.join('\n')).toContain('สรุป design ให้ฟัง');
+    expect(io.said.join('\n')).toContain('ภาพรวมของระบบ');
+  });
+
+  it('user ขอแก้ -&gt; กลับ REQUIREMENTS พร้อม pendingPrompt', async () =&gt; {
+    const { deps } = makeDeps({ pm: [asking('สรุป')] }, ['revise', 'เพิ่มหน้า login']);
+    const state = stateAt('REVIEW');
+    state.design = makeDesign();
+    await runReview(deps, state);
+
+    expect(state.phase).toBe('REQUIREMENTS');
+    expect(state.pendingPrompt).toBe('เพิ่มหน้า login');
+  });
+
+  it('เก็บ progress ที่เสร็จแล้วของ task ที่ไม่เปลี่ยน', async () =&gt; {
+    const { deps } = makeDeps({ pm: [asking('สรุป')] }, ['confirm']);
+    const state = stateAt('REVIEW');
+    state.design = makeDesign([makeTask('api', 'backend', [], false), makeTask('ui', 'frontend', ['api'])]);
+    state.progress = { api: { rounds: 2, maxRounds: 5, done: true, acceptedWithIssues: false } };
+    await runReview(deps, state);
+
+    expect(state.progress.api?.done).toBe(true);
+    expect(state.progress.ui?.done).toBe(false);
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/phases/design.test.ts</code><br>
+     คาดหวัง: FAIL เพราะหา <code>../../src/phases/design</code> ไม่เจอ</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p>เขียนทับ <code>src/format.ts</code> ทั้งไฟล์ (เพิ่ม <code>formatDesign</code>):</p>
+<pre><code>import type { Design, Requirements } from './schemas';
+
+const list = (items: string[]): string =&gt;
+  items.length &gt; 0 ? items.map((i) =&gt; `  - ${i}`).join('\n') : '  (ไม่มี)';
+
+export function formatRequirements(r: Requirements): string {
+  return [
+    '--- Requirements ---',
+    `เป้าหมาย: ${r.goal}`,
+    'ฟีเจอร์:',
+    list(r.features),
+    'ข้อจำกัด:',
+    list(r.constraints),
+    'ไม่ทำ (out of scope):',
+    list(r.outOfScope),
+    'เกณฑ์ตรวจรับ:',
+    list(r.acceptanceCriteria),
+    '',
+  ].join('\n');
+}
+
+export function formatDesign(d: Design): string {
+  const tasks = d.tasks
+    .map((t) =&gt; {
+      const after = t.dependsOn.length &gt; 0 ? ` (ต้องทำหลัง ${t.dependsOn.join(', ')})` : '';
+      return `  - [${t.owner}] ${t.id}: ${t.title}${after}`;
+    })
+    .join('\n');
+  return [
+    '--- Design ---',
+    `ภาพรวม: ${d.overview}`,
+    `สถาปัตยกรรม: ${d.architecture}`,
+    `API contract:\n${d.apiContract}`,
+    `Data model:\n${d.dataModel}`,
+    'Tasks:',
+    tasks,
+    '',
+  ].join('\n');
+}</code></pre>
+  <p><code>src/phases/design.ts</code>:</p>
+<pre><code>import type { Deps } from '../deps';
+import { DesignError, initProgress, orderTasks } from '../domain';
+import { formatDesign } from '../format';
+import type { State } from '../state';
+
+export async function runDesign(deps: Deps, state: State): Promise&lt;void&gt; {
+  const { runner, store } = deps;
+  if (!state.requirements) throw new Error('DESIGN ต้องมี requirements');
+
+  let feedback: string | undefined;
+  for (let attempt = 0; attempt &lt; 2; attempt++) {
+    const design = await runner.plan({
+      requirements: state.requirements,
+      previousDesign: state.design,
+      feedback,
+    });
+    try {
+      orderTasks(design.tasks);
+    } catch (e) {
+      if (!(e instanceof DesignError)) throw e;
+      feedback = `design ที่ส่งมาไม่ถูกต้อง: ${e.message} — แก้ให้ถูกแล้วส่งใหม่`;
+      continue;
+    }
+    state.design = design;
+    state.phase = 'REVIEW';
+    await store.saveArtifact('design.json', design);
+    await store.save(state);
+    return;
+  }
+  throw new DesignError('Planning ส่ง design ที่ไม่ถูกต้องซ้ำ 2 ครั้ง');
+}
+
+export async function runReview(deps: Deps, state: State): Promise&lt;void&gt; {
+  const { runner, io, store, config } = deps;
+  const { design } = state;
+  if (!design) throw new Error('REVIEW ต้องมี design');
+
+  const { turn, sessionId } = await runner.pmTurn({
+    sessionId: state.pmSessionId,
+    prompt: `Planning ส่ง design กลับมาแล้ว ช่วยสรุปให้ user ฟังเป็นภาษาไทย เน้นสิ่งที่ user ควรตรวจสอบ\n\n${JSON.stringify(design)}`,
+  });
+  state.pmSessionId = sessionId;
+  io.say(`\n[PM] ${turn.message}\n`);
+  io.say(formatDesign(design));
+
+  const decision = await io.choose('ยืนยันแบบนี้ไหม?', ['confirm', 'revise'] as const);
+  if (decision === 'confirm') {
+    state.progress = initProgress(design, state.progress, config.maxQaRounds);
+    state.phase = 'BUILD';
+  } else {
+    state.pendingPrompt = await io.ask('อยากแก้อะไรในแบบ?\n&gt; ');
+    state.phase = 'REQUIREMENTS';
+  }
+  await store.save(state);
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/phases/design.test.ts tests/phases/requirements.test.ts</code><br>
+     คาดหวัง: ทุก test PASS (design 7 + requirements 4)</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/format.ts src/phases/design.ts tests/phases/design.test.ts
+git commit -m "feat: add DESIGN and REVIEW phases"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 12: เฟส BUILD ⇄ QA (limit 5 รอบ)</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/phases/build.ts</code></li>
+    <li>เทสต์: <code>tests/phases/build.test.ts</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>Deps</code> (<code>runner.work</code>, <code>runner.qa</code>, <code>runner.pmTurn</code>, <code>io.choose</code>, <code>config.extraRoundsOnContinue</code>); <code>orderTasks</code>, <code>isPass</code> จาก <code>src/domain.ts</code>; <code>State</code>, <code>TaskProgress</code> จาก <code>src/state.ts</code></li>
+    <li>ส่งต่อ (Produces): <code>runBuild(deps: Deps, state: State): Promise&lt;void&gt;</code> ทำ task ตามลำดับ dependsOn: worker (ตาม <code>task.owner</code>) -&gt; QA วนจน <code>isPass</code> หรือครบ <code>progress.maxRounds</code> แล้ว escalate ผ่าน PM ให้ user เลือก <code>continue</code> (เพิ่ม <code>extraRoundsOnContinue</code> รอบ) / <code>accept</code> (<code>acceptedWithIssues = true</code>) / <code>abort</code> (<code>phase = 'ABORTED'</code>) จบปกติตั้ง <code>phase = 'DELIVER'</code> บันทึก <code>reports/&lt;taskId&gt;-round&lt;n&gt;.json</code> ทุกรอบ</li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p><code>tests/phases/build.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import type { WorkInput } from '../../src/deps';
+import { runBuild } from '../../src/phases/build';
+import {
+  asking,
+  buildState,
+  failReport,
+  makeDesign,
+  makeTask,
+  passReport,
+} from '../helpers/builders';
+import { makeDeps } from '../helpers/fakes';
+
+const single = () =&gt; makeDesign([makeTask('api')]);
+const roles = (calls: { role: string }[]) =&gt; calls.map((c) =&gt; c.role);
+const fails = (taskId: string, n: number) =&gt; Array.from({ length: n }, () =&gt; failReport(taskId));
+
+describe('runBuild', () =&gt; {
+  it('ทำทีละ task ตาม dependsOn (backend ก่อน frontend) แล้วไป DELIVER', async () =&gt; {
+    const { deps, runner, store } = makeDeps({ qa: [passReport('api'), passReport('ui')] }, []);
+    const state = buildState();
+    await runBuild(deps, state);
+
+    expect(state.phase).toBe('DELIVER');
+    expect(roles(runner.calls)).toEqual(['backend', 'qa', 'frontend', 'qa']);
+    expect(state.progress.api?.done).toBe(true);
+    expect(state.progress.ui?.done).toBe(true);
+    expect(store.artifacts.has('reports/api-round1.json')).toBe(true);
+  });
+
+  it('QA ไม่ผ่าน: worker แก้ใหม่พร้อมรายการปัญหา แล้วผ่านรอบที่ 2', async () =&gt; {
+    const { deps, runner } = makeDeps({ qa: [failReport('api'), passReport('api')] }, []);
+    const state = buildState(single());
+    await runBuild(deps, state);
+
+    const works = runner.calls.filter((c) =&gt; c.role === 'backend');
+    expect(works).toHaveLength(2);
+    expect((works[0]!.input as WorkInput).previousReport).toBeUndefined();
+    expect((works[1]!.input as WorkInput).previousReport?.issues[0]?.description).toBe('ผิด');
+    expect(state.progress.api?.rounds).toBe(2);
+    expect(state.phase).toBe('DELIVER');
+  });
+
+  it('QA ให้ PASS แต่มี blocker: นับว่าไม่ผ่าน', async () =&gt; {
+    const sneaky = { ...passReport('api'), issues: failReport('api', 'blocker').issues };
+    const { deps, runner } = makeDeps({ qa: [sneaky, passReport('api')] }, []);
+    await runBuild(deps, buildState(single()));
+
+    expect(runner.calls.filter((c) =&gt; c.role === 'backend')).toHaveLength(2);
+  });
+
+  it('ครบ 5 รอบยังไม่ผ่าน + user เลือก abort -&gt; ABORTED', async () =&gt; {
+    const { deps, runner } = makeDeps({ qa: fails('api', 5), pm: [asking('ค้าง 5 รอบ')] }, ['abort']);
+    const state = buildState(single());
+    await runBuild(deps, state);
+
+    expect(state.phase).toBe('ABORTED');
+    expect(runner.calls.filter((c) =&gt; c.role === 'backend')).toHaveLength(5);
+    expect(runner.calls.filter((c) =&gt; c.role === 'pm')).toHaveLength(1);
+    expect(state.progress.api?.done).toBe(false);
+  });
+
+  it('ครบ 5 รอบ + continue -&gt; ทำต่ออีก 5 รอบ (maxRounds = 10) แล้วผ่านรอบที่ 6', async () =&gt; {
+    const { deps, runner } = makeDeps(
+      { qa: [...fails('api', 5), passReport('api')], pm: [asking('ค้าง')] },
+      ['continue'],
+    );
+    const state = buildState(single());
+    await runBuild(deps, state);
+
+    expect(runner.calls.filter((c) =&gt; c.role === 'backend')).toHaveLength(6);
+    expect(state.progress.api?.maxRounds).toBe(10);
+    expect(state.progress.api?.done).toBe(true);
+    expect(state.phase).toBe('DELIVER');
+  });
+
+  it('ครบ 5 รอบ + accept -&gt; ปิด task แบบรับตามสภาพ', async () =&gt; {
+    const { deps } = makeDeps({ qa: fails('api', 5), pm: [asking('ค้าง')] }, ['accept']);
+    const state = buildState(single());
+    await runBuild(deps, state);
+
+    expect(state.progress.api?.done).toBe(true);
+    expect(state.progress.api?.acceptedWithIssues).toBe(true);
+    expect(state.phase).toBe('DELIVER');
+  });
+
+  it('ข้าม task ที่เสร็จแล้ว (resume)', async () =&gt; {
+    const { deps, runner } = makeDeps({ qa: [passReport('ui')] }, []);
+    const state = buildState();
+    state.progress.api = { rounds: 1, maxRounds: 5, done: true, acceptedWithIssues: false };
+    await runBuild(deps, state);
+
+    expect(roles(runner.calls)).toEqual(['frontend', 'qa']);
+  });
+
+  it('บันทึก state ทุกรอบ เพื่อให้ resume ได้', async () =&gt; {
+    const { deps, store } = makeDeps({ qa: [failReport('api'), passReport('api')] }, []);
+    await runBuild(deps, buildState(single()));
+
+    expect(store.saves).toBeGreaterThanOrEqual(3);
+    expect(store.state?.progress.api?.rounds).toBe(2);
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/phases/build.test.ts</code><br>
+     คาดหวัง: FAIL เพราะหา <code>../../src/phases/build</code> ไม่เจอ</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p><code>src/phases/build.ts</code>:</p>
+<pre><code>import type { Deps } from '../deps';
+import { isPass, orderTasks } from '../domain';
+import type { Design, Requirements, Task } from '../schemas';
+import type { State, TaskProgress } from '../state';
+
+type Outcome = 'done' | 'aborted';
+type Decision = 'continue' | 'accept' | 'abort';
+interface BuildContext {
+  design: Design;
+  requirements: Requirements;
+}
+
+export async function runBuild(deps: Deps, state: State): Promise&lt;void&gt; {
+  const { design, requirements } = state;
+  if (!design || !requirements) throw new Error('BUILD ต้องมี requirements และ design');
+  const ctx: BuildContext = { design, requirements };
+
+  for (const task of orderTasks(design.tasks)) {
+    const progress = state.progress[task.id];
+    if (!progress) throw new Error(`ไม่พบ progress ของ task ${task.id}`);
+    if (progress.done) continue;
+    if ((await buildTask(deps, state, ctx, task, progress)) === 'aborted') {
+      state.phase = 'ABORTED';
+      await deps.store.save(state);
+      return;
+    }
+  }
+  state.phase = 'DELIVER';
+  await deps.store.save(state);
+}
+
+async function buildTask(
+  deps: Deps,
+  state: State,
+  ctx: BuildContext,
+  task: Task,
+  progress: TaskProgress,
+): Promise&lt;Outcome&gt; {
+  const { runner, io, store, config } = deps;
+  for (;;) {
+    while (progress.rounds &lt; progress.maxRounds) {
+      io.say(
+        `[${task.owner}] ทำ task ${task.id}: ${task.title} (รอบที่ ${progress.rounds + 1}/${progress.maxRounds})`,
+      );
+      const result = await runner.work({ task, ...ctx, previousReport: progress.lastReport });
+      const report = await runner.qa({ task, result, ...ctx });
+      progress.rounds += 1;
+      progress.lastReport = report;
+      await store.saveArtifact(`reports/${task.id}-round${progress.rounds}.json`, report);
+
+      const passed = isPass(report);
+      io.say(`[QA] ${task.id}: ${passed ? 'PASS' : 'FAIL'} (${report.issues.length} issues)`);
+      if (passed) {
+        progress.done = true;
+        await store.save(state);
+        return 'done';
+      }
+      await store.save(state);
+    }
+
+    const decision = await escalate(deps, state, task, progress);
+    if (decision === 'abort') return 'aborted';
+    if (decision === 'accept') {
+      progress.done = true;
+      progress.acceptedWithIssues = true;
+      await store.save(state);
+      return 'done';
+    }
+    progress.maxRounds += config.extraRoundsOnContinue;
+    await store.save(state);
+  }
+}
+
+async function escalate(
+  deps: Deps,
+  state: State,
+  task: Task,
+  progress: TaskProgress,
+): Promise&lt;Decision&gt; {
+  const { runner, io, config } = deps;
+  const { turn, sessionId } = await runner.pmTurn({
+    sessionId: state.pmSessionId,
+    prompt:
+      `task ${task.id} (${task.title}) ไม่ผ่าน QA ครบ ${progress.rounds} รอบแล้ว ` +
+      `ปัญหาที่ค้าง:\n${JSON.stringify(progress.lastReport?.issues ?? [])}\n` +
+      'สรุปให้ user ฟังเป็นภาษาไทยว่าค้างอะไร และอธิบายตัวเลือก: continue / accept / abort',
+  });
+  state.pmSessionId = sessionId;
+  io.say(`\n[PM] ${turn.message}\n`);
+  return io.choose(
+    `task ${task.id} ไม่ผ่านครบ ${progress.rounds} รอบ (continue = ทำต่ออีก ${config.extraRoundsOnContinue} รอบ, accept = รับตามสภาพ, abort = ยกเลิก)`,
+    ['continue', 'accept', 'abort'] as const,
+  );
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/phases/build.test.ts</code><br>
+     คาดหวัง: 8 tests PASS</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/phases/build.ts tests/phases/build.test.ts
+git commit -m "feat: add BUILD/QA loop with 5-round limit and escalation"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 13: เฟส DELIVER + orchestrator (resume, change request)</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/phases/deliver.ts</code></li>
+    <li>สร้าง: <code>src/orchestrator.ts</code></li>
+    <li>เทสต์: <code>tests/phases/deliver.test.ts</code>, <code>tests/orchestrator.test.ts</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>runRequirements</code>, <code>runDesign</code>, <code>runReview</code>, <code>runBuild</code> จาก Task 10-12; <code>newState</code> จาก <code>src/state.ts</code>; <code>Deps</code></li>
+    <li>ส่งต่อ (Produces): <code>runDeliver(deps: Deps, state: State): Promise&lt;void&gt;</code> (accept -&gt; <code>phase = 'DONE'</code>; change -&gt; <code>pendingPrompt</code> + <code>phase = 'REQUIREMENTS'</code>), <code>runTeam(deps: Deps, opts: { resume: boolean }): Promise&lt;State&gt;</code> วนเฟสจนถึง <code>DONE</code> หรือ <code>ABORTED</code></li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p><code>tests/phases/deliver.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import type { PmInput } from '../../src/deps';
+import { runDeliver } from '../../src/phases/deliver';
+import { asking, buildState } from '../helpers/builders';
+import { makeDeps } from '../helpers/fakes';
+
+const deliverState = () =&gt; {
+  const state = buildState();
+  state.phase = 'DELIVER';
+  return state;
+};
+
+describe('runDeliver', () =&gt; {
+  it('user ตรวจรับ -&gt; DONE', async () =&gt; {
+    const { deps, io } = makeDeps({ pm: [asking('ส่งมอบครบแล้ว')] }, ['accept']);
+    const state = deliverState();
+    await runDeliver(deps, state);
+
+    expect(state.phase).toBe('DONE');
+    expect(io.said.join('\n')).toContain('ส่งมอบครบแล้ว');
+  });
+
+  it('user ขอแก้ -&gt; กลับ REQUIREMENTS พร้อม pendingPrompt', async () =&gt; {
+    const { deps } = makeDeps({ pm: [asking('ส่งมอบ')] }, ['change', 'เพิ่มปุ่มลบทั้งหมด']);
+    const state = deliverState();
+    await runDeliver(deps, state);
+
+    expect(state.phase).toBe('REQUIREMENTS');
+    expect(state.pendingPrompt).toBe('เพิ่มปุ่มลบทั้งหมด');
+  });
+
+  it('แจ้ง PM ว่า task ไหนรับตามสภาพ', async () =&gt; {
+    const { deps, runner } = makeDeps({ pm: [asking('ส่งมอบ')] }, ['accept']);
+    const state = deliverState();
+    state.progress.api = { rounds: 5, maxRounds: 5, done: true, acceptedWithIssues: true };
+    await runDeliver(deps, state);
+
+    const prompt = (runner.calls[0]!.input as PmInput).prompt;
+    expect(prompt).toContain('"id":"api"');
+    expect(prompt).toContain('"acceptedWithIssues":true');
+  });
+});</code></pre>
+  <p><code>tests/orchestrator.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import { runTeam } from '../src/orchestrator';
+import {
+  asking,
+  buildState,
+  makeDesign,
+  makeTask,
+  passReport,
+  proposal,
+} from './helpers/builders';
+import { makeDeps } from './helpers/fakes';
+
+const roles = (calls: { role: string }[]) =&gt; calls.map((c) =&gt; c.role);
+
+describe('runTeam', () =&gt; {
+  it('flow เต็ม: requirements -&gt; design -&gt; review -&gt; build/QA -&gt; deliver -&gt; DONE', async () =&gt; {
+    const { deps, runner, store } = makeDeps(
+      {
+        pm: [proposal(), asking('สรุป design'), asking('สรุปส่งมอบ')],
+        plans: [makeDesign()],
+        qa: [passReport('api'), passReport('ui')],
+      },
+      ['อยากได้ todo', 'confirm', 'confirm', 'accept'],
+    );
+    const final = await runTeam(deps, { resume: false });
+
+    expect(final.phase).toBe('DONE');
+    expect(roles(runner.calls)).toEqual(['pm', 'planning', 'pm', 'backend', 'qa', 'frontend', 'qa', 'pm']);
+    expect(store.state?.phase).toBe('DONE');
+  });
+
+  it('user ขอแก้แบบ: วนกลับไปเฟส 1-3 แล้วค่อย build', async () =&gt; {
+    const { deps, runner } = makeDeps(
+      {
+        pm: [proposal(), asking('design v1'), proposal(), asking('design v2'), asking('ส่งมอบ')],
+        plans: [makeDesign(), makeDesign()],
+        qa: [passReport('api'), passReport('ui')],
+      },
+      ['อยากได้ todo', 'confirm', 'revise', 'เพิ่มการค้นหา', 'confirm', 'confirm', 'accept'],
+    );
+    const final = await runTeam(deps, { resume: false });
+
+    expect(final.phase).toBe('DONE');
+    expect(roles(runner.calls).filter((r) =&gt; r === 'planning')).toHaveLength(2);
+    expect(roles(runner.calls).filter((r) =&gt; r === 'backend')).toHaveLength(1);
+  });
+
+  it('user ขอแก้หลังรับงาน: ทำเฉพาะ task ที่เปลี่ยน', async () =&gt; {
+    const changed = makeDesign([
+      makeTask('api', 'backend', [], false),
+      makeTask('ui', 'frontend', ['api']),
+    ]);
+    const { deps, runner } = makeDeps(
+      {
+        pm: [
+          proposal(),
+          asking('design v1'),
+          asking('ส่งมอบ v1'),
+          proposal(),
+          asking('design v2'),
+          asking('ส่งมอบ v2'),
+        ],
+        plans: [makeDesign(), changed],
+        qa: [passReport('api'), passReport('ui'), passReport('ui')],
+      },
+      ['อยากได้ todo', 'confirm', 'confirm', 'change', 'ปรับหน้าตา', 'confirm', 'confirm', 'accept'],
+    );
+    const final = await runTeam(deps, { resume: false });
+
+    expect(final.phase).toBe('DONE');
+    expect(runner.calls.filter((c) =&gt; c.role === 'backend')).toHaveLength(1);
+    expect(runner.calls.filter((c) =&gt; c.role === 'frontend')).toHaveLength(2);
+  });
+
+  it('user ยกเลิกตอน escalate -&gt; ABORTED', async () =&gt; {
+    const { deps } = makeDeps(
+      {
+        pm: [proposal(), asking('design'), asking('ค้าง')],
+        plans: [makeDesign([makeTask('api')])],
+        qa: Array.from({ length: 5 }, () =&gt; ({ ...passReport('api'), verdict: 'FAIL' as const })),
+      },
+      ['อยากได้ todo', 'confirm', 'confirm', 'abort'],
+    );
+    const final = await runTeam(deps, { resume: false });
+    expect(final.phase).toBe('ABORTED');
+  });
+
+  it('resume: ทำต่อจาก state ที่บันทึกไว้ โดยไม่ทำ task ที่เสร็จแล้วซ้ำ', async () =&gt; {
+    const { deps, runner, store } = makeDeps(
+      { qa: [passReport('ui')], pm: [asking('สรุปส่งมอบ')] },
+      ['accept'],
+    );
+    const saved = buildState();
+    saved.progress.api = { rounds: 1, maxRounds: 5, done: true, acceptedWithIssues: false };
+    store.state = saved;
+
+    const final = await runTeam(deps, { resume: true });
+    expect(final.phase).toBe('DONE');
+    expect(roles(runner.calls)).toEqual(['frontend', 'qa', 'pm']);
+  });
+
+  it('resume โดยไม่มี state -&gt; error', async () =&gt; {
+    const { deps } = makeDeps({}, []);
+    await expect(runTeam(deps, { resume: true })).rejects.toThrow('ไม่พบ state');
+  });
+
+  it('เริ่มใหม่ทั้งที่มีงานค้าง -&gt; error บอกให้ใช้ --resume', async () =&gt; {
+    const { deps, store } = makeDeps({}, []);
+    store.state = buildState();
+    await expect(runTeam(deps, { resume: false })).rejects.toThrow('--resume');
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/phases/deliver.test.ts tests/orchestrator.test.ts</code><br>
+     คาดหวัง: FAIL เพราะหา <code>deliver</code> และ <code>orchestrator</code> ไม่เจอ</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p><code>src/phases/deliver.ts</code>:</p>
+<pre><code>import type { Deps } from '../deps';
+import type { State } from '../state';
+
+export async function runDeliver(deps: Deps, state: State): Promise&lt;void&gt; {
+  const { runner, io, store } = deps;
+  const { design } = state;
+  if (!design) throw new Error('DELIVER ต้องมี design');
+
+  const summary = design.tasks.map((t) =&gt; ({
+    id: t.id,
+    title: t.title,
+    owner: t.owner,
+    acceptedWithIssues: state.progress[t.id]?.acceptedWithIssues ?? false,
+  }));
+  const { turn, sessionId } = await runner.pmTurn({
+    sessionId: state.pmSessionId,
+    prompt:
+      "งานทั้งหมดผ่าน QA แล้ว ช่วยสรุปส่งมอบให้ user ตรวจรับเป็นภาษาไทย " +
+      "task ที่ acceptedWithIssues=true คือ 'รับตามสภาพ' ให้ระบุให้ชัด:\n" +
+      JSON.stringify(summary),
+  });
+  state.pmSessionId = sessionId;
+  io.say(`\n[PM] ${turn.message}\n`);
+
+  const decision = await io.choose('ตรวจรับงานนี้ไหม?', ['accept', 'change'] as const);
+  if (decision === 'accept') {
+    state.phase = 'DONE';
+  } else {
+    state.pendingPrompt = await io.ask('อยากแก้หรือเพิ่มอะไร?\n&gt; ');
+    state.phase = 'REQUIREMENTS';
+  }
+  await store.save(state);
+}</code></pre>
+  <p><code>src/orchestrator.ts</code>:</p>
+<pre><code>import type { Deps } from './deps';
+import { runBuild } from './phases/build';
+import { runDeliver } from './phases/deliver';
+import { runDesign, runReview } from './phases/design';
+import { runRequirements } from './phases/requirements';
+import { newState, type State } from './state';
+
+export async function runTeam(deps: Deps, opts: { resume: boolean }): Promise&lt;State&gt; {
+  const existing = await deps.store.load();
+  let state: State;
+
+  if (opts.resume) {
+    if (!existing) throw new Error('ไม่พบ state ให้ resume (.agent-team/state.json)');
+    state = existing;
+  } else {
+    if (existing &amp;&amp; existing.phase !== 'DONE' &amp;&amp; existing.phase !== 'ABORTED') {
+      throw new Error(
+        'มีงานค้างอยู่ใน .agent-team/ — ใช้ --resume เพื่อทำต่อ หรือลบโฟลเดอร์นั้นเพื่อเริ่มใหม่',
+      );
+    }
+    state = newState();
+    await deps.store.save(state);
+  }
+
+  while (state.phase !== 'DONE' &amp;&amp; state.phase !== 'ABORTED') {
+    switch (state.phase) {
+      case 'REQUIREMENTS':
+        await runRequirements(deps, state);
+        break;
+      case 'DESIGN':
+        await runDesign(deps, state);
+        break;
+      case 'REVIEW':
+        await runReview(deps, state);
+        break;
+      case 'BUILD':
+        await runBuild(deps, state);
+        break;
+      case 'DELIVER':
+        await runDeliver(deps, state);
+        break;
+    }
+  }
+  return state;
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/phases/deliver.test.ts tests/orchestrator.test.ts</code><br>
+     คาดหวัง: 10 tests PASS (deliver 3 + orchestrator 7)</p>
+  <p>แล้วรันทั้งชุด: <code>npm test</code> และ <code>npm run typecheck</code><br>
+     คาดหวัง: ทุก test PASS และ typecheck ไม่มี error</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/phases/deliver.ts src/orchestrator.ts tests/phases/deliver.test.ts tests/orchestrator.test.ts
+git commit -m "feat: add DELIVER phase and orchestrator state machine"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 14: SdkRoleRunner (เรียก SDK จริง, retry, ตรวจ schema)</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/runner.ts</code></li>
+    <li>เทสต์: <code>tests/runner.test.ts</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>query</code> จาก <code>@anthropic-ai/claude-agent-sdk</code>; <code>buildQueryOptions</code> (Task 8); <code>SYSTEM_PROMPTS</code>, <code>buildPlanPrompt</code>, <code>buildWorkPrompt</code>, <code>buildQaPrompt</code> (Task 7); schemas + <code>toJsonSchema</code> (Task 2); <code>RoleRunner</code> และ input types (Task 9); <code>TeamConfig</code>, <code>RoleName</code>, <code>SKILLS_PLUGIN_DIR</code> (Task 5)</li>
+    <li>ส่งต่อ (Produces): <code>class RoleRunError extends Error { retryable: boolean }</code>, <code>class RoleOutputError extends Error</code>, <code>interface SdkRunnerDeps { projectDir: string; config: TeamConfig; skillsPluginDir?: string; queryFn?: typeof query; sleep?: (ms: number) =&gt; Promise&lt;void&gt;; log?: (line: string) =&gt; void; debug?: boolean; abortController?: AbortController }</code>, <code>class SdkRoleRunner implements RoleRunner</code></li>
+    <li>พฤติกรรม: SDK/network ล้ม -&gt; retry 2 ครั้ง (รอ 1000 ms แล้ว 3000 ms); result <code>error_max_*</code> ไม่ retry; output ไม่ผ่าน zod -&gt; ถาม agent เดิมซ้ำ 1 ครั้ง (<code>resume</code> session เดิม) แล้วโยน <code>RoleOutputError</code> ถ้ายังผิด</li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p><code>tests/runner.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import { DEFAULT_CONFIG } from '../src/config';
+import { RoleOutputError, RoleRunError, SdkRoleRunner } from '../src/runner';
+import { makeDesign, makeRequirements, makeTask } from './helpers/builders';
+
+type Msg = Record&lt;string, unknown&gt;;
+type Call = { prompt: string; options: Record&lt;string, any&gt; };
+
+const initMsg = (sid = 's1'): Msg =&gt; ({
+  type: 'system',
+  subtype: 'init',
+  session_id: sid,
+  skills: [],
+  plugins: [],
+  tools: [],
+});
+const okResult = (output: unknown, sid = 's1'): Msg =&gt; ({
+  type: 'result',
+  subtype: 'success',
+  session_id: sid,
+  structured_output: output,
+  total_cost_usd: 0.01,
+});
+const errResult = (subtype: string): Msg =&gt; ({ type: 'result', subtype, session_id: 's1' });
+
+const validTurn = { message: 'สวัสดี', status: 'asking' };
+
+function makeRunner(scripts: Array&lt;Msg[] | Error&gt;) {
+  const calls: Call[] = [];
+  const sleeps: number[] = [];
+  const queryFn = ((args: Call) =&gt; {
+    calls.push(args);
+    const script = scripts.shift();
+    if (!script) throw new Error('queryFn: script หมด');
+    return (async function* () {
+      if (script instanceof Error) throw script;
+      for (const message of script) yield message;
+    })();
+  }) as never;
+  const runner = new SdkRoleRunner({
+    projectDir: 'proj',
+    config: DEFAULT_CONFIG,
+    queryFn,
+    sleep: async (ms) =&gt; {
+      sleeps.push(ms);
+    },
+  });
+  return { runner, calls, sleeps };
+}
+
+describe('SdkRoleRunner', () =&gt; {
+  it('คืน structured output ที่ผ่าน schema พร้อม sessionId', async () =&gt; {
+    const { runner, calls } = makeRunner([[initMsg(), okResult(validTurn)]]);
+    const out = await runner.pmTurn({ prompt: 'hi' });
+
+    expect(out).toEqual({ turn: validTurn, sessionId: 's1' });
+    expect(calls[0]!.prompt).toBe('hi');
+    expect(calls[0]!.options.outputFormat.type).toBe('json_schema');
+    expect(calls[0]!.options.model).toBe('claude-sonnet-5');
+  });
+
+  it('ส่ง sessionId เดิมเป็น resume ให้ PM', async () =&gt; {
+    const { runner, calls } = makeRunner([[initMsg('s9'), okResult(validTurn, 's9')]]);
+    await runner.pmTurn({ prompt: 'hi', sessionId: 's9' });
+    expect(calls[0]!.options.resume).toBe('s9');
+  });
+
+  it('retry เมื่อ SDK โยน error แล้วสำเร็จ', async () =&gt; {
+    const { runner, calls, sleeps } = makeRunner([new Error('network'), [initMsg(), okResult(validTurn)]]);
+    const out = await runner.pmTurn({ prompt: 'hi' });
+
+    expect(out.turn).toEqual(validTurn);
+    expect(calls).toHaveLength(2);
+    expect(sleeps).toEqual([1000]);
+  });
+
+  it('ล้มต่อเนื่อง: retry 2 ครั้งแล้วยอมแพ้', async () =&gt; {
+    const { runner, calls, sleeps } = makeRunner([new Error('network'), new Error('network'), new Error('network')]);
+    await expect(runner.pmTurn({ prompt: 'hi' })).rejects.toThrow('network');
+
+    expect(calls).toHaveLength(3);
+    expect(sleeps).toEqual([1000, 3000]);
+  });
+
+  it('error_max_turns ไม่ retry', async () =&gt; {
+    const { runner, calls, sleeps } = makeRunner([[initMsg(), errResult('error_max_turns')]]);
+    await expect(runner.pmTurn({ prompt: 'hi' })).rejects.toBeInstanceOf(RoleRunError);
+
+    expect(calls).toHaveLength(1);
+    expect(sleeps).toEqual([]);
+  });
+
+  it('success แต่ไม่มี structured_output: retry', async () =&gt; {
+    const noOutput = { type: 'result', subtype: 'success', session_id: 's1' };
+    const { runner, calls } = makeRunner([[initMsg(), noOutput], [initMsg(), okResult(validTurn)]]);
+    await runner.pmTurn({ prompt: 'hi' });
+    expect(calls).toHaveLength(2);
+  });
+
+  it('output ผิด schema: ถาม agent เดิมซ้ำ 1 ครั้งด้วย resume', async () =&gt; {
+    const { runner, calls } = makeRunner([
+      [initMsg('s1'), okResult({ message: '', status: 'asking' })],
+      [initMsg('s2'), okResult(validTurn, 's2')],
+    ]);
+    const out = await runner.pmTurn({ prompt: 'hi' });
+
+    expect(out.sessionId).toBe('s2');
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.options.resume).toBe('s1');
+    expect(calls[1]!.prompt).toContain('schema');
+  });
+
+  it('output ผิด schema ซ้ำ: โยน RoleOutputError', async () =&gt; {
+    const bad = { message: '', status: 'asking' };
+    const { runner } = makeRunner([
+      [initMsg(), okResult(bad)],
+      [initMsg(), okResult(bad)],
+    ]);
+    await expect(runner.pmTurn({ prompt: 'hi' })).rejects.toBeInstanceOf(RoleOutputError);
+  });
+
+  it('planning ใช้ model ของ planning และ prompt มี requirements', async () =&gt; {
+    const { runner, calls } = makeRunner([[initMsg(), okResult(makeDesign())]]);
+    const design = await runner.plan({ requirements: makeRequirements() });
+
+    expect(design.tasks).toHaveLength(2);
+    expect(calls[0]!.options.model).toBe('claude-opus-5');
+    expect(calls[0]!.prompt).toContain('todo list');
+  });
+
+  it('worker เลือก role ตาม task.owner', async () =&gt; {
+    const result = { taskId: 'ui', summary: 'เสร็จ', filesChanged: [], howToVerify: '' };
+    const { runner, calls } = makeRunner([[initMsg(), okResult(result)]]);
+    await runner.work({
+      task: makeTask('ui', 'frontend'),
+      design: makeDesign(),
+      requirements: makeRequirements(),
+    });
+
+    expect(calls[0]!.options.tools).toContain('Edit');
+    expect(calls[0]!.options.systemPrompt).toContain('frontend worker');
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/runner.test.ts</code><br>
+     คาดหวัง: FAIL เพราะหา <code>../src/runner</code> ไม่เจอ</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p><code>src/runner.ts</code>:</p>
+<pre><code>import { query } from '@anthropic-ai/claude-agent-sdk';
+import { z } from 'zod';
+import { type RoleName, SKILLS_PLUGIN_DIR, type TeamConfig } from './config';
+import type { PlanInput, PmInput, QaInput, RoleRunner, WorkInput } from './deps';
+import { buildQueryOptions } from './options';
+import { buildPlanPrompt, buildQaPrompt, buildWorkPrompt, SYSTEM_PROMPTS } from './prompts';
+import {
+  type Design,
+  DesignSchema,
+  type PmTurn,
+  PmTurnSchema,
+  type QAReport,
+  QAReportSchema,
+  type WorkerResult,
+  WorkerResultSchema,
+  toJsonSchema,
+} from './schemas';
+
+export class RoleRunError extends Error {
+  constructor(
+    message: string,
+    readonly retryable: boolean,
+  ) {
+    super(message);
+    this.name = 'RoleRunError';
+  }
+}
+
+export class RoleOutputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RoleOutputError';
+  }
+}
+
+type QueryFn = typeof query;
+
+export interface SdkRunnerDeps {
+  projectDir: string;
+  config: TeamConfig;
+  skillsPluginDir?: string;
+  queryFn?: QueryFn;
+  sleep?: (ms: number) =&gt; Promise&lt;void&gt;;
+  log?: (line: string) =&gt; void;
+  debug?: boolean;
+  abortController?: AbortController;
+}
+
+const BACKOFF_MS = [1000, 3000];
+
+export class SdkRoleRunner implements RoleRunner {
+  private readonly queryFn: QueryFn;
+  private readonly sleep: (ms: number) =&gt; Promise&lt;void&gt;;
+  private readonly log: (line: string) =&gt; void;
+
+  constructor(private readonly deps: SdkRunnerDeps) {
+    this.queryFn = deps.queryFn ?? query;
+    this.sleep = deps.sleep ?? ((ms) =&gt; new Promise((resolve) =&gt; setTimeout(resolve, ms)));
+    this.log = deps.log ?? (() =&gt; {});
+  }
+
+  async pmTurn(input: PmInput): Promise&lt;{ turn: PmTurn; sessionId: string }&gt; {
+    const out = await this.runValidated('pm', input.prompt, PmTurnSchema, input.sessionId);
+    return { turn: out.data, sessionId: out.sessionId };
+  }
+
+  async plan(input: PlanInput): Promise&lt;Design&gt; {
+    return (await this.runValidated('planning', buildPlanPrompt(input), DesignSchema)).data;
+  }
+
+  async work(input: WorkInput): Promise&lt;WorkerResult&gt; {
+    return (await this.runValidated(input.task.owner, buildWorkPrompt(input), WorkerResultSchema)).data;
+  }
+
+  async qa(input: QaInput): Promise&lt;QAReport&gt; {
+    return (await this.runValidated('qa', buildQaPrompt(input), QAReportSchema)).data;
+  }
+
+  private async runValidated&lt;T&gt;(
+    role: RoleName,
+    prompt: string,
+    schema: z.ZodType&lt;T&gt;,
+    resume?: string,
+  ): Promise&lt;{ data: T; sessionId: string }&gt; {
+    const jsonSchema = toJsonSchema(schema);
+    const first = await this.withRetry(role, prompt, jsonSchema, resume);
+    const parsed = schema.safeParse(first.output);
+    if (parsed.success) return { data: parsed.data, sessionId: first.sessionId };
+
+    const reask =
+      `ผลลัพธ์ก่อนหน้าไม่ผ่านการตรวจ schema:\n${z.prettifyError(parsed.error)}\n` +
+      'ส่งผลลัพธ์ใหม่ให้ตรง schema';
+    const second = await this.withRetry(role, reask, jsonSchema, first.sessionId);
+    const reparsed = schema.safeParse(second.output);
+    if (reparsed.success) return { data: reparsed.data, sessionId: second.sessionId };
+    throw new RoleOutputError(`${role}: output ผิด schema ซ้ำ:\n${z.prettifyError(reparsed.error)}`);
+  }
+
+  private async withRetry(
+    role: RoleName,
+    prompt: string,
+    jsonSchema: Record&lt;string, unknown&gt;,
+    resume?: string,
+  ): Promise&lt;{ output: unknown; sessionId: string }&gt; {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.once(role, prompt, jsonSchema, resume);
+      } catch (e) {
+        const retryable = !(e instanceof RoleRunError) || e.retryable;
+        const aborted = this.deps.abortController?.signal.aborted ?? false;
+        if (aborted || !retryable || attempt &gt;= BACKOFF_MS.length) throw e;
+        const reason = e instanceof Error ? e.message : String(e);
+        this.log(`[${role}] ล้มเหลว (${reason}) — retry ครั้งที่ ${attempt + 1}`);
+        await this.sleep(BACKOFF_MS[attempt] ?? 3000);
+      }
+    }
+  }
+
+  private async once(
+    role: RoleName,
+    prompt: string,
+    jsonSchema: Record&lt;string, unknown&gt;,
+    resume?: string,
+  ): Promise&lt;{ output: unknown; sessionId: string }&gt; {
+    let sessionId = resume ?? '';
+    const stream = this.queryFn({
+      prompt,
+      options: buildQueryOptions({
+        role,
+        config: this.deps.config.roles[role],
+        projectDir: this.deps.projectDir,
+        skillsPluginDir: this.deps.skillsPluginDir ?? SKILLS_PLUGIN_DIR,
+        systemPrompt: SYSTEM_PROMPTS[role],
+        jsonSchema,
+        resume,
+        abortController: this.deps.abortController,
+      }),
+    });
+
+    for await (const msg of stream) {
+      if ('session_id' in msg &amp;&amp; typeof msg.session_id === 'string') sessionId = msg.session_id;
+      if (msg.type === 'system' &amp;&amp; msg.subtype === 'init' &amp;&amp; this.deps.debug) {
+        const init = msg as unknown as { skills?: unknown; plugins?: unknown; tools?: unknown };
+        this.log(
+          `[${role}] init skills=${JSON.stringify(init.skills)} plugins=${JSON.stringify(init.plugins)} tools=${JSON.stringify(init.tools)}`,
+        );
+      }
+      if (msg.type === 'result') {
+        if (msg.subtype === 'success' &amp;&amp; msg.structured_output !== undefined) {
+          return { output: msg.structured_output, sessionId };
+        }
+        throw new RoleRunError(`${role}: ${msg.subtype}`, !msg.subtype.startsWith('error_max_'));
+      }
+    }
+    throw new RoleRunError(`${role}: stream จบโดยไม่มี result`, true);
+  }
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/runner.test.ts</code><br>
+     คาดหวัง: 10 tests PASS</p>
+  <p>รัน: <code>npm run typecheck</code><br>
+     คาดหวัง: ไม่มี error ถ้า type ของ SDK (<code>msg.subtype</code>, <code>msg.structured_output</code>, <code>'session_id' in msg</code>) ไม่ตรงกับที่เขียน ให้เปิด type จริงใน <code>node_modules/@anthropic-ai/claude-agent-sdk</code> แล้วแก้ให้ตรงโดยคงพฤติกรรมเดิม</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/runner.ts tests/runner.test.ts
+git commit -m "feat: add SDK role runner with retry and schema re-ask"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 15: CLI + จุดเริ่มโปรแกรม</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/args.ts</code>, <code>src/cli.ts</code>, <code>src/index.ts</code></li>
+    <li>เทสต์: <code>tests/args.test.ts</code>, <code>tests/cli.test.ts</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>runTeam</code> (Task 13); <code>SdkRoleRunner</code> (Task 14); <code>FileStateStore</code> (Task 3); <code>loadConfig</code> (Task 5); <code>UserIO</code> (Task 9)</li>
+    <li>ส่งต่อ (Produces): <code>parseArgs(argv: string[]): { projectDir: string; resume: boolean }</code>, <code>parseChoice&lt;T extends string&gt;(input: string, options: readonly T[]): T | undefined</code>, <code>class CliIO implements UserIO { close(): void }</code>, และโปรแกรมที่รันด้วย <code>npm start -- --project &lt;โฟลเดอร์&gt; [--resume]</code></li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p><code>tests/args.test.ts</code>:</p>
+<pre><code>import * as path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { parseArgs } from '../src/args';
+
+describe('parseArgs', () =&gt; {
+  it('อ่าน --project และแปลงเป็นพาธเต็ม', () =&gt; {
+    expect(parseArgs(['--project', 'some/app'])).toEqual({
+      projectDir: path.resolve('some/app'),
+      resume: false,
+    });
+  });
+
+  it('อ่านรูปแบบ --project=พาธ', () =&gt; {
+    expect(parseArgs(['--project=some/app']).projectDir).toBe(path.resolve('some/app'));
+  });
+
+  it('อ่าน --resume', () =&gt; {
+    expect(parseArgs(['--project', 'a', '--resume']).resume).toBe(true);
+  });
+
+  it('ไม่ระบุ --project -&gt; error', () =&gt; {
+    expect(() =&gt; parseArgs([])).toThrow('--project');
+    expect(() =&gt; parseArgs(['--project'])).toThrow('--project');
+  });
+
+  it('อาร์กิวเมนต์ที่ไม่รู้จัก -&gt; error', () =&gt; {
+    expect(() =&gt; parseArgs(['--project', 'a', '--nope'])).toThrow('--nope');
+  });
+});</code></pre>
+  <p><code>tests/cli.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import { parseChoice } from '../src/cli';
+
+const options = ['confirm', 'revise'] as const;
+
+describe('parseChoice', () =&gt; {
+  it('เลือกด้วยหมายเลข (เริ่มที่ 1)', () =&gt; {
+    expect(parseChoice('1', options)).toBe('confirm');
+    expect(parseChoice('2', options)).toBe('revise');
+  });
+
+  it('เลือกด้วยชื่อตัวเลือก และตัดช่องว่าง', () =&gt; {
+    expect(parseChoice('  revise ', options)).toBe('revise');
+  });
+
+  it('ค่าที่ไม่ถูกต้อง -&gt; undefined', () =&gt; {
+    expect(parseChoice('0', options)).toBeUndefined();
+    expect(parseChoice('3', options)).toBeUndefined();
+    expect(parseChoice('maybe', options)).toBeUndefined();
+    expect(parseChoice('', options)).toBeUndefined();
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/args.test.ts tests/cli.test.ts</code><br>
+     คาดหวัง: FAIL เพราะหา <code>../src/args</code> และ <code>../src/cli</code> ไม่เจอ</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p><code>src/args.ts</code>:</p>
+<pre><code>import * as path from 'node:path';
+
+export interface CliArgs {
+  projectDir: string;
+  resume: boolean;
+}
+
+export function parseArgs(argv: string[]): CliArgs {
+  let projectDir: string | undefined;
+  let resume = false;
+  for (let i = 0; i &lt; argv.length; i++) {
+    const arg = argv[i] ?? '';
+    if (arg === '--resume') resume = true;
+    else if (arg === '--project') projectDir = argv[++i];
+    else if (arg.startsWith('--project=')) projectDir = arg.slice('--project='.length);
+    else throw new Error(`อาร์กิวเมนต์ไม่รู้จัก: ${arg}`);
+  }
+  if (!projectDir) throw new Error('ต้องระบุ --project &lt;โฟลเดอร์โปรเจกต์&gt;');
+  return { projectDir: path.resolve(projectDir), resume };
+}</code></pre>
+  <p><code>src/cli.ts</code>:</p>
+<pre><code>import { stdin, stdout } from 'node:process';
+import * as readline from 'node:readline/promises';
+import type { UserIO } from './deps';
+
+const LABELS: Record&lt;string, string&gt; = {
+  confirm: 'ยืนยัน',
+  revise: 'ขอแก้',
+  accept: 'รับงาน',
+  change: 'ขอแก้/เพิ่ม',
+  continue: 'ทำต่อ',
+  abort: 'ยกเลิก',
+};
+
+export function parseChoice&lt;T extends string&gt;(input: string, options: readonly T[]): T | undefined {
+  const text = input.trim();
+  const n = Number(text);
+  if (text !== '' &amp;&amp; Number.isInteger(n) &amp;&amp; n &gt;= 1 &amp;&amp; n &lt;= options.length) return options[n - 1];
+  return options.find((o) =&gt; o === text);
+}
+
+export class CliIO implements UserIO {
+  private readonly rl = readline.createInterface({ input: stdin, output: stdout });
+
+  say(text: string): void {
+    console.log(text);
+  }
+
+  async ask(prompt: string): Promise&lt;string&gt; {
+    return (await this.rl.question(prompt)).trim();
+  }
+
+  async choose&lt;T extends string&gt;(prompt: string, options: readonly T[]): Promise&lt;T&gt; {
+    const menu = options.map((o, i) =&gt; `${i + 1}) ${o}${LABELS[o] ? ` (${LABELS[o]})` : ''}`).join('   ');
+    for (;;) {
+      const answer = await this.ask(`${prompt}\n${menu}\n&gt; `);
+      const choice = parseChoice(answer, options);
+      if (choice) return choice;
+      this.say('กรุณาพิมพ์หมายเลขหรือชื่อตัวเลือกให้ตรง');
+    }
+  }
+
+  close(): void {
+    this.rl.close();
+  }
+}</code></pre>
+  <p><code>src/index.ts</code>:</p>
+<pre><code>import * as fs from 'node:fs';
+import { parseArgs } from './args';
+import { CliIO } from './cli';
+import { loadConfig } from './config';
+import { runTeam } from './orchestrator';
+import { SdkRoleRunner } from './runner';
+import { FileStateStore } from './state';
+
+async function main(): Promise&lt;void&gt; {
+  const args = parseArgs(process.argv.slice(2));
+  if (!fs.existsSync(args.projectDir) || !fs.statSync(args.projectDir).isDirectory()) {
+    console.error(`ไม่พบโฟลเดอร์โปรเจกต์: ${args.projectDir} (สร้างโฟลเดอร์ก่อนแล้วรันใหม่)`);
+    process.exit(1);
+  }
+
+  const config = loadConfig();
+  const abortController = new AbortController();
+  const io = new CliIO();
+  const runner = new SdkRoleRunner({
+    projectDir: args.projectDir,
+    config,
+    abortController,
+    log: (line) =&gt; io.say(line),
+    debug: process.env.AGENT_TEAM_DEBUG === '1',
+  });
+  const store = new FileStateStore(args.projectDir);
+
+  process.on('SIGINT', () =&gt; {
+    abortController.abort();
+    io.close();
+    console.log('\nหยุดแล้ว — state ถูกบันทึกไว้ใน .agent-team/ รันต่อด้วย --resume');
+    process.exit(130);
+  });
+
+  try {
+    const final = await runTeam({ runner, io, store, config }, { resume: args.resume });
+    console.log(
+      final.phase === 'DONE'
+        ? '\nเสร็จสมบูรณ์'
+        : '\nยกเลิกงานแล้ว (state ยังอยู่ใน .agent-team/)',
+    );
+  } catch (e) {
+    console.error(`\nหยุดเพราะ error: ${e instanceof Error ? e.message : String(e)}`);
+    console.error('รันต่อได้ด้วย --resume');
+    process.exitCode = 1;
+  } finally {
+    io.close();
+  }
+}
+
+main().catch((e) =&gt; {
+  console.error(e instanceof Error ? e.message : e);
+  process.exit(1);
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test, typecheck และทั้งชุด</strong></span></p>
+  <p>รัน: <code>npm test</code> และ <code>npm run typecheck</code><br>
+     คาดหวัง: ทุก test PASS (ทั้งโปรเจกต์) และ typecheck ไม่มี error</p>
+  <p>รัน: <code>npm start -- --project</code><br>
+     คาดหวัง: พิมพ์ <code>ต้องระบุ --project &lt;โฟลเดอร์โปรเจกต์&gt;</code> แล้วจบด้วย exit code 1 (ยังไม่เรียก model)</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/args.ts src/cli.ts src/index.ts tests/args.test.ts tests/cli.test.ts
+git commit -m "feat: add CLI entry point"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 16: README + ทดสอบ end-to-end จริง</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>README.md</code></li>
+    <li>ไฟล์ชั่วคราว (ลบหลังตรวจ): <code>skills/skills/hello-team/SKILL.md</code>, <code>agent-team.config.json</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): ทุก task ก่อนหน้า และ auth ที่ยืนยันแล้วใน Task 1</li>
+    <li>ส่งต่อ (Produces): เอกสารการใช้งาน และหลักฐานว่า flow จริงทำงานตาม design (PM คุย, Planning ออกแบบ, worker ทำ, QA ตรวจ, user ตรวจรับ), guard ทำงาน, การแยก config ส่วนตัวไม่รั่วเข้า agent, และ <code>--resume</code> ใช้ได้</li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน README</strong></span></p>
+  <p><code>README.md</code>:</p>
+<pre><code># agent-team
+
+ทีม agent 5 บทบาท (PM, Planning, Worker frontend, Worker backend, QA) บน Claude Agent SDK
+
+## ข้อกำหนดเบื้องต้น
+- Node.js 20 ขึ้นไป
+- credential ของ Anthropic ที่ SDK ใช้ได้ (ตรวจด้วย `npm run smoke:auth`)
+  ถ้าต้องใช้ API key ให้ตั้งใน terminal เอง: `$env:ANTHROPIC_API_KEY = "sk-ant-..."`
+
+## วิธีใช้
+    npm install
+    npm start -- --project C:/path/to/app          # โฟลเดอร์ต้องมีอยู่แล้ว (ว่างได้)
+    npm start -- --project C:/path/to/app --resume  # ทำต่อจากที่หยุดไว้
+
+## flow
+1. REQUIREMENTS: คุยกับ PM (ถามตอบ/เสนอไอเดีย) จนคุณกด confirm requirements
+2. DESIGN: Planning ออกแบบและแตก task (frontend / backend)
+3. REVIEW: PM สรุปแบบให้คุณ confirm หรือขอแก้ (ขอแก้ = วนกลับข้อ 1-3)
+4. BUILD: worker ทำทีละ task ตามลำดับ dependency แล้ว QA ตรวจ
+   QA ไม่ผ่านให้ worker แก้ใหม่ สูงสุด 5 รอบต่อ task ถ้าครบแล้วไม่ผ่าน PM จะถามคุณว่า
+   continue (ทำต่ออีก 5 รอบ) / accept (รับตามสภาพ) / abort
+5. DELIVER: PM ส่งมอบ ให้คุณตรวจรับ (accept) หรือขอแก้/เพิ่ม (change)
+
+## state
+บันทึกใน `&lt;project&gt;/.agent-team/` (`state.json`, `requirements.json`, `design.json`,
+`reports/&lt;taskId&gt;-round&lt;n&gt;.json`) แนะนำให้เพิ่ม `.agent-team/` ใน `.gitignore` ของโปรเจกต์นั้น
+ถ้าใช้ `--resume` ระหว่างคุยกับ PM ให้พิมพ์ข้อความต่อจากบทสนทนาเดิม
+
+## ตั้งค่า (ไม่บังคับ)
+สร้าง `agent-team.config.json` ที่ราก repo นี้ ตัวอย่าง:
+
+    { "maxQaRounds": 5, "roles": { "planning": { "model": "claude-opus-5" },
+      "frontend": { "skills": ["team:frontend-conventions"] } } }
+
+ปรับได้: model, maxTurns, maxBudgetUsd, skills ต่อ role (เครื่องมือและสิทธิ์แก้ในโค้ด `src/config.ts`)
+
+## Skills
+วาง skill ที่ `skills/skills/&lt;ชื่อ&gt;/SKILL.md` แล้วเปิดให้ role ผ่าน config ด้านบน (ชื่อ `team:&lt;ชื่อ&gt;`)
+ทุก role ค่าเริ่มต้นไม่มี skill และไม่โหลด skill/hook/CLAUDE.md ส่วนตัวใน `~/.claude`
+
+## ความปลอดภัยและข้อจำกัด
+- เขียนไฟล์ได้เฉพาะในโฟลเดอร์โปรเจกต์ ห้ามแตะ `.git`, `.agent-team`, `.claude`
+- QA เขียนได้เฉพาะไฟล์ test, PM/Planning อ่านอย่างเดียว
+- git ใช้ได้เฉพาะคำสั่งอ่าน (agent ไม่ commit/push ให้)
+- Bash ถูกจำกัดด้วย allowlist คำสั่ง + pattern ที่บล็อก ไม่ใช่ sandbox ระดับ OS
+- QA ไม่มี browser: ฝั่ง frontend ตรวจได้แค่ build/lint/unit test/review โค้ด</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: เตรียมโปรเจกต์ตัวอย่างและรันจริง</strong></span></p>
+  <p>สร้างโฟลเดอร์ตัวอย่างนอก repo นี้ (ห้ามอยู่ใน <code>agent-team</code>):</p>
+<pre><code>mkdir C:/work/my/sample-todo
+git -C C:/work/my/sample-todo init</code></pre>
+  <p>รัน (PowerShell) โดยเปิดโหมด debug เพื่อดูสิ่งที่แต่ละ role โหลด:</p>
+<pre><code>$env:AGENT_TEAM_DEBUG = "1"
+npm start -- --project C:/work/my/sample-todo</code></pre>
+  <p>ตอบตามนี้ เมื่อ PM ถามหา requirement:</p>
+<pre><code>อยากได้ todo list เล็ก ๆ backend เป็น Express เก็บใน memory มี GET/POST/DELETE /todos และหน้าเว็บ HTML ธรรมดา เพิ่ม/ลบ/แสดงรายการได้</code></pre>
+  <p>คาดหวัง (ตรวจตามลำดับ):</p>
+  <ul>
+    <li>PM ถามข้อที่ไม่ชัดทีละข้อเป็นภาษาไทย แล้วเสนอ requirements ให้เลือก <code>confirm</code> / <code>revise</code></li>
+    <li>Planning ออกแบบ แล้ว PM สรุป design พร้อมรายการ task ที่มีแท็ก <code>[backend]</code> / <code>[frontend]</code> ให้เลือก <code>confirm</code> / <code>revise</code></li>
+    <li>หลัง confirm ระบบพิมพ์ <code>[backend] ทำ task ...</code> แล้ว <code>[QA] ...: PASS/FAIL</code> ทีละ task</li>
+    <li>ตอนจบ PM สรุปส่งมอบ ให้เลือก <code>accept</code> / <code>change</code> เลือก <code>accept</code> แล้วเห็น <code>เสร็จสมบูรณ์</code></li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: ตรวจผลลัพธ์และสิทธิ์</strong></span></p>
+  <p>ตรวจ state และรายงาน:</p>
+<pre><code>Get-Content C:/work/my/sample-todo/.agent-team/state.json | Select-String '"phase"'
+Get-ChildItem C:/work/my/sample-todo/.agent-team, C:/work/my/sample-todo/.agent-team/reports</code></pre>
+  <p>คาดหวัง: <code>"phase": "DONE"</code> มี <code>requirements.json</code>, <code>design.json</code> และไฟล์ <code>reports/&lt;taskId&gt;-round&lt;n&gt;.json</code> อย่างน้อย 1 ไฟล์ต่อ task</p>
+  <p>ตรวจว่า guard ทำงาน (ไม่มีอะไรหลุดออกนอกโปรเจกต์ และ agent ไม่ commit):</p>
+<pre><code>git -C C:/work/my/agent-team status --short
+git -C C:/work/my/sample-todo log --oneline</code></pre>
+  <p>คาดหวัง: คำสั่งแรกไม่แสดงไฟล์ที่ถูกแก้ระหว่างรัน (เห็นเฉพาะ README.md ที่ยังไม่ commit ถ้ามี) คำสั่งที่สองแจ้งว่ายังไม่มี commit</p>
+  <p>ตรวจว่าแอปที่ทีมสร้างใช้ได้จริง:</p>
+<pre><code>npm --prefix C:/work/my/sample-todo test</code></pre>
+  <p>คาดหวัง: test ที่ QA/worker เขียนไว้ PASS (ถ้าโปรเจกต์ยังไม่ได้ติดตั้ง dependency ให้รัน <code>npm --prefix C:/work/my/sample-todo install</code> ก่อน)</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: ตรวจการแยก config ส่วนตัวของ user</strong></span></p>
+  <p>ดูบรรทัด debug <code>init</code> ของแต่ละ role ที่พิมพ์ตอนรัน (ขึ้นต้นด้วย <code>[pm] init</code>, <code>[planning] init</code>, <code>[backend] init</code>, ...)</p>
+  <p>คาดหวัง: <code>plugins=[]</code> และรายการ <code>skills</code> ไม่มีชื่อขึ้นต้นด้วย <code>tb-</code> หรือ <code>superpowers:</code> หรือ skill ส่วนตัวอื่นของ user (มีได้เฉพาะ skill ที่ Claude Code แถมมาเอง เช่น <code>code-review</code>) และ PM/Planning ไม่ได้อ้างถึง skill หรือ hook ส่วนตัวของ user</p>
+  <p>ถ้ามี skill/plugin ส่วนตัวรั่วเข้ามา ให้หยุดและแจ้ง user ห้ามประกาศว่าเสร็จ เพราะ design กำหนดให้ทีมแยกจาก <code>~/.claude</code> ต้องปรับการแยก config ก่อนใช้งานจริง</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: ตรวจ Ctrl+C และ --resume</strong></span></p>
+  <p>เริ่มรอบใหม่ในโฟลเดอร์ใหม่ (<code>mkdir C:/work/my/sample-resume</code> แล้ว <code>git -C C:/work/my/sample-resume init</code>):</p>
+<pre><code>npm start -- --project C:/work/my/sample-resume</code></pre>
+  <p>พิมพ์ requirement สั้น ๆ แล้วกด Ctrl+C ทันทีที่ PM ถามคำถามแรก จากนั้นรัน:</p>
+<pre><code>npm start -- --project C:/work/my/sample-resume --resume</code></pre>
+  <p>คาดหวัง: หลัง Ctrl+C เห็น <code>หยุดแล้ว — state ถูกบันทึกไว้ ...</code> และตอนรันด้วย <code>--resume</code> ระบบขอให้พิมพ์ข้อความถึง PM เพื่อคุยต่อ PM ตอบต่อจากบทสนทนาเดิม</p>
+  <p>รันซ้ำโดยไม่ใส่ <code>--resume</code> ตอนยังมีงานค้าง<br>
+     คาดหวัง: หยุดพร้อมข้อความบอกให้ใช้ <code>--resume</code></p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: ตรวจการเปิด skill ให้ role (ชั่วคราว)</strong></span></p>
+  <p>สร้าง skill ทดสอบ <code>skills/skills/hello-team/SKILL.md</code>:</p>
+<pre><code>---
+name: hello-team
+description: Skill ทดสอบว่า plugin ของทีมโหลดได้
+---
+
+ตอบว่า "hello-team loaded" เมื่อถูกเรียก</code></pre>
+  <p>สร้าง <code>agent-team.config.json</code>:</p>
+<pre><code>{ "roles": { "frontend": { "skills": ["team:hello-team"] } } }</code></pre>
+  <p>รัน <code>npm start -- --project C:/work/my/sample-todo</code> ใหม่ (เลือกให้ผ่านจนถึงเฟส BUILD ที่มี task frontend ในงานใหม่ของ sample หรือใช้โฟลเดอร์ใหม่) แล้วดูบรรทัด <code>[frontend] init</code><br>
+     คาดหวัง: <code>plugins</code> มีรายการชื่อ <code>team</code> และ <code>skills</code> มี <code>team:hello-team</code> ส่วนบรรทัดของ role อื่นยังเป็น <code>plugins=[]</code></p>
+  <p>จากนั้นลบไฟล์ชั่วคราวทั้งสอง:</p>
+<pre><code>Remove-Item -Recurse skills/skills, agent-team.config.json</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: รันทั้งชุดครั้งสุดท้ายและ Commit</strong></span></p>
+  <p>รัน: <code>npm test</code> และ <code>npm run typecheck</code><br>
+     คาดหวัง: ทุก test PASS และ typecheck ไม่มี error</p>
+<pre><code>git add README.md
+git commit -m "docs: add README and verify end-to-end run"</code></pre>
+</div>
+
+</body>
+</html>
