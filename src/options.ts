@@ -21,7 +21,7 @@ export function buildQueryOptions(input: BuildOptionsInput): Options {
     cwd: projectDir,
     model: config.model,
     systemPrompt: input.systemPrompt,
-    tools: useSkills ? [...config.tools, 'Skill'] : [...config.tools],
+    tools: useSkills ? [...new Set([...config.tools, 'Skill'])] : [...config.tools],
     allowedTools: [...config.allowedTools],
     permissionMode: 'dontAsk',
     settingSources: ['project'],
