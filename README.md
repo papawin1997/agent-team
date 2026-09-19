@@ -11,7 +11,7 @@
     npm install
     npm start -- --project C:/path/to/app          # โฟลเดอร์ต้องมีอยู่แล้ว (ว่างได้)
     npm start -- --project C:/path/to/app --resume  # ทำต่อจากที่หยุดไว้
-Ctrl+C หยุดได้ทุกเมื่อ state จะถูกบันทึกไว้ แล้วรันต่อด้วย --resume (stdin ที่ถูกปิด/pipe จะหยุดพร้อมข้อความ EOF ไม่ค้าง)
+Ctrl+C หยุดได้ทุกเมื่อ: state ถูกบันทึกทุกครั้งที่เปลี่ยน phase/รอบ จึงเสียอย่างมากแค่รอบที่กำลังทำอยู่ แล้วรันต่อด้วย --resume (stdin ที่ถูกปิด/pipe จะหยุดพร้อมข้อความ EOF ไม่ค้าง)
 
 ## flow
 1. REQUIREMENTS: คุยกับ PM (ถามตอบ/เสนอไอเดีย) จนคุณกด confirm requirements
@@ -42,6 +42,10 @@ Ctrl+C หยุดได้ทุกเมื่อ state จะถูกบั
 ## ความปลอดภัยและข้อจำกัด
 - เขียนไฟล์ได้เฉพาะในโฟลเดอร์โปรเจกต์ ห้ามแตะ `.git`, `.agent-team`, `.claude`
 - QA เขียนได้เฉพาะไฟล์ test, PM/Planning อ่านอย่างเดียว
-- git ใช้ได้เฉพาะคำสั่งอ่าน (agent ไม่ commit/push ให้)
-- Bash ถูกจำกัดด้วย allowlist คำสั่ง (dontAsk) + guard ที่ตรวจข้อความคำสั่งแบบ lexical เป็นด่านเสริมแบบ best-effort ไม่ใช่ sandbox ระดับ OS: ยังมีรูปแบบคำสั่งแปลก ๆ บางแบบที่หลุดได้ (เช่น การซ้อนคำสั่งในเครื่องหมายคำพูดภายใน $(...)) จึงควรรันกับโฟลเดอร์โปรเจกต์ที่ commit/สำรองไว้ก่อนเสมอ
+- git: agent รันได้เฉพาะคำสั่งอ่านอย่างเดียว (status, diff, log, show, ls-files, rev-parse, blame) คำสั่งอื่นเช่น commit/push/reset ถูกปฏิเสธ (agent ไม่ commit/push ให้)
+- Bash ถูกจำกัดด้วย allowlist คำสั่ง (dontAsk) + guard ที่ตรวจข้อความคำสั่งแบบ lexical เป็นด่านเสริมแบบ best-effort ไม่ใช่ sandbox ระดับ OS
+- `node -e` / `python -c` ถูกอนุญาตไว้ล่วงหน้า (จำเป็นสำหรับ build/test) จึงทำได้ทุกอย่างที่ผู้ใช้ OS ทำได้ รวมถึงเขียนไฟล์นอกโฟลเดอร์โปรเจกต์หรือแก้ `.git` และ guard มองไม่เห็นสิ่งที่อยู่ข้างใน จึงควรรันกับโปรเจกต์ที่ commit/สำรองไว้ก่อนเสมอ
+- `--project` จะโหลด `.claude/settings.json` ของโปรเจกต์นั้น (รวม hooks/permissions) ใช้กับโฟลเดอร์ที่ไว้ใจได้เท่านั้น และห้ามชี้ `--project` มาที่ repo agent-team นี้เอง
+- environment ทั้งหมดของ shell (รวม secret) ถูกส่งต่อให้ subprocess ของ agent ควรรันจาก shell ที่สะอาด
 - QA ไม่มี browser: ฝั่ง frontend ตรวจได้แค่ build/lint/unit test/review โค้ด
+- ตั้ง `AGENT_TEAM_DEBUG=1` เพื่อให้พิมพ์ init ของแต่ละ role (skills/plugins/tools)
