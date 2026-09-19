@@ -39,6 +39,9 @@ export async function runTeam(deps: Deps, opts: { resume: boolean }): Promise<St
       case 'DELIVER':
         await runDeliver(deps, state);
         break;
+      default:
+        const unreachable: never = state.phase;
+        throw new Error(`phase ไม่รู้จักใน state: ${String(unreachable)}`);
     }
   }
   return state;

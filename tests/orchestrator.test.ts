@@ -3,12 +3,13 @@ import { runTeam } from '../src/orchestrator';
 import {
   asking,
   buildState,
+  failReport,
   makeDesign,
   makeTask,
   passReport,
   proposal,
 } from './helpers/builders';
-import { makeDeps } from './helpers/fakes';
+import { makeDeps, ScriptedIO } from './helpers/fakes';
 
 const roles = (calls: { role: string }[]) => calls.map((c) => c.role);
 
@@ -70,6 +71,10 @@ describe('runTeam', () => {
     expect(final.phase).toBe('DONE');
     expect(runner.calls.filter((c) => c.role === 'backend')).toHaveLength(1);
     expect(runner.calls.filter((c) => c.role === 'frontend')).toHaveLength(2);
+    expect(final.progress.api?.rounds).toBe(1);
+    const pmCalls = runner.calls.filter((c) => c.role === 'pm');
+    const secondReqPrompt = (pmCalls[3]?.input as any)?.prompt ?? '';
+    expect(secondReqPrompt).toContain('ปรับหน้าตา');
   });
 
   it('user ยกเลิกตอน escalate -> ABORTED', async () => {
@@ -124,5 +129,124 @@ describe('runTeam', () => {
     const { deps, store } = makeDeps({}, []);
     store.state = buildState();
     await expect(runTeam(deps, { resume: false })).rejects.toThrow('--resume');
+  });
+
+  it.each([
+    { existingPhase: 'DONE' as const, staleData: true },
+    { existingPhase: 'ABORTED' as const, staleData: true },
+  ])(
+    'เริ่มใหม่จากสถานะ $existingPhase ด้วย resume: false -> ทำความสะอาดข้อมูลเก่า',
+    async ({ existingPhase }) => {
+      const staleState = buildState();
+      staleState.phase = existingPhase;
+      staleState.requirements = {
+        goal: 'stale goal',
+        features: ['stale'],
+        constraints: [],
+        outOfScope: [],
+        acceptanceCriteria: [],
+      };
+      staleState.pmSessionId = 'old-session';
+      staleState.pendingPrompt = 'old prompt';
+
+      const { deps, runner, store } = makeDeps(
+        {
+          pm: [proposal(), asking('สรุป design'), asking('สรุปส่งมอบ')],
+          plans: [makeDesign()],
+          qa: [passReport('api'), passReport('ui')],
+        },
+        ['อยากได้ todo', 'confirm', 'confirm', 'accept'],
+      );
+      store.state = staleState;
+
+      const final = await runTeam(deps, { resume: false });
+
+      expect(final.phase).toBe('DONE');
+      expect(final.requirements?.goal).toBe('todo list');
+      expect(final.pmSessionId).not.toBe('old-session');
+      expect(final.pendingPrompt).toBeUndefined();
+      const firstPmCall = runner.calls.find((c) => c.role === 'pm');
+      const firstPrompt = (firstPmCall?.input as any)?.prompt ?? '';
+      expect(firstPrompt).not.toContain('stale goal');
+    },
+  );
+
+  it('initial state is saved when first ask throws', async () => {
+    const { deps, store } = makeDeps({}, []);
+    const io = new ScriptedIO([]);
+    deps.io = io;
+
+    await expect(runTeam(deps, { resume: false })).rejects.toThrow();
+    expect(store.state?.phase).toBe('REQUIREMENTS');
+    expect(store.saves).toBeGreaterThanOrEqual(1);
+  });
+
+  it('unknown phase throws exhaustiveness guard error', async () => {
+    const { deps, store } = makeDeps({}, []);
+    const bogusState = buildState();
+    (bogusState as any).phase = 'BOGUS';
+    store.state = bogusState;
+
+    await expect(runTeam(deps, { resume: true })).rejects.toThrow('BOGUS');
+  });
+
+  it('resume จาก DELIVER phase: รับงาน -> DONE', async () => {
+    const { deps, runner, store } = makeDeps(
+      { pm: [asking('สรุปส่งมอบ')] },
+      ['accept'],
+    );
+    const saved = buildState();
+    saved.phase = 'DELIVER';
+    saved.progress.api = { rounds: 1, maxRounds: 5, done: true, acceptedWithIssues: false };
+    saved.progress.ui = { rounds: 1, maxRounds: 5, done: true, acceptedWithIssues: false };
+    store.state = saved;
+
+    const final = await runTeam(deps, { resume: true });
+    expect(final.phase).toBe('DONE');
+    expect(roles(runner.calls)).toEqual(['pm']);
+  });
+
+  it('resume จาก REQUIREMENTS ด้วย pendingPrompt: ใช้ pendingPrompt ในการออกแบบใหม่', async () => {
+    const { deps: origDeps, runner } = makeDeps(
+      {
+        pm: [proposal(), asking('design'), asking('ส่งมอบ')],
+        plans: [makeDesign()],
+        qa: [passReport('api'), passReport('ui')],
+      },
+      ['confirm', 'confirm', 'accept'],
+    );
+
+    const saved = buildState();
+    saved.phase = 'REQUIREMENTS';
+    saved.requirements = {
+      goal: 'todo list',
+      features: ['เพิ่ม/ลบ todo'],
+      constraints: [],
+      outOfScope: [],
+      acceptanceCriteria: ['เพิ่ม todo แล้วเห็นในรายการ'],
+    };
+    saved.pendingPrompt = 'แก้ให้มี login';
+    // Clear progress to start fresh from REQUIREMENTS
+    saved.progress = {};
+
+    const memStore = { state: undefined as any };
+    const deps = {
+      runner: runner,
+      io: origDeps.io,
+      store: {
+        load: async () => saved,
+        save: async (s: any) => {
+          memStore.state = s;
+        },
+        saveArtifact: async () => {},
+      },
+      config: origDeps.config,
+    };
+
+    const final = await runTeam(deps as any, { resume: true });
+    expect(final.phase).toBe('DONE');
+    const pmCalls = runner.calls.filter((c) => c.role === 'pm');
+    const firstReqPrompt = (pmCalls[0]?.input as any)?.prompt ?? '';
+    expect(firstReqPrompt).toContain('แก้ให้มี login');
   });
 });
