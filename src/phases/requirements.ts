@@ -1,4 +1,5 @@
 import type { Deps } from '../deps';
+import { askNonEmpty } from '../io-util';
 import { formatRequirements } from '../format';
 import type { State } from '../state';
 
@@ -8,7 +9,7 @@ export async function runRequirements(deps: Deps, state: State): Promise<void> {
   const opening = state.pmSessionId
     ? 'พิมพ์ข้อความถึง PM เพื่อคุยต่อ\n> '
     : 'คุณอยากได้ระบบอะไร? เล่า requirement ให้ PM ฟังได้เลย\n> ';
-  let prompt = state.pendingPrompt ?? (await io.ask(opening));
+  let prompt = state.pendingPrompt ?? (await askNonEmpty(io, opening));
   if (state.requirements) {
     prompt = `requirements ปัจจุบัน:\n${JSON.stringify(state.requirements)}\n\nคำขอแก้ไขจาก user: ${prompt}`;
   }
@@ -30,9 +31,9 @@ export async function runRequirements(deps: Deps, state: State): Promise<void> {
         await store.save(state);
         return;
       }
-      prompt = await io.ask('อยากปรับอะไร?\n> ');
+      prompt = await askNonEmpty(io, 'อยากปรับอะไร?\n> ');
       continue;
     }
-    prompt = await io.ask('> ');
+    prompt = await askNonEmpty(io, '> ');
   }
 }

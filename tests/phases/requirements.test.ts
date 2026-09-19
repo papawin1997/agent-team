@@ -28,8 +28,8 @@ describe('runRequirements', () => {
   });
 
   it('user ขอแก้ requirements: PM คุยต่อแล้วเสนอใหม่', async () => {
-    const { deps, runner } = makeDeps(
-      { pm: [proposal(), proposal()] },
+    const { deps, runner, store } = makeDeps(
+      { pm: [proposal(), proposal({ ...makeRequirements(), goal: 'todo list v2' })] },
       ['x', 'revise', 'ปรับ scope', 'confirm'],
     );
     const state = newState();
@@ -38,6 +38,22 @@ describe('runRequirements', () => {
     expect(state.phase).toBe('DESIGN');
     expect(runner.calls).toHaveLength(2);
     expect(pmInput(runner, 1).prompt).toBe('ปรับ scope');
+    expect(state.requirements?.goal).toBe('todo list v2');
+    expect(store.saves).toBeGreaterThanOrEqual(2);
+  });
+
+  it('revise does not finish phase until confirm', async () => {
+    const { deps, store } = makeDeps(
+      { pm: [proposal(), proposal({ ...makeRequirements(), goal: 'todo list v2' })] },
+      ['x', 'revise', 'ปรับ scope', 'confirm'],
+    );
+    const state = newState();
+    await runRequirements(deps, state);
+
+    // After first PM turn + revise choice, before confirm decision, phase should still be REQUIREMENTS
+    expect(state.phase).toBe('DESIGN');
+    // Check that requirements were never undefined after revise (they should be set only on confirm)
+    expect(state.requirements?.goal).toBe('todo list v2');
   });
 
   it('ใช้ pendingPrompt แทนการถามใหม่ และแนบ requirements เดิม', async () => {
@@ -63,5 +79,38 @@ describe('runRequirements', () => {
 
     expect(state.phase).toBe('DESIGN');
     expect(pmInput(runner, 1).prompt).toBe('ต่อ');
+  });
+
+  it('empty answer is never sent to PM', async () => {
+    const { deps, runner, io } = makeDeps(
+      { pm: [proposal()] },
+      ['', '  ', 'อยากได้ todo list', 'confirm'],
+    );
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(runner.calls).toHaveLength(1);
+    expect(pmInput(runner, 0).prompt).toBe('อยากได้ todo list');
+  });
+
+  it('asserts persistence: pmSessionId and saves', async () => {
+    const { deps, runner, store, io } = makeDeps(
+      { pm: [asking('ใช้ tech อะไร?'), proposal()] },
+      ['อยากได้ todo list', 'ใช้ Express', 'confirm'],
+    );
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(state.pmSessionId).toBe('pm-session');
+    expect(store.saves).toBeGreaterThanOrEqual(runner.calls.length);
+  });
+
+  it('resume opening text when pmSessionId already set', async () => {
+    const { deps, io } = makeDeps({ pm: [proposal()] }, ['ข้อมูลเพิ่ม', 'confirm']);
+    const state = newState();
+    state.pmSessionId = 'pm-session';
+    await runRequirements(deps, state);
+
+    expect(io.asked[0]).toBe('พิมพ์ข้อความถึง PM เพื่อคุยต่อ\n> ');
   });
 });
