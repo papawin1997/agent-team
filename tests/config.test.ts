@@ -30,6 +30,44 @@ describe('DEFAULT_CONFIG', () => {
     }
   });
 
+  it('worker และ qa อนุญาต git แบบอ่านอย่างเดียว', () => {
+    for (const role of ['frontend', 'backend', 'qa'] as const) {
+      expect(DEFAULT_CONFIG.roles[role].allowedTools).toEqual(
+        expect.arrayContaining([
+          'Bash(git status)',
+          'Bash(git status *)',
+          'Bash(git diff)',
+          'Bash(git diff *)',
+          'Bash(git log *)',
+          'Bash(git show *)',
+          'Bash(git ls-files *)',
+          'Bash(git rev-parse *)',
+          'Bash(git blame *)',
+        ]),
+      );
+    }
+  });
+
+  it('allowedTools ไม่มี git ที่เขียนได้ (push/commit/reset ฯลฯ) และไม่มี Bash(git *)', () => {
+    const readOnly = ['status', 'diff', 'log', 'show', 'ls-files', 'rev-parse', 'blame'];
+    for (const role of ROLE_NAMES) {
+      for (const entry of DEFAULT_CONFIG.roles[role].allowedTools) {
+        const m = /^Bash\(git ([^ )]*)/.exec(entry);
+        if (entry.startsWith('Bash(git')) {
+          expect(m, entry).not.toBeNull();
+          expect(readOnly, entry).toContain(m![1]);
+        }
+      }
+    }
+    expect(DEFAULT_CONFIG.roles.backend.allowedTools).not.toContain('Bash(git *)');
+  });
+
+  it('pm กับ planning ไม่มี Bash ใน allowedTools', () => {
+    for (const role of ['pm', 'planning'] as const) {
+      expect(DEFAULT_CONFIG.roles[role].allowedTools).toEqual(['Read', 'Glob', 'Grep']);
+    }
+  });
+
   it('planning ใช้ claude-opus-5 ส่วน role อื่นใช้ claude-sonnet-5', () => {
     expect(DEFAULT_CONFIG.roles.planning.model).toBe('claude-opus-5');
     expect(DEFAULT_CONFIG.roles.qa.model).toBe('claude-sonnet-5');

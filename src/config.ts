@@ -43,7 +43,9 @@ const BASH_ALLOW = [
   'Bash(pytest *)',
   'Bash(pip *)',
 ];
-const WORK_ALLOWED = [...READ_TOOLS, 'Edit', 'Write', ...BASH_ALLOW];
+const GIT_READ_ONLY = ['status', 'diff', 'log', 'show', 'ls-files', 'rev-parse', 'blame'];
+const GIT_ALLOW = GIT_READ_ONLY.flatMap((sub) => [`Bash(git ${sub})`, `Bash(git ${sub} *)`]);
+const WORK_ALLOWED = [...READ_TOOLS, 'Edit', 'Write', ...BASH_ALLOW, ...GIT_ALLOW];
 
 const SONNET = 'claude-sonnet-5';
 const OPUS = 'claude-opus-5';
