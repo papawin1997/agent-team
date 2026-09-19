@@ -63,7 +63,10 @@ export class ScriptedIO implements UserIO {
 export interface FakeScript {
   pm?: PmTurn[];
   plans?: Design[];
-  qa?: QAReport[];
+  /** ต่อ call ของ work: Error = โยน error นั้น, undefined/หมด = คืนผลปกติ */
+  work?: Array<Error | undefined>;
+  /** ต่อ call ของ qa: Error = โยน error นั้น */
+  qa?: Array<QAReport | Error>;
 }
 
 export interface RecordedCall {
@@ -75,11 +78,13 @@ export class FakeRunner implements RoleRunner {
   calls: RecordedCall[] = [];
   private pm: PmTurn[];
   private plans: Design[];
-  private qaReports: QAReport[];
+  private workScript: Array<Error | undefined>;
+  private qaReports: Array<QAReport | Error>;
 
   constructor(script: FakeScript) {
     this.pm = [...(script.pm ?? [])];
     this.plans = [...(script.plans ?? [])];
+    this.workScript = [...(script.work ?? [])];
     this.qaReports = [...(script.qa ?? [])];
   }
 
@@ -99,6 +104,8 @@ export class FakeRunner implements RoleRunner {
 
   async work(input: WorkInput): Promise<WorkerResult> {
     this.calls.push({ role: input.task.owner, input });
+    const scripted = this.workScript.shift();
+    if (scripted) throw scripted;
     return {
       taskId: input.task.id,
       summary: `ทำ ${input.task.id}`,
@@ -111,6 +118,7 @@ export class FakeRunner implements RoleRunner {
     this.calls.push({ role: 'qa', input });
     const report = this.qaReports.shift();
     if (!report) throw new Error('FakeRunner: qa script หมด');
+    if (report instanceof Error) throw report;
     return report;
   }
 }

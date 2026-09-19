@@ -2,6 +2,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { type RoleName, SKILLS_PLUGIN_DIR, type TeamConfig } from './config';
 import type { PlanInput, PmInput, QaInput, RoleRunner, WorkInput } from './deps';
+import { RoleOutputError, RoleRunError } from './errors';
 import { buildQueryOptions } from './options';
 import { buildPlanPrompt, buildQaPrompt, buildWorkPrompt, SYSTEM_PROMPTS } from './prompts';
 import {
@@ -16,22 +17,7 @@ import {
   toJsonSchema,
 } from './schemas';
 
-export class RoleRunError extends Error {
-  constructor(
-    message: string,
-    readonly retryable: boolean,
-  ) {
-    super(message);
-    this.name = 'RoleRunError';
-  }
-}
-
-export class RoleOutputError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'RoleOutputError';
-  }
-}
+export { RoleOutputError, RoleRunError } from './errors';
 
 type QueryFn = typeof query;
 
@@ -149,7 +135,11 @@ export class SdkRoleRunner implements RoleRunner {
         if (msg.subtype === 'success' && msg.structured_output !== undefined) {
           return { output: msg.structured_output, sessionId };
         }
-        throw new RoleRunError(`${role}: ${msg.subtype}`, !msg.subtype.startsWith('error_max_'));
+        throw new RoleRunError(
+          `${role}: ${msg.subtype}`,
+          !msg.subtype.startsWith('error_max_'),
+          msg.subtype,
+        );
       }
     }
     throw new RoleRunError(`${role}: stream จบโดยไม่มี result`, true);

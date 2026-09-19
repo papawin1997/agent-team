@@ -1,6 +1,7 @@
 import type { Deps } from '../deps';
 import { isPass, orderTasks } from '../domain';
-import type { Design, Requirements, Task } from '../schemas';
+import { RoleRunError } from '../errors';
+import type { Design, QAReport, Requirements, Task } from '../schemas';
 import type { State, TaskProgress } from '../state';
 
 type Outcome = 'done' | 'aborted';
@@ -8,6 +9,53 @@ type Decision = 'continue' | 'accept' | 'abort';
 interface BuildContext {
   design: Design;
   requirements: Requirements;
+}
+
+const LIMIT_SUBTYPES: readonly string[] = ['error_max_turns', 'error_max_budget_usd'];
+
+type Step = 'work' | 'qa';
+
+function limitReport(task: Task, step: Step, subtype: string): QAReport {
+  const who = step === 'work' ? `worker ${task.owner} (ขั้นทำงาน)` : 'QA (ขั้นตรวจงาน)';
+  return {
+    taskId: task.id,
+    verdict: 'FAIL',
+    checks: [],
+    issues: [
+      {
+        severity: 'blocker',
+        file: '',
+        description: `${who} ชนขีดจำกัดของ SDK (${subtype}) จึงยังไม่ได้ผลลัพธ์ของรอบนี้`,
+        suggestedFix:
+          'ลดขนาดงานของ task นี้ หรือเพิ่ม maxTurns/maxBudgetUsd ของ role ใน agent-team.config.json',
+      },
+    ],
+    testsAdded: [],
+  };
+}
+
+async function runRound(
+  deps: Deps,
+  ctx: BuildContext,
+  task: Task,
+  progress: TaskProgress,
+): Promise<{ report: QAReport; limitHit: boolean }> {
+  const { runner, io } = deps;
+  let step: Step = 'work';
+  try {
+    const result = await runner.work({ task, ...ctx, previousReport: progress.lastReport });
+    step = 'qa';
+    return { report: await runner.qa({ task, result, ...ctx }), limitHit: false };
+  } catch (e) {
+    if (e instanceof RoleRunError && e.subtype !== undefined && LIMIT_SUBTYPES.includes(e.subtype)) {
+      const report = limitReport(task, step, e.subtype);
+      io.say(
+        `[${step === 'work' ? task.owner : 'QA'}] ${task.id}: ชนขีดจำกัด ${e.subtype} — นับเป็นรอบที่ไม่ผ่าน`,
+      );
+      return { report, limitHit: true };
+    }
+    throw e;
+  }
 }
 
 export async function runBuild(deps: Deps, state: State): Promise<void> {
@@ -36,20 +84,21 @@ async function buildTask(
   task: Task,
   progress: TaskProgress,
 ): Promise<Outcome> {
-  const { runner, io, store, config } = deps;
+  const { io, store, config } = deps;
   for (;;) {
     while (progress.rounds < progress.maxRounds) {
       io.say(
         `[${task.owner}] ทำ task ${task.id}: ${task.title} (รอบที่ ${progress.rounds + 1}/${progress.maxRounds})`,
       );
-      const result = await runner.work({ task, ...ctx, previousReport: progress.lastReport });
-      const report = await runner.qa({ task, result, ...ctx });
+      const { report, limitHit } = await runRound(deps, ctx, task, progress);
       progress.rounds += 1;
       progress.lastReport = report;
       await store.saveArtifact(`reports/${task.id}-round${progress.rounds}.json`, report);
 
       const passed = isPass(report);
-      io.say(`[QA] ${task.id}: ${passed ? 'PASS' : 'FAIL'} (${report.issues.length} issues)`);
+      if (!limitHit) {
+        io.say(`[QA] ${task.id}: ${passed ? 'PASS' : 'FAIL'} (${report.issues.length} issues)`);
+      }
       if (passed) {
         progress.done = true;
         await store.save(state);

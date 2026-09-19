@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { WorkInput } from '../../src/deps';
+import { RoleOutputError, RoleRunError } from '../../src/errors';
 import { runBuild } from '../../src/phases/build';
 import {
   asking,
@@ -127,5 +128,102 @@ describe('runBuild', () => {
 
     expect(persistedWhenAsked).toBe('pm-session');
     expect(store.state?.pmSessionId).toBe('pm-session');
+  });
+});
+
+describe('runBuild: SDK limit errors นับเป็นรอบที่ไม่ผ่าน', () => {
+  it('worker ชน error_max_turns: นับ 1 รอบ, รอบถัดไปได้ synthetic report เป็น previousReport และเก็บ artifact', async () => {
+    const { deps, runner, store } = makeDeps(
+      { work: [new RoleRunError('backend: error_max_turns', false, 'error_max_turns')], qa: [passReport('api')] },
+      [],
+    );
+    const state = buildState(single());
+    await runBuild(deps, state);
+
+    const works = runner.calls.filter((c) => c.role === 'backend');
+    expect(works).toHaveLength(2);
+    expect(roles(runner.calls)).toEqual(['backend', 'backend', 'qa']);
+    const previous = (works[1]!.input as WorkInput).previousReport;
+    expect(previous?.taskId).toBe('api');
+    expect(previous?.verdict).toBe('FAIL');
+    expect(previous?.checks).toEqual([]);
+    expect(previous?.testsAdded).toEqual([]);
+    expect(previous?.issues).toHaveLength(1);
+    expect(previous?.issues[0]?.severity).toBe('blocker');
+    expect(previous?.issues[0]?.file).toBe('');
+    expect(previous?.issues[0]?.description).toContain('backend');
+    expect(previous?.issues[0]?.description).toContain('error_max_turns');
+    expect(previous?.issues[0]?.suggestedFix).toBe(
+      'ลดขนาดงานของ task นี้ หรือเพิ่ม maxTurns/maxBudgetUsd ของ role ใน agent-team.config.json',
+    );
+    const artifact = store.artifacts.get('reports/api-round1.json') as { verdict: string };
+    expect(artifact.verdict).toBe('FAIL');
+    expect(state.progress.api?.rounds).toBe(2);
+    expect(state.progress.api?.done).toBe(true);
+    expect(state.phase).toBe('DELIVER');
+  });
+
+  it('QA ชน error_max_budget_usd: นับ 1 รอบ แล้วรอบถัดไปได้ synthetic report ที่ระบุ qa', async () => {
+    const { deps, runner, store } = makeDeps(
+      {
+        qa: [new RoleRunError('qa: error_max_budget_usd', false, 'error_max_budget_usd'), passReport('api')],
+      },
+      [],
+    );
+    const state = buildState(single());
+    await runBuild(deps, state);
+
+    const works = runner.calls.filter((c) => c.role === 'backend');
+    expect(works).toHaveLength(2);
+    const previous = (works[1]!.input as WorkInput).previousReport;
+    expect(previous?.verdict).toBe('FAIL');
+    expect(previous?.issues[0]?.description).toContain('QA');
+    expect(previous?.issues[0]?.description).toContain('error_max_budget_usd');
+    expect((store.artifacts.get('reports/api-round1.json') as { verdict: string }).verdict).toBe('FAIL');
+    expect(state.progress.api?.rounds).toBe(2);
+    expect(store.state?.progress.api?.rounds).toBe(2);
+  });
+
+  it('ชน limit ครบ 5 รอบ: ถาม escalation เหมือน QA FAIL 5 รอบ', async () => {
+    const limit = () => new RoleRunError('backend: error_max_turns', false, 'error_max_turns');
+    const { deps, runner, io } = makeDeps(
+      { work: [limit(), limit(), limit(), limit(), limit()], pm: [asking('ค้าง 5 รอบ')] },
+      ['abort'],
+    );
+    const state = buildState(single());
+    await runBuild(deps, state);
+
+    expect(state.phase).toBe('ABORTED');
+    expect(state.progress.api?.rounds).toBe(5);
+    expect(state.progress.api?.done).toBe(false);
+    expect(runner.calls.filter((c) => c.role === 'backend')).toHaveLength(5);
+    expect(runner.calls.filter((c) => c.role === 'qa')).toHaveLength(0);
+    expect(runner.calls.filter((c) => c.role === 'pm')).toHaveLength(1);
+    expect(io.asked.filter((q) => q.includes('ไม่ผ่านครบ 5 รอบ'))).toHaveLength(1);
+    expect(io.asked).toHaveLength(1);
+  });
+
+  const propagating: Array<[string, () => Error, 'work' | 'qa']> = [
+    ['RoleOutputError (work)', () => new RoleOutputError('schema ผิดซ้ำ'), 'work'],
+    ['RoleOutputError (qa)', () => new RoleOutputError('schema ผิดซ้ำ'), 'qa'],
+    ['RoleRunError retryable', () => new RoleRunError('x', true, 'error_during_execution'), 'work'],
+    [
+      'error_max_structured_output_retries',
+      () => new RoleRunError('x', false, 'error_max_structured_output_retries'),
+      'qa',
+    ],
+    ['RoleRunError ไม่มี subtype', () => new RoleRunError('x', false), 'work'],
+    ['Error ธรรมดา', () => new Error('boom'), 'work'],
+  ];
+  it.each(propagating)('%s: propagate ออกจาก runBuild โดยไม่นับรอบ', async (_name, makeError, where) => {
+    const script = where === 'work' ? { work: [makeError()] } : { qa: [makeError()] };
+    const { deps, store } = makeDeps(script, []);
+    const state = buildState(single());
+    await expect(runBuild(deps, state)).rejects.toThrow(makeError().message);
+
+    expect(state.progress.api?.rounds).toBe(0);
+    expect(state.progress.api?.lastReport).toBeUndefined();
+    expect(store.artifacts.has('reports/api-round1.json')).toBe(false);
+    expect(state.phase).toBe('BUILD');
   });
 });

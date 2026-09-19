@@ -90,6 +90,15 @@ describe('SdkRoleRunner', () => {
     expect(sleeps).toEqual([]);
   });
 
+  it('error_max_turns: RoleRunError พก subtype และ retryable=false', async () => {
+    const { runner } = makeRunner([[initMsg(), errResult('error_max_turns')]]);
+    const err = await runner.pmTurn({ prompt: 'hi' }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(RoleRunError);
+    expect((err as RoleRunError).subtype).toBe('error_max_turns');
+    expect((err as RoleRunError).retryable).toBe(false);
+  });
+
   it('success แต่ไม่มี structured_output: retry', async () => {
     const noOutput = { type: 'result', subtype: 'success', session_id: 's1' };
     const { runner, calls } = makeRunner([[initMsg(), noOutput], [initMsg(), okResult(validTurn)]]);
