@@ -1,6 +1,7 @@
+import { once } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CliIO, parseChoice } from '../src/cli';
+import { CliIO, type CliIOOptions, parseChoice } from '../src/cli';
 
 const options = ['confirm', 'revise'] as const;
 
@@ -25,11 +26,19 @@ describe('parseChoice', () => {
 describe('CliIO', () => {
   let io: CliIO | undefined;
 
-  function makeIO(): { io: CliIO; input: PassThrough } {
+  function makeIO(extra: Partial<CliIOOptions> = {}): {
+    io: CliIO;
+    input: PassThrough;
+    written: () => string;
+  } {
     const input = new PassThrough();
     const output = new PassThrough();
-    io = new CliIO({ input, output });
-    return { io, input };
+    let text = '';
+    output.on('data', (chunk: Buffer) => {
+      text += chunk.toString('utf8');
+    });
+    io = new CliIO({ input, output, ...extra });
+    return { io, input, written: () => text };
   }
 
   afterEach(() => {
@@ -45,6 +54,14 @@ describe('CliIO', () => {
     expect(await answer).toBe('hello');
   });
 
+  it('say เขียนลง output stream ที่ฉีดเข้ามา (ไม่ใช่ console.log)', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { io, written } = makeIO();
+    io.say('สวัสดี');
+    await vi.waitFor(() => expect(written()).toContain('สวัสดี\n'));
+    expect(log).not.toHaveBeenCalled();
+  });
+
   it('stdin ปิด (EOF) ระหว่างรอคำตอบ -> ask reject ด้วยข้อความ EOF', async () => {
     const { io, input } = makeIO();
     const answer = io.ask('q> ');
@@ -54,18 +71,56 @@ describe('CliIO', () => {
 
   it('เรียก ask หลัง stdin ปิดแล้ว -> reject ด้วยข้อความ EOF', async () => {
     const { io, input } = makeIO();
+    const ended = once(input, 'end');
     input.end();
-    await new Promise((resolve) => setImmediate(resolve));
+    // listener ของ readline ลงทะเบียนก่อน จึงทำงานก่อน (rl.close() แบบ synchronous) เมื่อ 'end' ยิง
+    await ended;
     await expect(io.ask('q> ')).rejects.toThrow('EOF');
   });
 
-  it('choose ถามซ้ำเมื่อตอบไม่ถูก แล้วคืนตัวเลือกเมื่อได้ค่าที่ถูก', async () => {
-    const say = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const { io, input } = makeIO();
+  it('choose แสดงเมนูเลขพร้อมป้ายภาษาไทย ถามซ้ำเมื่อตอบไม่ถูก แล้วคืนตัวเลือกเมื่อได้ค่าที่ถูก', async () => {
+    const { io, input, written } = makeIO();
     const choice = io.choose('เลือก', options);
+    await vi.waitFor(() => {
+      expect(written()).toContain('1) confirm (ยืนยัน)');
+      expect(written()).toContain('2) revise (ขอแก้)');
+    });
     input.write('maybe\n');
-    await vi.waitFor(() => expect(say).toHaveBeenCalledWith('กรุณาพิมพ์หมายเลขหรือชื่อตัวเลือกให้ตรง'));
+    await vi.waitFor(() => expect(written()).toContain('กรุณาพิมพ์หมายเลขหรือชื่อตัวเลือกให้ตรง\n'));
     input.write('2\n');
     expect(await choice).toBe('revise');
+  });
+
+  describe('Ctrl+C ใน terminal mode (raw mode ไม่ส่ง SIGINT ให้ process)', () => {
+    it('เรียก onInterrupt หนึ่งครั้ง โดยที่ ask ที่รออยู่ไม่ถูก reject แล้วยังตอบต่อได้', async () => {
+      const onInterrupt = vi.fn();
+      const { io, input } = makeIO({ terminal: true, onInterrupt });
+      const answer = io.ask('q> ');
+      answer.catch(() => {}); // ถ้า regress ต้องล้มที่ assertion ด้านล่าง ไม่ใช่ unhandled rejection
+      input.write('\u0003');
+      await vi.waitFor(() => expect(onInterrupt).toHaveBeenCalledTimes(1));
+      input.write('ok\n');
+      expect(await answer).toBe('ok');
+      expect(onInterrupt).toHaveBeenCalledTimes(1);
+    });
+
+    it('ค่าเริ่มต้นของ onInterrupt ยิง process SIGINT เพื่อให้ handler ใน index.ts ทำงาน', async () => {
+      const original = process.listeners('SIGINT');
+      process.removeAllListeners('SIGINT'); // กัน listener อื่นของ test runner ถูกเรียกไปด้วย
+      const spy = vi.fn();
+      process.on('SIGINT', spy);
+      try {
+        const { io, input } = makeIO({ terminal: true });
+        const answer = io.ask('q> ');
+        answer.catch(() => {});
+        input.write('\u0003');
+        await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+        input.write('ok\n');
+        expect(await answer).toBe('ok');
+      } finally {
+        process.removeAllListeners('SIGINT');
+        for (const l of original) process.on('SIGINT', l);
+      }
+    });
   });
 });

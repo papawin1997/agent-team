@@ -11,8 +11,11 @@ export function parseArgs(argv: string[]): CliArgs {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i] ?? '';
     if (arg === '--resume') resume = true;
-    else if (arg === '--project') projectDir = argv[++i];
-    else if (arg.startsWith('--project=')) projectDir = arg.slice('--project='.length);
+    else if (arg === '--project') {
+      const value = argv[++i];
+      if (value === undefined || value.startsWith('--')) throw new Error('ต้องระบุพาธหลัง --project');
+      projectDir = value;
+    } else if (arg.startsWith('--project=')) projectDir = arg.slice('--project='.length);
     else throw new Error(`อาร์กิวเมนต์ไม่รู้จัก: ${arg}`);
   }
   if (!projectDir) throw new Error('ต้องระบุ --project <โฟลเดอร์โปรเจกต์>');

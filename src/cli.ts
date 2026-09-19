@@ -20,21 +20,32 @@ export function parseChoice<T extends string>(input: string, options: readonly T
   return options.find((o) => o === text);
 }
 
-export interface CliIOStreams {
+export interface CliIOOptions {
   input?: NodeJS.ReadableStream;
   output?: NodeJS.WritableStream;
+  /** ค่าเริ่มต้น = output เป็น TTY หรือไม่ (ตาม readline) */
+  terminal?: boolean;
+  /** เรียกเมื่อกด Ctrl+C ค่าเริ่มต้นยิง process 'SIGINT' ให้ handler ใน index.ts ทำงาน */
+  onInterrupt?: () => void;
 }
 
 export class CliIO implements UserIO {
   private readonly rl: readline.Interface;
+  private readonly output: NodeJS.WritableStream;
   private isClosed = false;
   private readonly closed: Promise<never>;
 
-  constructor(streams: CliIOStreams = {}) {
+  constructor(options: CliIOOptions = {}) {
+    this.output = options.output ?? stdout;
     this.rl = readline.createInterface({
-      input: streams.input ?? stdin,
-      output: streams.output ?? stdout,
+      input: options.input ?? stdin,
+      output: this.output,
+      terminal: options.terminal,
     });
+    // ใน terminal (raw) mode Ctrl+C ไม่ใช่ SIGINT ของ process แต่ readline รับเป็นปุ่มและปิดตัวเอง
+    // ถ้าไม่มี listener จึงต้องส่งต่อให้ handler เดียวกับ SIGINT
+    const onInterrupt = options.onInterrupt ?? (() => process.emit('SIGINT'));
+    this.rl.on('SIGINT', () => onInterrupt());
     this.closed = new Promise<never>((_, reject) => {
       this.rl.once('close', () => {
         this.isClosed = true;
@@ -46,7 +57,7 @@ export class CliIO implements UserIO {
   }
 
   say(text: string): void {
-    console.log(text);
+    this.output.write(`${text}\n`);
   }
 
   async ask(prompt: string): Promise<string> {
