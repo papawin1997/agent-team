@@ -1,4 +1,5 @@
 import type { TeamConfig } from './config';
+import type { Logger } from './logger';
 import type { Design, PmTurn, QAReport, Requirements, Task, WorkerResult } from './schemas';
 import type { State } from './state';
 
@@ -51,4 +52,5 @@ export interface Deps {
   io: UserIO;
   store: StateStore;
   config: TeamConfig;
+  log?: Logger;
 }

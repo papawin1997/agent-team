@@ -59,6 +59,46 @@ describe('SdkRoleRunner', () => {
     expect(calls[0]!.options.model).toBe('claude-sonnet-5');
   });
 
+  it('บันทึก log เริ่ม/จบของทุกการเรียก agent พร้อม turns, เวลา และ cost', async () => {
+    const events: Array<{ level: string; event: string; data: Record<string, unknown> }> = [];
+    const scripts: Msg[][] = [
+      [initMsg(), { ...okResult(validTurn), duration_ms: 1234, num_turns: 3 }],
+      [initMsg(), errResult('error_max_turns')],
+    ];
+    const runner = new SdkRoleRunner({
+      projectDir: 'proj',
+      config: DEFAULT_CONFIG,
+      queryFn: (() => {
+        const script = scripts.shift()!;
+        return (async function* () {
+          for (const message of script) yield message;
+        })();
+      }) as never,
+      sleep: async () => {},
+      logger: { log: (level, event, data) => void events.push({ level, event, data: data as never }) },
+    });
+
+    await runner.pmTurn({ prompt: 'hi' });
+    await expect(runner.pmTurn({ prompt: 'again' })).rejects.toThrow('error_max_turns');
+
+    expect(events.map((e) => `${e.level} ${e.event}`)).toEqual([
+      'INFO agent.start',
+      'INFO agent.result',
+      'INFO agent.start',
+      'WARN agent.result',
+    ]);
+    expect(events[0]!.data).toMatchObject({ role: 'pm', model: 'claude-sonnet-5', resumed: false });
+    expect(events[1]!.data).toMatchObject({
+      role: 'pm',
+      subtype: 'success',
+      durationMs: 1234,
+      turns: 3,
+      costUsd: 0.01,
+      sessionId: 's1',
+    });
+    expect(events[3]!.data).toMatchObject({ role: 'pm', subtype: 'error_max_turns' });
+  });
+
   it('ส่ง sessionId เดิมเป็น resume ให้ PM', async () => {
     const { runner, calls } = makeRunner([[initMsg('s9'), okResult(validTurn, 's9')]]);
     await runner.pmTurn({ prompt: 'hi', sessionId: 's9' });

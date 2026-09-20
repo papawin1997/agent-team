@@ -2,6 +2,7 @@ import type { Options } from '@anthropic-ai/claude-agent-sdk';
 import { type RoleConfig, type RoleName, TEST_PATH_PATTERNS } from './config';
 import { agentEnv } from './env';
 import { createGuardHook } from './guard';
+import type { Logger } from './logger';
 
 export interface BuildOptionsInput {
   role: RoleName;
@@ -12,6 +13,7 @@ export interface BuildOptionsInput {
   jsonSchema?: Record<string, unknown>;
   resume?: string;
   abortController?: AbortController;
+  logger?: Logger;
 }
 
 export function buildQueryOptions(input: BuildOptionsInput): Options {
@@ -42,6 +44,7 @@ export function buildQueryOptions(input: BuildOptionsInput): Options {
               projectDir,
               skillsDir: skillsPluginDir,
               testPathPatterns: TEST_PATH_PATTERNS,
+              onDeny: input.logger && ((d) => input.logger?.log('WARN', 'guard.deny', d)),
             }),
           ],
         },

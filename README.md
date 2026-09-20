@@ -29,6 +29,21 @@ Ctrl+C หยุดได้ทุกเมื่อ: state ถูกบัน�
 `reports/<taskId>-round<n>.json`) แนะนำให้เพิ่ม `.agent-team/` ใน `.gitignore` ของโปรเจกต์นั้น
 ถ้าใช้ `--resume` ระหว่างคุยกับ PM ให้พิมพ์ข้อความต่อจากบทสนทนาเดิม
 
+## log
+บันทึกที่ `<project>/.agent-team/agent-team.log` (ต่อท้ายไฟล์เดิมข้ามรอบรัน/`--resume` เวลาเป็น UTC)
+หนึ่งเหตุการณ์ต่อบรรทัด: `เวลา LEVEL event {json}` ตัวอย่างที่ดูบ่อย:
+
+    grep " agent.result " .agent-team/agent-team.log   # แต่ละครั้งที่เรียก agent: turns, เวลา, cost
+    grep " qa.report "   .agent-team/agent-team.log   # ผล QA ต่อ task ต่อรอบ
+    grep " guard.deny "  .agent-team/agent-team.log   # คำสั่ง/ไฟล์ที่ guard ปฏิเสธ
+    grep -E " (WARN|ERROR) " .agent-team/agent-team.log
+
+event หลัก: `run.start/run.end/run.error/run.interrupted`, `team.start/team.end`, `phase.change`,
+`agent.start/agent.result/agent.no_result`, `qa.report`, `escalate.decision`, `guard.deny`,
+`say` (ทุกข้อความที่แสดงใน terminal), `user.input` / `user.choice` (สิ่งที่คุณพิมพ์/เลือก)
+ข้อความยาวเกิน 1,000 ตัวอักษรจะถูกตัด และ log เขียนไม่ได้จะไม่ทำให้งานล้ม
+ไม่มี prompt/คำตอบดิบของ agent ใน log (มีเฉพาะสรุป) — `cost` ที่เห็นคำนวณตามราคา API ไม่ใช่ยอดที่ถูกเรียกเก็บจริง
+
 ## ตั้งค่า (ไม่บังคับ)
 สร้าง `agent-team.config.json` ที่ราก repo นี้ ตัวอย่าง:
 

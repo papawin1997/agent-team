@@ -42,6 +42,30 @@ describe('runBuild', () => {
     expect(state.phase).toBe('DELIVER');
   });
 
+  it('บันทึก log ผล QA ต่อรอบ และการตัดสินใจตอน escalate', async () => {
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const { deps } = makeDeps(
+      { pm: [asking('ค้าง')], qa: [failReport('api'), failReport('api'), passReport('api')] },
+      ['continue'],
+    );
+    deps.config = { ...deps.config, maxQaRounds: 2 };
+    deps.log = { log: (_level, event, data) => void events.push({ event, data: data as never }) };
+    const state = buildState(single());
+    state.progress.api = { rounds: 0, maxRounds: 2, done: false, acceptedWithIssues: false };
+    await runBuild(deps, state);
+
+    const rounds = events.filter((e) => e.event === 'qa.report').map((e) => [e.data.round, e.data.passed]);
+    expect(rounds).toEqual([
+      [1, false],
+      [2, false],
+      [3, true],
+    ]);
+    expect(events.find((e) => e.event === 'escalate.decision')?.data).toMatchObject({
+      taskId: 'api',
+      decision: 'continue',
+    });
+  });
+
   it('QA ให้ PASS แต่มี blocker: นับว่าไม่ผ่าน', async () => {
     const sneaky = { ...passReport('api'), issues: failReport('api', 'blocker').issues };
     const { deps, runner } = makeDeps({ qa: [sneaky, passReport('api')] }, []);

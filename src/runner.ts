@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { type RoleName, SKILLS_PLUGIN_DIR, type TeamConfig } from './config';
 import type { PlanInput, PmInput, QaInput, RoleRunner, WorkInput } from './deps';
 import { RoleOutputError, RoleRunError } from './errors';
+import { type Logger, nullLogger } from './logger';
 import { buildQueryOptions } from './options';
 import { buildPlanPrompt, buildQaPrompt, buildWorkPrompt, SYSTEM_PROMPTS } from './prompts';
 import {
@@ -30,6 +31,7 @@ export interface SdkRunnerDeps {
   log?: (line: string) => void;
   debug?: boolean;
   abortController?: AbortController;
+  logger?: Logger;
 }
 
 const BACKOFF_MS = [1000, 3000];
@@ -38,8 +40,10 @@ export class SdkRoleRunner implements RoleRunner {
   private readonly queryFn: QueryFn;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly log: (line: string) => void;
+  private readonly logger: Logger;
 
   constructor(private readonly deps: SdkRunnerDeps) {
+    this.logger = deps.logger ?? nullLogger;
     this.queryFn = deps.queryFn ?? query;
     this.sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.log = deps.log ?? (() => {});
@@ -109,6 +113,12 @@ export class SdkRoleRunner implements RoleRunner {
     resume?: string,
   ): Promise<{ output: unknown; sessionId: string }> {
     let sessionId = resume ?? '';
+    this.logger.log('INFO', 'agent.start', {
+      role,
+      model: this.deps.config.roles[role].model,
+      resumed: resume !== undefined,
+      promptChars: prompt.length,
+    });
     const stream = this.queryFn({
       prompt,
       options: buildQueryOptions({
@@ -120,6 +130,7 @@ export class SdkRoleRunner implements RoleRunner {
         jsonSchema,
         resume,
         abortController: this.deps.abortController,
+        logger: this.deps.logger,
       }),
     });
 
@@ -132,9 +143,16 @@ export class SdkRoleRunner implements RoleRunner {
         );
       }
       if (msg.type === 'result') {
-        if (msg.subtype === 'success' && msg.structured_output !== undefined) {
-          return { output: msg.structured_output, sessionId };
-        }
+        const ok = msg.subtype === 'success' && msg.structured_output !== undefined;
+        this.logger.log(ok ? 'INFO' : 'WARN', 'agent.result', {
+          role,
+          subtype: msg.subtype,
+          durationMs: msg.duration_ms,
+          turns: msg.num_turns,
+          costUsd: msg.total_cost_usd,
+          sessionId,
+        });
+        if (ok) return { output: msg.structured_output, sessionId };
         throw new RoleRunError(
           `${role}: ${msg.subtype}`,
           !msg.subtype.startsWith('error_max_'),
@@ -142,6 +160,7 @@ export class SdkRoleRunner implements RoleRunner {
         );
       }
     }
+    this.logger.log('WARN', 'agent.no_result', { role, sessionId });
     throw new RoleRunError(`${role}: stream จบโดยไม่มี result`, true);
   }
 }

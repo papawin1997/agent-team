@@ -30,6 +30,30 @@ describe('runTeam', () => {
     expect(store.state?.phase).toBe('DONE');
   });
 
+  it('บันทึก log ทุกครั้งที่เปลี่ยน phase และตอนจบ', async () => {
+    const events: Array<{ event: string; data?: Record<string, unknown> }> = [];
+    const { deps } = makeDeps(
+      {
+        pm: [proposal(), asking('สรุป design'), asking('สรุปส่งมอบ')],
+        plans: [makeDesign()],
+        qa: [passReport('api'), passReport('ui')],
+      },
+      ['อยากได้ todo', 'confirm', 'confirm', 'accept'],
+    );
+    deps.log = { log: (_level, event, data) => void events.push({ event, data: data as never }) };
+    await runTeam(deps, { resume: false });
+
+    const changes = events.filter((e) => e.event === 'phase.change').map((e) => `${e.data?.from}>${e.data?.to}`);
+    expect(changes).toEqual([
+      'REQUIREMENTS>DESIGN',
+      'DESIGN>REVIEW',
+      'REVIEW>BUILD',
+      'BUILD>DELIVER',
+      'DELIVER>DONE',
+    ]);
+    expect(events.at(-1)).toMatchObject({ event: 'team.end', data: { phase: 'DONE' } });
+  });
+
   it('user ขอแก้แบบ: วนกลับไปเฟส 1-3 แล้วค่อย build', async () => {
     const { deps, runner } = makeDeps(
       {

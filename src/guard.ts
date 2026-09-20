@@ -12,6 +12,8 @@ export interface GuardContext {
   projectDir: string;
   skillsDir: string;
   testPathPatterns: readonly RegExp[];
+  /** เรียกทุกครั้งที่ guard ปฏิเสธ (ใช้บันทึก log) ถ้าโยน error จะถูกกลืน ไม่กระทบการปฏิเสธ */
+  onDeny?: (denial: { role: RoleName; tool: string; target?: string; reason: string }) => void;
 }
 
 export type Verdict = { ok: true } | { ok: false; reason: string };
@@ -114,17 +116,39 @@ const denyOutput = (reason: string) => ({
   },
 });
 
+const TARGET_KEYS = ['command', 'file_path', 'notebook_path', 'path', 'pattern'];
+
+function targetOf(input: Record<string, unknown>): string | undefined {
+  for (const key of TARGET_KEYS) {
+    const value = input[key];
+    if (typeof value === 'string') return value;
+  }
+  return undefined;
+}
+
 export function createGuardHook(ctx: GuardContext): HookCallback {
+  const deny$ = (tool: string, input: Record<string, unknown>, reason: string) => {
+    try {
+      ctx.onDeny?.({ role: ctx.role, tool, target: targetOf(input), reason });
+    } catch {
+      // log ล้มเหลวต้องไม่ทำให้การปฏิเสธหาย
+    }
+    return denyOutput(reason);
+  };
   return async (input) => {
+    let tool = 'unknown';
+    let toolInput: Record<string, unknown> = {};
     try {
       if (input.hook_event_name !== 'PreToolUse') return {};
       const pre = input as PreToolUseHookInput;
       if (typeof pre.tool_name !== 'string') throw new Error('missing tool_name');
-      const verdict = checkToolUse(ctx, pre.tool_name, (pre.tool_input ?? {}) as Record<string, unknown>);
-      return verdict.ok ? {} : denyOutput(verdict.reason);
+      tool = pre.tool_name;
+      toolInput = (pre.tool_input ?? {}) as Record<string, unknown>;
+      const verdict = checkToolUse(ctx, tool, toolInput);
+      return verdict.ok ? {} : deny$(tool, toolInput, verdict.reason);
     } catch (err) {
       // Fail closed: an unexpected guard failure must never let a tool call through.
-      return denyOutput(`guard error: ${err instanceof Error ? err.message : 'unexpected failure'}`);
+      return deny$(tool, toolInput, `guard error: ${err instanceof Error ? err.message : 'unexpected failure'}`);
     }
   };
 }

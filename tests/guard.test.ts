@@ -106,6 +106,39 @@ describe('createGuardHook', () => {
     expect(out).toEqual({});
   });
 
+  it('เรียก onDeny พร้อม role / tool / เป้าหมาย / เหตุผล เมื่อปฏิเสธ (และไม่เรียกเมื่อผ่าน)', async () => {
+    const denied: unknown[] = [];
+    const hook = createGuardHook({ ...ctx('backend'), onDeny: (d) => denied.push(d) });
+    await hook(
+      { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'rm -rf /' } } as never,
+      undefined,
+      { signal },
+    );
+    await hook(
+      { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm test' } } as never,
+      undefined,
+      { signal },
+    );
+    expect(denied).toHaveLength(1);
+    expect(denied[0]).toMatchObject({ role: 'backend', tool: 'Bash', target: 'rm -rf /' });
+    expect((denied[0] as { reason: string }).reason).not.toBe('');
+  });
+
+  it('onDeny ที่โยน error ต้องไม่ทำให้ guard เปิดทาง (ยัง deny อยู่)', async () => {
+    const hook = createGuardHook({
+      ...ctx('backend'),
+      onDeny: () => {
+        throw new Error('log failed');
+      },
+    });
+    const out = (await hook(
+      { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'rm -rf /' } } as never,
+      undefined,
+      { signal },
+    )) as Out;
+    expect(out.hookSpecificOutput?.permissionDecision).toBe('deny');
+  });
+
   it('ไม่ยุ่งกับ event อื่น', async () => {
     const hook = createGuardHook(ctx('backend'));
     expect(await hook({ hook_event_name: 'PostToolUse' } as never, undefined, { signal })).toEqual({});

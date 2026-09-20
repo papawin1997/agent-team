@@ -1,6 +1,7 @@
 import type { Deps } from '../deps';
 import { isPass, orderTasks } from '../domain';
 import { RoleRunError } from '../errors';
+import { nullLogger } from '../logger';
 import type { Design, QAReport, Requirements, Task } from '../schemas';
 import type { State, TaskProgress } from '../state';
 
@@ -96,6 +97,19 @@ async function buildTask(
       await store.saveArtifact(`reports/${task.id}-round${progress.rounds}.json`, report);
 
       const passed = isPass(report);
+      (deps.log ?? nullLogger).log(passed ? 'INFO' : 'WARN', 'qa.report', {
+        taskId: task.id,
+        owner: task.owner,
+        round: progress.rounds,
+        maxRounds: progress.maxRounds,
+        passed,
+        limitHit,
+        verdict: report.verdict,
+        issues: report.issues.length,
+        blockers: report.issues.filter((i) => i.severity === 'blocker').length,
+        majors: report.issues.filter((i) => i.severity === 'major').length,
+        checks: Object.fromEntries(report.checks.map((c) => [c.name, c.status])),
+      });
       if (!limitHit) {
         io.say(`[QA] ${task.id}: ${passed ? 'PASS' : 'FAIL'} (${report.issues.length} issues)`);
       }
@@ -108,6 +122,11 @@ async function buildTask(
     }
 
     const decision = await escalate(deps, state, task, progress);
+    (deps.log ?? nullLogger).log('INFO', 'escalate.decision', {
+      taskId: task.id,
+      rounds: progress.rounds,
+      decision,
+    });
     if (decision === 'abort') return 'aborted';
     if (decision === 'accept') {
       progress.done = true;
