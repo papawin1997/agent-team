@@ -1,4 +1,5 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { agentEnv } from '../src/env';
 import { checkStream } from './smoke-auth-lib';
 
 async function main(): Promise<void> {
@@ -10,7 +11,7 @@ async function main(): Promise<void> {
         maxTurns: 1,
         tools: [],
         settingSources: [],
-        env: { ...process.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' },
+        env: agentEnv(),
       },
     }),
   );

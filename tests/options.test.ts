@@ -34,6 +34,18 @@ describe('buildQueryOptions', () => {
     expect(o.maxBudgetUsd).toBe(DEFAULT_CONFIG.roles.backend.maxBudgetUsd);
   });
 
+  it('ไม่ส่ง ANTHROPIC_API_KEY ให้ agent แม้ตั้งไว้ใน shell (ใช้ subscription เท่านั้น)', () => {
+    const saved = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
+    try {
+      const o = buildQueryOptions({ ...base, role: 'pm', config: DEFAULT_CONFIG.roles.pm });
+      expect(Object.keys(o.env ?? {}).map((k) => k.toUpperCase())).not.toContain('ANTHROPIC_API_KEY');
+    } finally {
+      if (saved === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = saved;
+    }
+  });
+
   it('role ที่เปิด skill: เพิ่ม Skill tool, plugin และสิทธิ์อ่านโฟลเดอร์ skill', () => {
     const config = { ...DEFAULT_CONFIG.roles.frontend, skills: ['team:frontend-conventions'] };
     const o = buildQueryOptions({ ...base, role: 'frontend', config });

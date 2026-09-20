@@ -4,8 +4,10 @@
 
 ## ข้อกำหนดเบื้องต้น
 - Node.js 20 ขึ้นไป
-- credential ของ Anthropic ที่ SDK ใช้ได้ (ตรวจด้วย `npm run smoke:auth`)
-  ถ้าต้องใช้ API key ให้ตั้งใน terminal เอง: `$env:ANTHROPIC_API_KEY = "sk-ant-..."`
+- login Claude (subscription) ที่ SDK ใช้ได้ (ตรวจด้วย `npm run smoke:auth`)
+  agent-team ใช้โควตา subscription เท่านั้น: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`
+  และ `CLAUDE_CODE_USE_BEDROCK/VERTEX/FOUNDRY` จะถูกตัดออกจาก env ที่ส่งให้ agent เสมอ
+  (ปิด "extra usage" ในบัญชีที่ claude.ai ด้วย ไม่งั้นการใช้เกินโควตาอาจถูกคิดเงิน — ตั้งจากโค้ดไม่ได้)
 
 ## วิธีใช้
     npm install

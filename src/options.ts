@@ -1,5 +1,6 @@
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
 import { type RoleConfig, type RoleName, TEST_PATH_PATTERNS } from './config';
+import { agentEnv } from './env';
 import { createGuardHook } from './guard';
 
 export interface BuildOptionsInput {
@@ -31,7 +32,7 @@ export function buildQueryOptions(input: BuildOptionsInput): Options {
     maxTurns: config.maxTurns,
     maxBudgetUsd: config.maxBudgetUsd,
     strictMcpConfig: true,
-    env: { ...process.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' },
+    env: agentEnv(),
     hooks: {
       PreToolUse: [
         {

@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import { parseArgs } from './args';
 import { CliIO } from './cli';
 import { loadConfig } from './config';
+import { presentBillingVars } from './env';
 import { runTeam } from './orchestrator';
 import { SdkRoleRunner } from './runner';
 import { FileStateStore } from './state';
@@ -16,6 +17,10 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const abortController = new AbortController();
   const io = new CliIO();
+  const ignored = presentBillingVars();
+  if (ignored.length > 0) {
+    io.say(`ไม่ส่ง ${ignored.join(', ')} ให้ agent — ใช้โควตา subscription ที่ login ไว้เท่านั้น`);
+  }
   const runner = new SdkRoleRunner({
     projectDir: args.projectDir,
     config,
