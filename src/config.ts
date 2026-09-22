@@ -42,6 +42,7 @@ const BASH_ALLOW = [
   'Bash(python *)',
   'Bash(pytest *)',
   'Bash(pip *)',
+  'Bash(go *)',
 ];
 const GIT_READ_ONLY = ['status', 'diff', 'log', 'show', 'ls-files', 'rev-parse', 'blame'];
 const GIT_ALLOW = GIT_READ_ONLY.flatMap((sub) => [`Bash(git ${sub})`, `Bash(git ${sub} *)`]);

@@ -61,7 +61,7 @@ event หลัก: `run.start/run.end/run.error/run.interrupted`, `team.start/t
 - QA เขียนได้เฉพาะไฟล์ test, PM/Planning อ่านอย่างเดียว
 - git: agent รันได้เฉพาะคำสั่งอ่านอย่างเดียว (status, diff, log, show, ls-files, rev-parse, blame) คำสั่งอื่นเช่น commit/push/reset ถูกปฏิเสธ (agent ไม่ commit/push ให้)
 - Bash ถูกจำกัดด้วย allowlist คำสั่ง (dontAsk) + guard ที่ตรวจข้อความคำสั่งแบบ lexical เป็นด่านเสริมแบบ best-effort ไม่ใช่ sandbox ระดับ OS
-- `node -e` / `python -c` ถูกอนุญาตไว้ล่วงหน้า (จำเป็นสำหรับ build/test) จึงทำได้ทุกอย่างที่ผู้ใช้ OS ทำได้ รวมถึงเขียนไฟล์นอกโฟลเดอร์โปรเจกต์หรือแก้ `.git` และ guard มองไม่เห็นสิ่งที่อยู่ข้างใน จึงควรรันกับโปรเจกต์ที่ commit/สำรองไว้ก่อนเสมอ
+- `node -e` / `python -c` / `go run` ถูกอนุญาตไว้ล่วงหน้า (จำเป็นสำหรับ build/test) จึงทำได้ทุกอย่างที่ผู้ใช้ OS ทำได้ รวมถึงเขียนไฟล์นอกโฟลเดอร์โปรเจกต์หรือแก้ `.git` และ guard มองไม่เห็นสิ่งที่อยู่ข้างใน จึงควรรันกับโปรเจกต์ที่ commit/สำรองไว้ก่อนเสมอ
 - `--project` จะโหลด `.claude/settings.json` ของโปรเจกต์นั้น (รวม hooks/permissions) ใช้กับโฟลเดอร์ที่ไว้ใจได้เท่านั้น และห้ามชี้ `--project` มาที่ repo agent-team นี้เอง
 - environment ทั้งหมดของ shell (รวม secret) ถูกส่งต่อให้ subprocess ของ agent ควรรันจาก shell ที่สะอาด
 - QA ไม่มี browser: ฝั่ง frontend ตรวจได้แค่ build/lint/unit test/review โค้ด

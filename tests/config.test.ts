@@ -30,6 +30,14 @@ describe('DEFAULT_CONFIG', () => {
     }
   });
 
+  it('worker และ qa รัน go toolchain ได้ (build/vet/test/run/mod) แต่ไม่ได้ pre-approve docker', () => {
+    for (const role of ['frontend', 'backend', 'qa'] as const) {
+      const allowed = DEFAULT_CONFIG.roles[role].allowedTools;
+      expect(allowed).toContain('Bash(go *)');
+      expect(allowed.some((entry) => entry.startsWith('Bash(docker'))).toBe(false);
+    }
+  });
+
   it('worker และ qa อนุญาต git แบบอ่านอย่างเดียว', () => {
     for (const role of ['frontend', 'backend', 'qa'] as const) {
       expect(DEFAULT_CONFIG.roles[role].allowedTools).toEqual(
