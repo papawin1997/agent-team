@@ -30,11 +30,15 @@ describe('DEFAULT_CONFIG', () => {
     }
   });
 
-  it('worker และ qa รัน go toolchain และ docker ได้ (build/vet/test/run/mod, docker run/compose/ps/logs)', () => {
+  it('worker และ qa รัน go toolchain ได้ และ docker เฉพาะ compose/ps/logs (ไม่ใช่ docker run แบบเต็ม)', () => {
     for (const role of ['frontend', 'backend', 'qa'] as const) {
       const allowed = DEFAULT_CONFIG.roles[role].allowedTools;
       expect(allowed).toContain('Bash(go *)');
-      expect(allowed).toContain('Bash(docker *)');
+      expect(allowed).toContain('Bash(docker compose *)');
+      expect(allowed).toContain('Bash(docker ps)');
+      expect(allowed).toContain('Bash(docker ps *)');
+      expect(allowed).toContain('Bash(docker logs *)');
+      expect(allowed).not.toContain('Bash(docker *)');
     }
   });
 
