@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   DesignSchema,
   PmTurnSchema,
+  QAIssueSchema,
   QAReportSchema,
   RequirementsSchema,
+  SecurityDesignReviewSchema,
   SecurityReportSchema,
   TaskSchema,
+  WorkerResultSchema,
   toJsonSchema,
 } from '../src/schemas';
 
@@ -82,6 +85,34 @@ describe('schemas', () => {
     expect(SecurityReportSchema.safeParse(report).success).toBe(true);
   });
 
+  it('SecurityReport FAIL ที่ไม่มี issue เลย: ปฏิเสธ (verdict/issues ไม่สอดคล้องกัน)', () => {
+    const report = { taskId: 't', verdict: 'FAIL', issues: [] };
+    expect(SecurityReportSchema.safeParse(report).success).toBe(false);
+  });
+
+  it('SecurityReport FAIL ที่มีแต่ minor issue: ปฏิเสธ (ไม่มีเหตุผลจริงที่จะ FAIL)', () => {
+    const report = {
+      taskId: 't',
+      verdict: 'FAIL',
+      issues: [{ severity: 'minor', file: 'x', description: 'สไตล์', suggestedFix: 'ปรับ' }],
+    };
+    expect(SecurityReportSchema.safeParse(report).success).toBe(false);
+  });
+
+  it('SecurityReport FAIL ที่มี major issue: ผ่าน', () => {
+    const report = {
+      taskId: 't',
+      verdict: 'FAIL',
+      issues: [{ severity: 'major', file: 'x', description: 'ช่องโหว่', suggestedFix: 'แก้' }],
+    };
+    expect(SecurityReportSchema.safeParse(report).success).toBe(true);
+  });
+
+  it('SecurityReport PASS ที่ไม่มี issue: ยังผ่านตามปกติ (refine ใช้เฉพาะ FAIL)', () => {
+    const report = { taskId: 't', verdict: 'PASS', issues: [] };
+    expect(SecurityReportSchema.safeParse(report).success).toBe(true);
+  });
+
   it('Design ไม่ต้องมี securityNotes ก็ผ่าน (เผื่อยังไม่ได้รีวิว)', () => {
     const design = { overview: 'o', architecture: 'a', apiContract: 'n/a', dataModel: 'n/a', tasks: [validTask] };
     expect(DesignSchema.safeParse(design).success).toBe(true);
@@ -97,5 +128,42 @@ describe('schemas', () => {
       securityNotes: ['เก็บ password แบบ hash'],
     };
     expect(DesignSchema.safeParse(design).success).toBe(true);
+  });
+});
+
+describe('length caps (M-4 hardening)', () => {
+  it('WorkerResult summary เกิน 4000 ตัวอักษร: ปฏิเสธ', () => {
+    const result = {
+      taskId: 't',
+      summary: 'x'.repeat(4001),
+      filesChanged: [],
+      howToVerify: '',
+    };
+    expect(WorkerResultSchema.safeParse(result).success).toBe(false);
+  });
+
+  it('WorkerResult summary 4000 ตัวอักษรพอดี: ผ่าน', () => {
+    const result = {
+      taskId: 't',
+      summary: 'x'.repeat(4000),
+      filesChanged: [],
+      howToVerify: '',
+    };
+    expect(WorkerResultSchema.safeParse(result).success).toBe(true);
+  });
+
+  it('QAIssue description เกิน 2000 ตัวอักษร: ปฏิเสธ', () => {
+    const issue = { severity: 'minor', file: 'x', description: 'x'.repeat(2001), suggestedFix: '' };
+    expect(QAIssueSchema.safeParse(issue).success).toBe(false);
+  });
+
+  it('SecurityDesignReview securityNotes เกิน 50 รายการ: ปฏิเสธ', () => {
+    const review = { securityNotes: Array.from({ length: 51 }, (_, i) => `note ${i}`) };
+    expect(SecurityDesignReviewSchema.safeParse(review).success).toBe(false);
+  });
+
+  it('SecurityDesignReview securityNotes รายการเดียวยาวเกิน 1000 ตัวอักษร: ปฏิเสธ', () => {
+    const review = { securityNotes: ['x'.repeat(1001)] };
+    expect(SecurityDesignReviewSchema.safeParse(review).success).toBe(false);
   });
 });

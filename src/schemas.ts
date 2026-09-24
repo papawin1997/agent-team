@@ -34,17 +34,17 @@ export type Design = z.infer<typeof DesignSchema>;
 
 export const WorkerResultSchema = z.object({
   taskId: z.string().min(1),
-  summary: z.string().min(1),
-  filesChanged: z.array(z.string()),
-  howToVerify: z.string(),
+  summary: z.string().min(1).max(4000),
+  filesChanged: z.array(z.string().max(500)).max(200),
+  howToVerify: z.string().max(2000),
 });
 export type WorkerResult = z.infer<typeof WorkerResultSchema>;
 
 export const QAIssueSchema = z.object({
   severity: z.enum(['blocker', 'major', 'minor']),
-  file: z.string(),
-  description: z.string().min(1),
-  suggestedFix: z.string(),
+  file: z.string().max(500),
+  description: z.string().min(1).max(2000),
+  suggestedFix: z.string().max(2000),
 });
 export type QAIssue = z.infer<typeof QAIssueSchema>;
 
@@ -63,15 +63,21 @@ export const QAReportSchema = z.object({
 });
 export type QAReport = z.infer<typeof QAReportSchema>;
 
-export const SecurityReportSchema = z.object({
-  taskId: z.string().min(1),
-  verdict: z.enum(['PASS', 'FAIL']),
-  issues: z.array(QAIssueSchema),
-});
+export const SecurityReportSchema = z
+  .object({
+    taskId: z.string().min(1),
+    verdict: z.enum(['PASS', 'FAIL']),
+    issues: z.array(QAIssueSchema),
+  })
+  .refine(
+    (report) =>
+      report.verdict !== 'FAIL' || report.issues.some((i) => i.severity === 'blocker' || i.severity === 'major'),
+    { message: 'verdict FAIL ต้องมี issue ที่เป็น blocker หรือ major อย่างน้อย 1 รายการ' },
+  );
 export type SecurityReport = z.infer<typeof SecurityReportSchema>;
 
 export const SecurityDesignReviewSchema = z.object({
-  securityNotes: z.array(z.string()),
+  securityNotes: z.array(z.string().min(1).max(1000)).max(50),
 });
 export type SecurityDesignReview = z.infer<typeof SecurityDesignReviewSchema>;
 
