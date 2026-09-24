@@ -28,6 +28,11 @@ export interface QaInput {
   requirements: Requirements;
 }
 
+export interface SecurityDesignInput {
+  design: Design;
+  requirements: Requirements;
+}
+
 export interface RoleRunner {
   pmTurn(input: PmInput): Promise<{ turn: PmTurn; sessionId: string }>;
   plan(input: PlanInput): Promise<Design>;

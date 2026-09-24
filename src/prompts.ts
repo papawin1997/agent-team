@@ -1,5 +1,5 @@
 import type { RoleName } from './config';
-import type { PlanInput, QaInput, WorkInput } from './deps';
+import type { PlanInput, QaInput, SecurityDesignInput, WorkInput } from './deps';
 
 const json = (value: unknown): string => JSON.stringify(value, null, 2);
 
@@ -111,5 +111,23 @@ export function buildQaPrompt(input: QaInput): string {
     `Design:\n${json(input.design)}`,
     `Requirements:\n${json(input.requirements)}`,
     'Verify the task now.',
+  ].join('\n\n');
+}
+
+export function buildSecurityDesignPrompt(input: SecurityDesignInput): string {
+  return [
+    `Design to review (before BUILD starts):\n${json(input.design)}`,
+    `Requirements:\n${json(input.requirements)}`,
+    'List the security notes now (empty array if none).',
+  ].join('\n\n');
+}
+
+export function buildSecurityPrompt(input: QaInput): string {
+  return [
+    `Task under review:\n${json(input.task)}`,
+    `Worker result:\n${json(input.result)}`,
+    `Design:\n${json(input.design)}`,
+    `Requirements:\n${json(input.requirements)}`,
+    'Verify the task for security issues now.',
   ].join('\n\n');
 }

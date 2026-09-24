@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { ROLE_NAMES } from '../src/config';
-import { buildPlanPrompt, buildQaPrompt, buildWorkPrompt, SYSTEM_PROMPTS } from '../src/prompts';
+import {
+  buildPlanPrompt,
+  buildQaPrompt,
+  buildSecurityDesignPrompt,
+  buildSecurityPrompt,
+  buildWorkPrompt,
+  SYSTEM_PROMPTS,
+} from '../src/prompts';
 import { failReport, makeDesign, makeRequirements, makeTask } from './helpers/builders';
 
 const task = makeTask('api');
@@ -54,6 +61,23 @@ describe('prompt builders', () => {
 
   it('buildQaPrompt ใส่ผลงานของ worker', () => {
     const prompt = buildQaPrompt({
+      task,
+      design,
+      requirements,
+      result: { taskId: 'api', summary: 'เสร็จ', filesChanged: ['src/api.ts'], howToVerify: 'npm test' },
+    });
+    expect(prompt).toContain('src/api.ts');
+    expect(prompt).toContain('npm test');
+  });
+
+  it('buildSecurityDesignPrompt ใส่ design และ requirements', () => {
+    const prompt = buildSecurityDesignPrompt({ design, requirements });
+    expect(prompt).toContain('todo list');
+    expect(prompt).toContain('ภาพรวมของระบบ');
+  });
+
+  it('buildSecurityPrompt ใส่ผลงานของ worker', () => {
+    const prompt = buildSecurityPrompt({
       task,
       design,
       requirements,
