@@ -1,5 +1,5 @@
 import type { Deps } from '../deps';
-import { isPass, orderTasks } from '../domain';
+import { isPass, isSecurityPass, orderTasks } from '../domain';
 import { RoleRunError } from '../errors';
 import { nullLogger } from '../logger';
 import type { Design, QAReport, Requirements, Task } from '../schemas';
@@ -14,10 +14,21 @@ interface BuildContext {
 
 const LIMIT_SUBTYPES: readonly string[] = ['error_max_turns', 'error_max_budget_usd'];
 
-type Step = 'work' | 'qa';
+type Step = 'work' | 'qa' | 'security';
+
+function stepLabel(task: Task, step: Step): string {
+  if (step === 'work') return `worker ${task.owner} (ขั้นทำงาน)`;
+  if (step === 'qa') return 'QA (ขั้นตรวจงาน)';
+  return 'Security (ขั้นตรวจความปลอดภัย)';
+}
+
+function stepSayName(task: Task, step: Step): string {
+  if (step === 'work') return task.owner;
+  if (step === 'qa') return 'QA';
+  return 'Security';
+}
 
 function limitReport(task: Task, step: Step, subtype: string): QAReport {
-  const who = step === 'work' ? `worker ${task.owner} (ขั้นทำงาน)` : 'QA (ขั้นตรวจงาน)';
   return {
     taskId: task.id,
     verdict: 'FAIL',
@@ -26,7 +37,7 @@ function limitReport(task: Task, step: Step, subtype: string): QAReport {
       {
         severity: 'blocker',
         file: '',
-        description: `${who} ชนขีดจำกัดของ SDK (${subtype}) จึงยังไม่ได้ผลลัพธ์ของรอบนี้`,
+        description: `${stepLabel(task, step)} ชนขีดจำกัดของ SDK (${subtype}) จึงยังไม่ได้ผลลัพธ์ของรอบนี้`,
         suggestedFix:
           'ลดขนาดงานของ task นี้ หรือเพิ่ม maxTurns/maxBudgetUsd ของ role ใน agent-team.config.json',
       },
@@ -46,13 +57,31 @@ async function runRound(
   try {
     const result = await runner.work({ task, ...ctx, previousReport: progress.lastReport });
     step = 'qa';
-    return { report: await runner.qa({ task, result, ...ctx }), limitHit: false };
+    const qaReport = await runner.qa({ task, result, ...ctx });
+    if (!isPass(qaReport)) return { report: qaReport, limitHit: false };
+
+    step = 'security';
+    const securityReport = await runner.security({ task, result, ...ctx });
+    const securityPassed = isSecurityPass(securityReport);
+    (deps.log ?? nullLogger).log(securityPassed ? 'INFO' : 'WARN', 'security.report', {
+      taskId: task.id,
+      issues: securityReport.issues.length,
+      blockers: securityReport.issues.filter((i) => i.severity === 'blocker').length,
+      majors: securityReport.issues.filter((i) => i.severity === 'major').length,
+    });
+    io.say(
+      `[Security] ${task.id}: ${securityPassed ? 'PASS' : 'FAIL'} (${securityReport.issues.length} issues)`,
+    );
+    if (securityPassed) return { report: qaReport, limitHit: false };
+
+    return {
+      report: { ...qaReport, verdict: 'FAIL', issues: [...qaReport.issues, ...securityReport.issues] },
+      limitHit: false,
+    };
   } catch (e) {
     if (e instanceof RoleRunError && e.subtype !== undefined && LIMIT_SUBTYPES.includes(e.subtype)) {
       const report = limitReport(task, step, e.subtype);
-      io.say(
-        `[${step === 'work' ? task.owner : 'QA'}] ${task.id}: ชนขีดจำกัด ${e.subtype} — นับเป็นรอบที่ไม่ผ่าน`,
-      );
+      io.say(`[${stepSayName(task, step)}] ${task.id}: ชนขีดจำกัด ${e.subtype} — นับเป็นรอบที่ไม่ผ่าน`);
       return { report, limitHit: true };
     }
     throw e;

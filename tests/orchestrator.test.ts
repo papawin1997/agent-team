@@ -33,8 +33,10 @@ describe('runTeam', () => {
       'pm',
       'backend',
       'qa',
+      'security',
       'frontend',
       'qa',
+      'security',
       'pm',
     ]);
     expect(store.state?.phase).toBe('DONE');
@@ -151,7 +153,7 @@ describe('runTeam', () => {
 
     const final = await runTeam(deps, { resume: true });
     expect(final.phase).toBe('DONE');
-    expect(roles(runner.calls)).toEqual(['frontend', 'qa', 'pm']);
+    expect(roles(runner.calls)).toEqual(['frontend', 'qa', 'security', 'pm']);
   });
 
   it('resume โดยไม่มี state -> error', async () => {
