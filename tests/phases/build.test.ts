@@ -223,6 +223,7 @@ describe('runBuild', () => {
       level: 'INFO',
       data: { taskId: 'api', round: 1, issues: 0, blockers: 0, majors: 0 },
     });
+    expect(state.progress.api?.securityReviewed).toBe(true);
   });
 
   it('security เจอ blocker: say "[Security] ... FAIL", log event security.report แบบ WARN พร้อม blockers/majors และ artifact ของรอบนั้นมี issue ของ security', async () => {
@@ -249,6 +250,7 @@ describe('runBuild', () => {
     expect(artifact.issues).toEqual(
       failSecurityReport('api', 'blocker').issues.map((i) => ({ ...i, description: `[Security] ${i.description}` })),
     );
+    expect(state.progress.api?.securityReviewed).toBe(true);
   });
 
   it('security ชน error_max_turns หลัง QA ผ่าน: ไม่ทิ้ง qaReport เดิม รอบนั้นผ่านเลยโดยไม่มีผลตรวจ security', async () => {
@@ -285,6 +287,28 @@ describe('runBuild', () => {
     expect(runner.calls.filter((c) => c.role === 'backend')).toHaveLength(1);
     expect(state.progress.api?.done).toBe(true);
     expect(state.progress.api?.securityReviewed).toBe(false);
+    expect(state.progress.api?.rounds).toBe(1);
+  });
+
+  it('security ชนขีดจำกัดหลัง QA ผ่าน: log event security.report_failed แบบ WARN', async () => {
+    const events: Array<{ level: string; event: string; data: Record<string, unknown> }> = [];
+    const { deps } = makeDeps(
+      {
+        qa: [passReport('api')],
+        security: [new RoleRunError('security: error_max_turns', false, 'error_max_turns')],
+      },
+      [],
+    );
+    deps.log = { log: (level, event, data) => void events.push({ level, event, data: data as never }) };
+    const state = buildState(single());
+    await runBuild(deps, state);
+
+    const failedEvents = events.filter((e) => e.event === 'security.report_failed');
+    expect(failedEvents).toHaveLength(1);
+    expect(failedEvents[0]).toMatchObject({
+      level: 'WARN',
+      data: { taskId: 'api', round: 1, reason: 'error_max_turns' },
+    });
   });
 });
 

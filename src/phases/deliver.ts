@@ -17,7 +17,7 @@ export async function runDeliver(deps: Deps, state: State): Promise<void> {
   const { turn, sessionId } = await runner.pmTurn({
     sessionId: state.pmSessionId,
     prompt:
-      "งานทั้งหมดผ่าน QA แล้ว (บาง task อาจถูก 'รับตามสภาพ' หรือยังไม่เคยผ่านการตรวจความปลอดภัยเลย) " +
+      "งานทั้งหมดจบรอบ BUILD แล้ว (บาง task อาจถูก 'รับตามสภาพ' หรือยังไม่เคยผ่านการตรวจความปลอดภัยเลย) " +
       'ช่วยสรุปส่งมอบให้ user ตรวจรับเป็นภาษาไทย ' +
       "task ที่ acceptedWithIssues=true คือ 'รับตามสภาพ' และ task ที่ securityReviewed=false คือยังไม่เคยผ่านการตรวจความปลอดภัยเลย ให้ระบุทั้งสองเรื่องแยกกันให้ชัด:\n" +
       JSON.stringify(summary),
