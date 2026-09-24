@@ -92,7 +92,7 @@ export function checkToolUse(
   toolName: string,
   input: Record<string, unknown>,
 ): Verdict {
-  const readOnlyRole = ctx.role === 'pm' || ctx.role === 'planning';
+  const readOnlyRole = ctx.role === 'pm' || ctx.role === 'planning' || ctx.role === 'security';
   if (readOnlyRole && (WRITE_TOOLS.has(toolName) || toolName === 'Bash')) {
     return deny(`role ${ctx.role} เป็นแบบอ่านอย่างเดียว`);
   }

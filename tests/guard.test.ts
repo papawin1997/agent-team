@@ -58,8 +58,8 @@ describe('Bash tool input', () => {
   });
 });
 
-describe('pm และ planning อ่านอย่างเดียว', () => {
-  it.each(['pm', 'planning'] as const)('%s เขียนหรือรัน Bash ไม่ได้', (role) => {
+describe('pm, planning และ security อ่านอย่างเดียว', () => {
+  it.each(['pm', 'planning', 'security'] as const)('%s เขียนหรือรัน Bash ไม่ได้', (role) => {
     expect(allowed(role, 'Write', { file_path: 'a.ts' })).toBe(false);
     expect(allowed(role, 'Bash', { command: 'ls' })).toBe(false);
     expect(allowed(role, 'Read', { file_path: 'a.ts' })).toBe(true);
