@@ -1,4 +1,4 @@
-import type { Design, QAReport, Task } from './schemas';
+import type { Design, QAReport, SecurityReport, Task } from './schemas';
 import type { TaskProgress } from './state';
 
 export class DesignError extends Error {
@@ -41,6 +41,10 @@ export function isPass(report: QAReport): boolean {
     report.checks.every((c) => c.status !== 'fail') &&
     report.issues.every((i) => i.severity === 'minor')
   );
+}
+
+export function isSecurityPass(report: SecurityReport): boolean {
+  return report.verdict === 'PASS' && report.issues.every((i) => i.severity === 'minor');
 }
 
 export function initProgress(
