@@ -28,6 +28,7 @@ export const DesignSchema = z.object({
   apiContract: z.string(),
   dataModel: z.string(),
   tasks: z.array(TaskSchema).min(1),
+  securityNotes: z.array(z.string()).optional(),
 });
 export type Design = z.infer<typeof DesignSchema>;
 
@@ -45,6 +46,7 @@ export const QAIssueSchema = z.object({
   description: z.string().min(1),
   suggestedFix: z.string(),
 });
+export type QAIssue = z.infer<typeof QAIssueSchema>;
 
 export const QACheckSchema = z.object({
   name: z.enum(['build', 'lint', 'test', 'review']),
@@ -60,6 +62,18 @@ export const QAReportSchema = z.object({
   testsAdded: z.array(z.string()),
 });
 export type QAReport = z.infer<typeof QAReportSchema>;
+
+export const SecurityReportSchema = z.object({
+  taskId: z.string().min(1),
+  verdict: z.enum(['PASS', 'FAIL']),
+  issues: z.array(QAIssueSchema),
+});
+export type SecurityReport = z.infer<typeof SecurityReportSchema>;
+
+export const SecurityDesignReviewSchema = z.object({
+  securityNotes: z.array(z.string()),
+});
+export type SecurityDesignReview = z.infer<typeof SecurityDesignReviewSchema>;
 
 export const PmTurnSchema = z.object({
   message: z.string().min(1),
