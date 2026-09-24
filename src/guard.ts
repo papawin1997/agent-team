@@ -93,8 +93,11 @@ export function checkToolUse(
   input: Record<string, unknown>,
 ): Verdict {
   const readOnlyRole = ctx.role === 'pm' || ctx.role === 'planning' || ctx.role === 'security';
-  if (readOnlyRole && (WRITE_TOOLS.has(toolName) || toolName === 'Bash')) {
-    return deny(`role ${ctx.role} เป็นแบบอ่านอย่างเดียว`);
+  if (readOnlyRole) {
+    if (!READ_TOOLS.has(toolName)) {
+      return deny(`role ${ctx.role} เป็นแบบอ่านอย่างเดียว ใช้ ${toolName} ไม่ได้`);
+    }
+    return checkReadTool(ctx, toolName, input);
   }
   if (toolName === 'Bash') {
     return typeof input.command === 'string' ? checkBash(input.command) : deny('ไม่พบคำสั่ง Bash');
