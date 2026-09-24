@@ -1,3 +1,4 @@
+import { parseChoice } from '../../src/cli';
 import { DEFAULT_CONFIG } from '../../src/config';
 import type {
   Deps,
@@ -52,12 +53,16 @@ export class ScriptedIO implements UserIO {
     return answer;
   }
 
-  async choose<T extends string>(prompt: string, options: readonly T[]): Promise<T> {
+  async chooseOrText<T extends string>(prompt: string, options: readonly T[]): Promise<T | { text: string }> {
     const answer = await this.ask(prompt);
-    if (!options.includes(answer as T)) {
-      throw new Error(`ScriptedIO: "${answer}" ไม่อยู่ใน ${options.join(',')}`);
-    }
-    return answer as T;
+    const choice = parseChoice(answer, options);
+    return choice ?? { text: answer };
+  }
+
+  async choose<T extends string>(prompt: string, options: readonly T[]): Promise<T> {
+    const result = await this.chooseOrText(prompt, options);
+    if (typeof result === 'string') return result;
+    throw new Error(`ScriptedIO: "${result.text}" ไม่อยู่ใน ${options.join(',')}`);
   }
 }
 

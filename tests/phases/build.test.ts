@@ -157,15 +157,30 @@ describe('runBuild', () => {
   it('escalate บันทึก pmSessionId ลง store ก่อนถาม user', async () => {
     const { deps, io, store } = makeDeps({ qa: fails('api', 5), pm: [asking('ค้าง')] }, ['abort']);
     let persistedWhenAsked: string | undefined;
-    const choose = io.choose.bind(io);
-    io.choose = async (prompt, options) => {
+    const chooseOrText = io.chooseOrText.bind(io);
+    io.chooseOrText = async (prompt, options) => {
       persistedWhenAsked = store.state?.pmSessionId;
-      return choose(prompt, options);
+      return chooseOrText(prompt, options);
     };
     await runBuild(deps, buildState(single()));
 
     expect(persistedWhenAsked).toBe('pm-session');
     expect(store.state?.pmSessionId).toBe('pm-session');
+  });
+
+  it('escalate: พิมพ์คำถามแทนการเลือก continue/accept/abort -> PM ตอบก่อน แล้วถามใหม่จนเลือกจริง', async () => {
+    const { deps, runner, io } = makeDeps(
+      { qa: fails('api', 5), pm: [asking('ค้าง 5 รอบ'), asking('เพราะ endpoint ยังไม่ครบตาม spec')] },
+      ['ทำไมถึงไม่ผ่าน', 'abort'],
+    );
+    const state = buildState(single());
+    await runBuild(deps, state);
+
+    expect(state.phase).toBe('ABORTED');
+    const pmCalls = runner.calls.filter((c) => c.role === 'pm');
+    expect(pmCalls).toHaveLength(2);
+    expect((pmCalls[1]!.input as { prompt: string }).prompt).toBe('ทำไมถึงไม่ผ่าน');
+    expect(io.said.join('\n')).toContain('เพราะ endpoint ยังไม่ครบตาม spec');
   });
 
   it('QA ผ่านแล้วเรียก security ต่อ: security ผ่านด้วย -> task done ปกติ', async () => {

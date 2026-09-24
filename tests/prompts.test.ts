@@ -52,6 +52,16 @@ describe('SYSTEM_PROMPTS', () => {
   it('QA prompt อ้างถึง securityNotes ของ design', () => {
     expect(SYSTEM_PROMPTS.qa).toContain('securityNotes');
   });
+
+  it('PM ตอบคำถามอิสระและให้คำแนะนำได้ ไม่ใช่แค่ท่องตัวเลือกซ้ำ', () => {
+    expect(SYSTEM_PROMPTS.pm).toContain('question or comment');
+    expect(SYSTEM_PROMPTS.pm).toContain('recommendation');
+  });
+
+  it('PM ไม่แอบเสนอ requirements ใหม่ระหว่างตอบคำถามที่จุดตัดสินใจ ต้องบอกให้เลือก option แทน', () => {
+    expect(SYSTEM_PROMPTS.pm).toContain('even if the user seems to want a change');
+    expect(SYSTEM_PROMPTS.pm).toContain('instead of attempting it yourself in this turn');
+  });
 });
 
 describe('prompt builders', () => {

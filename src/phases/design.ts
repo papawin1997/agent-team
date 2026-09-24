@@ -1,4 +1,4 @@
-import { askNonEmpty } from '../io-util';
+import { askNonEmpty, decide } from '../io-util';
 import type { Deps } from '../deps';
 import { DesignError, initProgress, orderTasks } from '../domain';
 import { formatDesign } from '../format';
@@ -55,7 +55,7 @@ export async function runReview(deps: Deps, state: State): Promise<void> {
   io.say(`\n[PM] ${turn.message}\n`);
   io.say(formatDesign(design));
 
-  const decision = await io.choose('ยืนยันแบบนี้ไหม?', ['confirm', 'revise'] as const);
+  const decision = await decide(deps, state, 'ยืนยันแบบนี้ไหม?', ['confirm', 'revise'] as const);
   if (decision === 'confirm') {
     state.progress = initProgress(design, state.progress, config.maxQaRounds);
     state.phase = 'BUILD';

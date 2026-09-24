@@ -65,4 +65,14 @@ export class LoggingIO implements UserIO {
     this.logger.log('INFO', 'user.choice', { prompt, choice });
     return choice;
   }
+
+  async chooseOrText<T extends string>(prompt: string, options: readonly T[]): Promise<T | { text: string }> {
+    const result = await this.inner.chooseOrText(prompt, options);
+    if (typeof result === 'string') {
+      this.logger.log('INFO', 'user.choice', { prompt, choice: result });
+    } else {
+      this.logger.log('INFO', 'user.question', { prompt, question: result.text });
+    }
+    return result;
+  }
 }

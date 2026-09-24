@@ -1,5 +1,5 @@
 import type { Deps } from '../deps';
-import { askNonEmpty } from '../io-util';
+import { askNonEmpty, decide } from '../io-util';
 import { formatRequirements } from '../format';
 import type { State } from '../state';
 
@@ -23,7 +23,7 @@ export async function runRequirements(deps: Deps, state: State): Promise<void> {
 
     if (turn.status === 'proposal' && turn.requirements) {
       io.say(formatRequirements(turn.requirements));
-      const decision = await io.choose('ยืนยัน requirements นี้ไหม?', ['confirm', 'revise'] as const);
+      const decision = await decide(deps, state, 'ยืนยัน requirements นี้ไหม?', ['confirm', 'revise'] as const);
       if (decision === 'confirm') {
         state.requirements = turn.requirements;
         state.phase = 'DESIGN';

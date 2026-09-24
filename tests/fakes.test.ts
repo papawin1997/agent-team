@@ -17,6 +17,18 @@ describe('ScriptedIO', () => {
   it('choose โยน error เมื่อคำตอบไม่อยู่ในตัวเลือก', async () => {
     await expect(new ScriptedIO(['zzz']).choose('q', ['a', 'b'] as const)).rejects.toThrow('ไม่อยู่ใน');
   });
+
+  it('chooseOrText คืนตัวเลือกตรง ๆ เมื่อคำตอบตรงกับ option', async () => {
+    const io = new ScriptedIO(['confirm']);
+    const result = await io.chooseOrText('q', ['confirm', 'revise'] as const);
+    expect(result).toBe('confirm');
+  });
+
+  it('chooseOrText คืน text ที่ห่อไว้เมื่อคำตอบไม่ตรงตัวเลือก', async () => {
+    const io = new ScriptedIO(['ทำไมต้องทำแบบนี้']);
+    const result = await io.chooseOrText('q', ['confirm', 'revise'] as const);
+    expect(result).toEqual({ text: 'ทำไมต้องทำแบบนี้' });
+  });
 });
 
 describe('FakeRunner / MemoryStore', () => {

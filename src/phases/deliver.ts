@@ -1,5 +1,5 @@
 import type { Deps } from '../deps';
-import { askNonEmpty } from '../io-util';
+import { askNonEmpty, decide } from '../io-util';
 import type { State } from '../state';
 
 export async function runDeliver(deps: Deps, state: State): Promise<void> {
@@ -26,7 +26,7 @@ export async function runDeliver(deps: Deps, state: State): Promise<void> {
   await store.save(state);
   io.say(`\n[PM] ${turn.message}\n`);
 
-  const decision = await io.choose('ตรวจรับงานนี้ไหม?', ['accept', 'change'] as const);
+  const decision = await decide(deps, state, 'ตรวจรับงานนี้ไหม?', ['accept', 'change'] as const);
   if (decision === 'accept') {
     state.phase = 'DONE';
   } else {

@@ -14,10 +14,11 @@ const LABELS: Record<string, string> = {
 const EOF_MESSAGE = 'stdin ถูกปิด (EOF) — หยุดการทำงาน';
 
 export function parseChoice<T extends string>(input: string, options: readonly T[]): T | undefined {
-  const text = input.trim();
+  const text = input.trim().replace(/[.)]+$/, '');
   const n = Number(text);
   if (text !== '' && Number.isInteger(n) && n >= 1 && n <= options.length) return options[n - 1];
-  return options.find((o) => o === text);
+  const lower = text.toLowerCase();
+  return options.find((o) => o.toLowerCase() === lower || LABELS[o] === text);
 }
 
 export interface CliIOOptions {
@@ -65,12 +66,17 @@ export class CliIO implements UserIO {
     return (await Promise.race([this.rl.question(prompt), this.closed])).trim();
   }
 
-  async choose<T extends string>(prompt: string, options: readonly T[]): Promise<T> {
+  async chooseOrText<T extends string>(prompt: string, options: readonly T[]): Promise<T | { text: string }> {
     const menu = options.map((o, i) => `${i + 1}) ${o}${LABELS[o] ? ` (${LABELS[o]})` : ''}`).join('   ');
+    const answer = await this.ask(`${prompt}\n${menu}\nหรือพิมพ์คำถาม/ความเห็นถึง PM ก่อนตัดสินใจก็ได้\n> `);
+    const choice = parseChoice(answer, options);
+    return choice ?? { text: answer };
+  }
+
+  async choose<T extends string>(prompt: string, options: readonly T[]): Promise<T> {
     for (;;) {
-      const answer = await this.ask(`${prompt}\n${menu}\n> `);
-      const choice = parseChoice(answer, options);
-      if (choice) return choice;
+      const result = await this.chooseOrText(prompt, options);
+      if (typeof result === 'string') return result;
       this.say('กรุณาพิมพ์หมายเลขหรือชื่อตัวเลือกให้ตรง');
     }
   }

@@ -21,6 +21,21 @@ describe('parseChoice', () => {
     expect(parseChoice('maybe', options)).toBeUndefined();
     expect(parseChoice('', options)).toBeUndefined();
   });
+
+  it('เลือกด้วยชื่อ option แบบไม่สนตัวพิมพ์ใหญ่เล็ก', () => {
+    expect(parseChoice('Confirm', options)).toBe('confirm');
+    expect(parseChoice('REVISE', options)).toBe('revise');
+  });
+
+  it('เลือกด้วยป้ายภาษาไทยที่โชว์ในเมนู', () => {
+    expect(parseChoice('ยืนยัน', options)).toBe('confirm');
+    expect(parseChoice('ขอแก้', options)).toBe('revise');
+  });
+
+  it('ตัดจุด/วงเล็บท้ายก่อนเทียบ', () => {
+    expect(parseChoice('1.', options)).toBe('confirm');
+    expect(parseChoice('2)', options)).toBe('revise');
+  });
 });
 
 describe('CliIO', () => {
@@ -89,6 +104,23 @@ describe('CliIO', () => {
     await vi.waitFor(() => expect(written()).toContain('กรุณาพิมพ์หมายเลขหรือชื่อตัวเลือกให้ตรง\n'));
     input.write('2\n');
     expect(await choice).toBe('revise');
+  });
+
+  it('chooseOrText: คืนตัวเลือกเมื่อพิมพ์ตรงกับตัวเลือก', async () => {
+    const { io, input } = makeIO();
+    const result = io.chooseOrText('เลือก', options);
+    input.write('confirm\n');
+    expect(await result).toBe('confirm');
+  });
+
+  it('chooseOrText: คืน { text } เมื่อพิมพ์อย่างอื่น พร้อมโชว์คำใบ้ว่าถามได้', async () => {
+    const { io, input, written } = makeIO();
+    const result = io.chooseOrText('เลือก', options);
+    await vi.waitFor(() => {
+      expect(written()).toContain('หรือพิมพ์คำถาม/ความเห็นถึง PM ก่อนตัดสินใจก็ได้');
+    });
+    input.write('ทำไมต้องเลือกแบบนี้\n');
+    expect(await result).toEqual({ text: 'ทำไมต้องเลือกแบบนี้' });
   });
 
   describe('Ctrl+C ใน terminal mode (raw mode ไม่ส่ง SIGINT ให้ process)', () => {

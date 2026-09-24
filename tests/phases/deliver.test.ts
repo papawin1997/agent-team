@@ -49,15 +49,30 @@ describe('runDeliver', () => {
     const spyIo: UserIO = {
       say: (text) => io.say(text),
       ask: (prompt) => io.ask(prompt),
-      choose: async (prompt, options) => {
+      choose: (prompt, options) => io.choose(prompt, options),
+      chooseOrText: async (prompt, options) => {
         persistedAtChoose = store.state?.pmSessionId;
-        return io.choose(prompt, options);
+        return io.chooseOrText(prompt, options);
       },
     };
     const state = deliverState();
     await runDeliver({ ...deps, io: spyIo }, state);
 
     expect(persistedAtChoose).toBe('pm-session');
+  });
+
+  it('พิมพ์คำถามแทนการเลือก accept/change -> PM ตอบก่อน แล้วถามใหม่จนเลือกจริง', async () => {
+    const { deps, runner, io } = makeDeps(
+      { pm: [asking('ส่งมอบครบแล้ว'), asking('security ตรวจผ่านทุก task แล้วครับ')] },
+      ['security ตรวจผ่านหมดหรือยัง', 'accept'],
+    );
+    const state = deliverState();
+    await runDeliver(deps, state);
+
+    expect(state.phase).toBe('DONE');
+    expect(runner.calls).toHaveLength(2);
+    expect((runner.calls[1]!.input as { prompt: string }).prompt).toBe('security ตรวจผ่านหมดหรือยัง');
+    expect(io.said.join('\n')).toContain('security ตรวจผ่านทุก task แล้วครับ');
   });
 
   it('แจ้ง PM ว่า task ไหนรับตามสภาพ', async () => {
