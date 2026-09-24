@@ -16,7 +16,7 @@ describe('DEFAULT_CONFIG', () => {
     }
   });
 
-  it('pm กับ planning ใช้เครื่องมืออ่านอย่างเดียว', () => {
+  it('pm, planning และ security ใช้เครื่องมืออ่านอย่างเดียว', () => {
     for (const role of ['pm', 'planning', 'security'] as const) {
       expect(DEFAULT_CONFIG.roles[role].tools).toEqual(['Read', 'Glob', 'Grep']);
     }
@@ -74,7 +74,7 @@ describe('DEFAULT_CONFIG', () => {
     expect(DEFAULT_CONFIG.roles.backend.allowedTools).not.toContain('Bash(git *)');
   });
 
-  it('pm กับ planning ไม่มี Bash ใน allowedTools', () => {
+  it('pm, planning และ security ไม่มี Bash ใน allowedTools', () => {
     for (const role of ['pm', 'planning', 'security'] as const) {
       expect(DEFAULT_CONFIG.roles[role].allowedTools).toEqual(['Read', 'Glob', 'Grep']);
     }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PlanInput, SecurityDesignInput } from '../../src/deps';
 import { DesignError } from '../../src/domain';
+import { RoleRunError } from '../../src/errors';
 import { runDesign, runReview } from '../../src/phases/design';
 import { newState, type State } from '../../src/state';
 import { asking, makeDesign, makeRequirements, makeTask } from '../helpers/builders';
@@ -61,6 +62,19 @@ describe('runDesign', () => {
     const call = runner.calls.find((c) => c.role === 'security');
     expect(call).toBeDefined();
     expect((call!.input as SecurityDesignInput).requirements).toEqual(makeRequirements());
+  });
+
+  it('security ตรวจ design พังไม่ทำให้ phase ทั้งหมดพัง: ได้ securityNotes ว่างแทน', async () => {
+    const design = makeDesign();
+    const { deps } = makeDeps(
+      { plans: [design], securityDesign: [new RoleRunError('security: error_max_turns', false, 'error_max_turns')] },
+      [],
+    );
+    const state = stateAt('DESIGN');
+    await runDesign(deps, state);
+
+    expect(state.phase).toBe('REVIEW');
+    expect(state.design).toEqual({ ...design, securityNotes: [] });
   });
 });
 

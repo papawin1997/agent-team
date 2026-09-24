@@ -197,6 +197,46 @@ describe('runBuild', () => {
     expect((works[1]!.input as WorkInput).previousReport?.issues[0]?.description).toBe('มีช่องโหว่');
   });
 
+  it('security ผ่าน: say "[Security] ... PASS" และ log event security.report แบบ INFO', async () => {
+    const events: Array<{ level: string; event: string; data: Record<string, unknown> }> = [];
+    const { deps, io } = makeDeps({ qa: [passReport('api')], security: [passSecurityReport('api')] }, []);
+    deps.log = { log: (level, event, data) => void events.push({ level, event, data: data as never }) };
+    const state = buildState(single());
+    await runBuild(deps, state);
+
+    expect(io.said).toContain('[Security] api: PASS (0 issues)');
+    const securityEvents = events.filter((e) => e.event === 'security.report');
+    expect(securityEvents).toHaveLength(1);
+    expect(securityEvents[0]).toMatchObject({
+      level: 'INFO',
+      data: { taskId: 'api', issues: 0, blockers: 0, majors: 0 },
+    });
+  });
+
+  it('security เจอ blocker: say "[Security] ... FAIL", log event security.report แบบ WARN พร้อม blockers/majors และ artifact ของรอบนั้นมี issue ของ security', async () => {
+    const events: Array<{ level: string; event: string; data: Record<string, unknown> }> = [];
+    const { deps, io, store } = makeDeps(
+      {
+        qa: [passReport('api'), passReport('api')],
+        security: [failSecurityReport('api', 'blocker'), passSecurityReport('api')],
+      },
+      [],
+    );
+    deps.log = { log: (level, event, data) => void events.push({ level, event, data: data as never }) };
+    const state = buildState(single());
+    await runBuild(deps, state);
+
+    expect(io.said).toContain('[Security] api: FAIL (1 issues)');
+    const securityEvents = events.filter((e) => e.event === 'security.report');
+    expect(securityEvents[0]).toMatchObject({
+      level: 'WARN',
+      data: { taskId: 'api', issues: 1, blockers: 1, majors: 0 },
+    });
+
+    const artifact = store.artifacts.get('reports/api-round1.json') as { issues: unknown[] };
+    expect(artifact.issues).toEqual(failSecurityReport('api', 'blocker').issues);
+  });
+
   it('security ชน error_max_turns: นับเป็นรอบที่ไม่ผ่านเหมือน QA/worker', async () => {
     const { deps, runner } = makeDeps(
       {
