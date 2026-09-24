@@ -79,6 +79,16 @@ describe('pm, planning และ security ปฏิเสธเครื่อ�
   });
 });
 
+describe('pm, planning และ security ใช้ Skill tool ได้ (สำหรับ role ที่มี skills กำหนดไว้)', () => {
+  it.each(['pm', 'planning', 'security'] as const)('%s ใช้ Skill ได้', (role) => {
+    expect(allowed(role, 'Skill', {})).toBe(true);
+  });
+
+  it('SomeFutureTool ยังถูกปฏิเสธเหมือนเดิม (regression check)', () => {
+    expect(allowed('security', 'SomeFutureTool', {})).toBe(false);
+  });
+});
+
 describe('อ่านไฟล์', () => {
   it('บล็อกการอ่านนอกโปรเจกต์', () => {
     expect(allowed('frontend', 'Read', { file_path: outside })).toBe(false);

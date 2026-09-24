@@ -23,6 +23,7 @@ const deny = (reason: string): Verdict => ({ ok: false, reason });
 
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
 const READ_TOOLS = new Set(['Read', 'Glob', 'Grep']);
+const READ_ONLY_EXTRA_TOOLS = new Set(['Skill']);
 const PROTECTED_DIRS = ['.git', '.agent-team', '.claude'];
 
 // ---------------------------------------------------------------------------
@@ -94,10 +95,9 @@ export function checkToolUse(
 ): Verdict {
   const readOnlyRole = ctx.role === 'pm' || ctx.role === 'planning' || ctx.role === 'security';
   if (readOnlyRole) {
-    if (!READ_TOOLS.has(toolName)) {
-      return deny(`role ${ctx.role} เป็นแบบอ่านอย่างเดียว ใช้ ${toolName} ไม่ได้`);
-    }
-    return checkReadTool(ctx, toolName, input);
+    if (READ_TOOLS.has(toolName)) return checkReadTool(ctx, toolName, input);
+    if (READ_ONLY_EXTRA_TOOLS.has(toolName)) return OK;
+    return deny(`role ${ctx.role} เป็นแบบอ่านอย่างเดียว ใช้ ${toolName} ไม่ได้`);
   }
   if (toolName === 'Bash') {
     return typeof input.command === 'string' ? checkBash(input.command) : deny('ไม่พบคำสั่ง Bash');
