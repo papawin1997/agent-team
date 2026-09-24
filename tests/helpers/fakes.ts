@@ -1,3 +1,4 @@
+import { parseChoice } from '../../src/cli';
 import { DEFAULT_CONFIG } from '../../src/config';
 import type {
   Deps,
@@ -54,7 +55,8 @@ export class ScriptedIO implements UserIO {
 
   async chooseOrText<T extends string>(prompt: string, options: readonly T[]): Promise<T | { text: string }> {
     const answer = await this.ask(prompt);
-    return options.includes(answer as T) ? (answer as T) : { text: answer };
+    const choice = parseChoice(answer, options);
+    return choice ?? { text: answer };
   }
 
   async choose<T extends string>(prompt: string, options: readonly T[]): Promise<T> {

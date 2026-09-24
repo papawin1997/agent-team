@@ -19,9 +19,15 @@ export async function decide<T extends string>(
   for (;;) {
     const result = await io.chooseOrText(prompt, options);
     if (typeof result === 'string') return result;
-    const { turn, sessionId } = await runner.pmTurn({ sessionId: state.pmSessionId, prompt: result.text });
-    state.pmSessionId = sessionId;
-    await store.save(state);
-    io.say(`\n[PM] ${turn.message}\n`);
+    if (result.text.trim() === '') continue;
+    io.say('[PM] กำลังตอบคำถาม...');
+    try {
+      const { turn, sessionId } = await runner.pmTurn({ sessionId: state.pmSessionId, prompt: result.text });
+      state.pmSessionId = sessionId;
+      await store.save(state);
+      io.say(`\n[PM] ${turn.message}\n`);
+    } catch (e) {
+      io.say(`\n[PM] ถาม PM ไม่สำเร็จ (${e instanceof Error ? e.message : String(e)}) — ลองถามใหม่หรือเลือกตัวเลือกได้เลย\n`);
+    }
   }
 }

@@ -21,6 +21,21 @@ describe('parseChoice', () => {
     expect(parseChoice('maybe', options)).toBeUndefined();
     expect(parseChoice('', options)).toBeUndefined();
   });
+
+  it('เลือกด้วยชื่อ option แบบไม่สนตัวพิมพ์ใหญ่เล็ก', () => {
+    expect(parseChoice('Confirm', options)).toBe('confirm');
+    expect(parseChoice('REVISE', options)).toBe('revise');
+  });
+
+  it('เลือกด้วยป้ายภาษาไทยที่โชว์ในเมนู', () => {
+    expect(parseChoice('ยืนยัน', options)).toBe('confirm');
+    expect(parseChoice('ขอแก้', options)).toBe('revise');
+  });
+
+  it('ตัดจุด/วงเล็บท้ายก่อนเทียบ', () => {
+    expect(parseChoice('1.', options)).toBe('confirm');
+    expect(parseChoice('2)', options)).toBe('revise');
+  });
 });
 
 describe('CliIO', () => {
