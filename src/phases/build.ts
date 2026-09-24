@@ -1,4 +1,5 @@
 import type { Deps } from '../deps';
+import { decide } from '../io-util';
 import { isPass, isSecurityPass, orderTasks } from '../domain';
 import { RoleRunError } from '../errors';
 import { nullLogger } from '../logger';
@@ -210,7 +211,9 @@ async function escalate(
   state.pmSessionId = sessionId;
   await deps.store.save(state);
   io.say(`\n[PM] ${turn.message}\n`);
-  return io.choose(
+  return decide(
+    deps,
+    state,
     `task ${task.id} ไม่ผ่านครบ ${progress.rounds} รอบ (continue = ทำต่ออีก ${config.extraRoundsOnContinue} รอบ, accept = รับตามสภาพ, abort = ยกเลิก)`,
     ['continue', 'accept', 'abort'] as const,
   );

@@ -113,4 +113,18 @@ describe('runRequirements', () => {
 
     expect(io.asked[0]).toBe('พิมพ์ข้อความถึง PM เพื่อคุยต่อ\n> ');
   });
+
+  it('พิมพ์คำถามแทนการเลือก confirm/revise -> PM ตอบก่อน แล้วถามใหม่จนกว่าจะเลือกจริง', async () => {
+    const { deps, runner, io } = makeDeps(
+      { pm: [asking('ใช้ tech อะไร?'), proposal(), asking('เพราะ Express เบาและเร็วพอสำหรับ todo list')] },
+      ['อยากได้ todo list', 'ใช้ Express', 'ทำไมต้องใช้ Express', 'confirm'],
+    );
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(state.phase).toBe('DESIGN');
+    expect(runner.calls).toHaveLength(3);
+    expect(pmInput(runner, 2).prompt).toBe('ทำไมต้องใช้ Express');
+    expect(io.said.join('\n')).toContain('เพราะ Express เบาและเร็วพอ');
+  });
 });

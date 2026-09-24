@@ -187,10 +187,10 @@ describe('runReview', () => {
   it('บันทึก pmSessionId ลง store ก่อนถาม user', async () => {
     const { deps, io, store } = makeDeps({ pm: [asking('สรุป')] }, ['confirm']);
     let persistedWhenAsked: string | undefined;
-    const choose = io.choose.bind(io);
-    io.choose = async (prompt, options) => {
+    const chooseOrText = io.chooseOrText.bind(io);
+    io.chooseOrText = async (prompt, options) => {
       persistedWhenAsked = store.state?.pmSessionId;
-      return choose(prompt, options);
+      return chooseOrText(prompt, options);
     };
     const state = stateAt('REVIEW');
     state.design = makeDesign();
@@ -218,5 +218,20 @@ describe('runReview', () => {
     await runReview(deps, state);
 
     expect(state.designFeedback).toBeUndefined();
+  });
+
+  it('พิมพ์คำถามแทนการเลือก confirm/revise -> PM ตอบก่อน แล้วถามใหม่จนเลือกจริง', async () => {
+    const { deps, runner, io } = makeDeps(
+      { pm: [asking('สรุป design ให้ฟัง'), asking('เพราะ backend ต้องเสร็จก่อนถึงจะเทส UI ได้')] },
+      ['ทำไม backend ต้องทำก่อน', 'confirm'],
+    );
+    const state = stateAt('REVIEW');
+    state.design = makeDesign();
+    await runReview(deps, state);
+
+    expect(state.phase).toBe('BUILD');
+    expect(runner.calls).toHaveLength(2);
+    expect((runner.calls[1]!.input as { prompt: string }).prompt).toBe('ทำไม backend ต้องทำก่อน');
+    expect(io.said.join('\n')).toContain('เพราะ backend ต้องเสร็จก่อน');
   });
 });
