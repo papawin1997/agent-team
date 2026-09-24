@@ -189,4 +189,25 @@ describe('SdkRoleRunner', () => {
     expect(calls[0]!.options.tools).toContain('Edit');
     expect(calls[0]!.options.systemPrompt).toContain('frontend worker');
   });
+
+  it('securityDesign คืน securityNotes จาก structured output', async () => {
+    const { runner, calls } = makeRunner([[initMsg(), okResult({ securityNotes: ['เก็บ password แบบ hash'] })]]);
+    const notes = await runner.securityDesign({ design: makeDesign(), requirements: makeRequirements() });
+
+    expect(notes).toEqual(['เก็บ password แบบ hash']);
+    expect(calls[0]!.options.model).toBe('claude-sonnet-5');
+  });
+
+  it('security คืน SecurityReport จาก structured output', async () => {
+    const report = { taskId: 'api', verdict: 'PASS', issues: [] };
+    const { runner } = makeRunner([[initMsg(), okResult(report)]]);
+    const out = await runner.security({
+      task: makeTask('api'),
+      design: makeDesign(),
+      requirements: makeRequirements(),
+      result: { taskId: 'api', summary: 'เสร็จ', filesChanged: ['src/api.ts'], howToVerify: 'npm test' },
+    });
+
+    expect(out).toEqual(report);
+  });
 });

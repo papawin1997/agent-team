@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { asking, makeDesign, passReport } from './helpers/builders';
+import { asking, makeDesign, makeRequirements, makeTask, passReport } from './helpers/builders';
 import { makeDeps, ScriptedIO } from './helpers/fakes';
 
 describe('ScriptedIO', () => {
@@ -38,5 +38,22 @@ describe('FakeRunner / MemoryStore', () => {
     await store.save(state);
     state.phase = 'DONE' as never;
     expect((await store.load())?.phase).toBe('BUILD');
+  });
+
+  it('security ไม่ scripted = คืน PASS ว่างสำหรับ taskId นั้น', async () => {
+    const { runner } = makeDeps({}, []);
+    const report = await runner.security({
+      task: makeTask('x'),
+      result: { taskId: 'x', summary: 's', filesChanged: [], howToVerify: '' },
+      design: makeDesign(),
+      requirements: makeRequirements(),
+    });
+    expect(report).toEqual({ taskId: 'x', verdict: 'PASS', issues: [] });
+  });
+
+  it('securityDesign ไม่ scripted = คืน securityNotes ว่าง', async () => {
+    const { runner } = makeDeps({}, []);
+    const notes = await runner.securityDesign({ design: makeDesign(), requirements: makeRequirements() });
+    expect(notes).toEqual([]);
   });
 });

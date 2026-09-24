@@ -1,11 +1,18 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { type RoleName, SKILLS_PLUGIN_DIR, type TeamConfig } from './config';
-import type { PlanInput, PmInput, QaInput, RoleRunner, WorkInput } from './deps';
+import type { PlanInput, PmInput, QaInput, RoleRunner, SecurityDesignInput, WorkInput } from './deps';
 import { RoleOutputError, RoleRunError } from './errors';
 import { type Logger, nullLogger } from './logger';
 import { buildQueryOptions } from './options';
-import { buildPlanPrompt, buildQaPrompt, buildWorkPrompt, SYSTEM_PROMPTS } from './prompts';
+import {
+  buildPlanPrompt,
+  buildQaPrompt,
+  buildSecurityDesignPrompt,
+  buildSecurityPrompt,
+  buildWorkPrompt,
+  SYSTEM_PROMPTS,
+} from './prompts';
 import {
   type Design,
   DesignSchema,
@@ -13,6 +20,9 @@ import {
   PmTurnSchema,
   type QAReport,
   QAReportSchema,
+  SecurityDesignReviewSchema,
+  type SecurityReport,
+  SecurityReportSchema,
   type WorkerResult,
   WorkerResultSchema,
   toJsonSchema,
@@ -64,6 +74,15 @@ export class SdkRoleRunner implements RoleRunner {
 
   async qa(input: QaInput): Promise<QAReport> {
     return (await this.runValidated('qa', buildQaPrompt(input), QAReportSchema)).data;
+  }
+
+  async securityDesign(input: SecurityDesignInput): Promise<string[]> {
+    const out = await this.runValidated('security', buildSecurityDesignPrompt(input), SecurityDesignReviewSchema);
+    return out.data.securityNotes;
+  }
+
+  async security(input: QaInput): Promise<SecurityReport> {
+    return (await this.runValidated('security', buildSecurityPrompt(input), SecurityReportSchema)).data;
   }
 
   private async runValidated<T>(
