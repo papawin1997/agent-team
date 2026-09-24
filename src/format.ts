@@ -35,7 +35,7 @@ export function formatDesign(d: Design): string {
     'Tasks:',
     tasks,
     'ข้อควรระวังด้านความปลอดภัย (Security):',
-    list(d.securityNotes ?? []),
+    d.securityNotes === undefined ? '  (Security ตรวจไม่สำเร็จ — ยังไม่มีผลตรวจ)' : list(d.securityNotes),
     '',
   ].join('\n');
 }

@@ -64,9 +64,9 @@ describe('runDesign', () => {
     expect((call!.input as SecurityDesignInput).requirements).toEqual(makeRequirements());
   });
 
-  it('security ตรวจ design พังไม่ทำให้ phase ทั้งหมดพัง: ได้ securityNotes ว่างแทน', async () => {
+  it('security ตรวจ design พังไม่ทำให้ phase ทั้งหมดพัง: securityNotes เป็น undefined (ไม่ใช่ [] ที่อ่านว่า "ไม่มีปัญหา") และเตือน user', async () => {
     const design = makeDesign();
-    const { deps } = makeDeps(
+    const { deps, io } = makeDeps(
       { plans: [design], securityDesign: [new RoleRunError('security: error_max_turns', false, 'error_max_turns')] },
       [],
     );
@@ -74,7 +74,8 @@ describe('runDesign', () => {
     await runDesign(deps, state);
 
     expect(state.phase).toBe('REVIEW');
-    expect(state.design).toEqual({ ...design, securityNotes: [] });
+    expect(state.design).toEqual({ ...design, securityNotes: undefined });
+    expect(io.said.some((s) => s.includes('[Security]') && s.includes('ตรวจ design ไม่สำเร็จ'))).toBe(true);
   });
 });
 
