@@ -66,6 +66,29 @@ describe('pm, planning และ security อ่านอย่างเดี�
   });
 });
 
+describe('pm, planning และ security ปฏิเสธเครื่องมือที่ไม่รู้จักด้วย (deny-by-default)', () => {
+  it.each(['pm', 'planning', 'security'] as const)(
+    '%s ใช้เครื่องมือที่ไม่ใช่ Read/Glob/Grep ไม่ได้ แม้จะไม่ใช่ Write หรือ Bash',
+    (role) => {
+      expect(allowed(role, 'SomeFutureTool', {})).toBe(false);
+    },
+  );
+
+  it('role ที่ไม่ใช่ read-only (เช่น backend) ยัง default-allow เครื่องมือที่ไม่รู้จัก', () => {
+    expect(allowed('backend', 'SomeFutureTool', {})).toBe(true);
+  });
+});
+
+describe('pm, planning และ security ใช้ Skill tool ได้ (สำหรับ role ที่มี skills กำหนดไว้)', () => {
+  it.each(['pm', 'planning', 'security'] as const)('%s ใช้ Skill ได้', (role) => {
+    expect(allowed(role, 'Skill', {})).toBe(true);
+  });
+
+  it('SomeFutureTool ยังถูกปฏิเสธเหมือนเดิม (regression check)', () => {
+    expect(allowed('security', 'SomeFutureTool', {})).toBe(false);
+  });
+});
+
 describe('อ่านไฟล์', () => {
   it('บล็อกการอ่านนอกโปรเจกต์', () => {
     expect(allowed('frontend', 'Read', { file_path: outside })).toBe(false);

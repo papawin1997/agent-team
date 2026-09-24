@@ -69,6 +69,7 @@ Security เพิ่มการเรียก Sonnet 1 ครั้งต่�
 ## ความปลอดภัยและข้อจำกัด
 - เขียนไฟล์ได้เฉพาะในโฟลเดอร์โปรเจกต์ ห้ามแตะ `.git`, `.agent-team`, `.claude`
 - QA เขียนได้เฉพาะไฟล์ test, PM/Planning/Security อ่านอย่างเดียว (Security ไม่รันคำสั่งและไม่แก้ไฟล์ใด ๆ เลย)
+- QA/Security ได้รับผลงานของ worker ห่อด้วย delimiter แบบสุ่มต่อครั้งพร้อมกำกับว่าเป็น DATA ไม่ใช่คำสั่ง เป็นด่านเสริมแบบ best-effort ไม่ใช่การรับประกันว่ากัน prompt injection ได้ทั้งหมด
 - git: agent รันได้เฉพาะคำสั่งอ่านอย่างเดียว (status, diff, log, show, ls-files, rev-parse, blame) คำสั่งอื่นเช่น commit/push/reset ถูกปฏิเสธ (agent ไม่ commit/push ให้)
 - Bash ถูกจำกัดด้วย allowlist คำสั่ง (dontAsk) + guard ที่ตรวจข้อความคำสั่งแบบ lexical เป็นด่านเสริมแบบ best-effort ไม่ใช่ sandbox ระดับ OS
 - `node -e` / `python -c` / `go run` ถูกอนุญาตไว้ล่วงหน้า (จำเป็นสำหรับ build/test) จึงทำได้ทุกอย่างที่ผู้ใช้ OS ทำได้ รวมถึงเขียนไฟล์นอกโฟลเดอร์โปรเจกต์หรือแก้ `.git` และ guard มองไม่เห็นสิ่งที่อยู่ข้างใน จึงควรรันกับโปรเจกต์ที่ commit/สำรองไว้ก่อนเสมอ

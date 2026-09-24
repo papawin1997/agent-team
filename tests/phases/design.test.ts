@@ -64,9 +64,9 @@ describe('runDesign', () => {
     expect((call!.input as SecurityDesignInput).requirements).toEqual(makeRequirements());
   });
 
-  it('security ตรวจ design พังไม่ทำให้ phase ทั้งหมดพัง: ได้ securityNotes ว่างแทน', async () => {
+  it('security ตรวจ design พังไม่ทำให้ phase ทั้งหมดพัง: securityNotes เป็น undefined (ไม่ใช่ [] ที่อ่านว่า "ไม่มีปัญหา") และเตือน user', async () => {
     const design = makeDesign();
-    const { deps } = makeDeps(
+    const { deps, io } = makeDeps(
       { plans: [design], securityDesign: [new RoleRunError('security: error_max_turns', false, 'error_max_turns')] },
       [],
     );
@@ -74,7 +74,8 @@ describe('runDesign', () => {
     await runDesign(deps, state);
 
     expect(state.phase).toBe('REVIEW');
-    expect(state.design).toEqual({ ...design, securityNotes: [] });
+    expect(state.design).toEqual({ ...design, securityNotes: undefined });
+    expect(io.said.some((s) => s.includes('[Security]') && s.includes('ตรวจ design ไม่สำเร็จ'))).toBe(true);
   });
 });
 
@@ -138,7 +139,13 @@ describe('runReview', () => {
     await runReview(deps, state);
 
     expect(state.phase).toBe('BUILD');
-    expect(state.progress.api).toEqual({ rounds: 0, maxRounds: 5, done: false, acceptedWithIssues: false });
+    expect(state.progress.api).toEqual({
+      rounds: 0,
+      maxRounds: 5,
+      done: false,
+      acceptedWithIssues: false,
+      securityReviewed: false,
+    });
     expect(Object.keys(state.progress)).toEqual(['api', 'ui']);
     expect(io.said.join('\n')).toContain('สรุป design ให้ฟัง');
     expect(io.said.join('\n')).toContain('ภาพรวมของระบบ');
@@ -158,7 +165,9 @@ describe('runReview', () => {
     const { deps } = makeDeps({ pm: [asking('สรุป')] }, ['confirm']);
     const state = stateAt('REVIEW');
     state.design = makeDesign([makeTask('api', 'backend', [], false), makeTask('ui', 'frontend', ['api'])]);
-    state.progress = { api: { rounds: 2, maxRounds: 5, done: true, acceptedWithIssues: false } };
+    state.progress = {
+      api: { rounds: 2, maxRounds: 5, done: true, acceptedWithIssues: false, securityReviewed: false },
+    };
     await runReview(deps, state);
 
     expect(state.progress.api?.done).toBe(true);

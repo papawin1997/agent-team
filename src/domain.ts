@@ -58,7 +58,7 @@ export function initProgress(
     next[task.id] =
       !task.changed && prev?.done
         ? prev
-        : { rounds: 0, maxRounds, done: false, acceptedWithIssues: false };
+        : { rounds: 0, maxRounds, done: false, acceptedWithIssues: false, securityReviewed: false };
   }
   return next;
 }

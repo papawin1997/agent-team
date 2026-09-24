@@ -51,20 +51,22 @@ async function runRound(
   ctx: BuildContext,
   task: Task,
   progress: TaskProgress,
-): Promise<{ report: QAReport; limitHit: boolean }> {
+): Promise<{ report: QAReport; limitHit: boolean; securityReviewed: boolean }> {
   const { runner, io } = deps;
   let step: Step = 'work';
+  let qaReport: QAReport | undefined;
   try {
     const result = await runner.work({ task, ...ctx, previousReport: progress.lastReport });
     step = 'qa';
-    const qaReport = await runner.qa({ task, result, ...ctx });
-    if (!isPass(qaReport)) return { report: qaReport, limitHit: false };
+    qaReport = await runner.qa({ task, result, ...ctx });
+    if (!isPass(qaReport)) return { report: qaReport, limitHit: false, securityReviewed: false };
 
     step = 'security';
     const securityReport = await runner.security({ task, result, ...ctx });
     const securityPassed = isSecurityPass(securityReport);
     (deps.log ?? nullLogger).log(securityPassed ? 'INFO' : 'WARN', 'security.report', {
       taskId: task.id,
+      round: progress.rounds + 1,
       issues: securityReport.issues.length,
       blockers: securityReport.issues.filter((i) => i.severity === 'blocker').length,
       majors: securityReport.issues.filter((i) => i.severity === 'major').length,
@@ -72,17 +74,39 @@ async function runRound(
     io.say(
       `[Security] ${task.id}: ${securityPassed ? 'PASS' : 'FAIL'} (${securityReport.issues.length} issues)`,
     );
-    if (securityPassed) return { report: qaReport, limitHit: false };
+    if (securityPassed) return { report: qaReport, limitHit: false, securityReviewed: true };
 
     return {
-      report: { ...qaReport, verdict: 'FAIL', issues: [...qaReport.issues, ...securityReport.issues] },
+      report: {
+        ...qaReport,
+        verdict: 'FAIL',
+        issues: [
+          ...qaReport.issues,
+          ...securityReport.issues.map((i) => ({ ...i, description: `[Security] ${i.description}` })),
+        ],
+      },
       limitHit: false,
+      securityReviewed: true,
     };
   } catch (e) {
+    if (step === 'security' && qaReport) {
+      // QA already passed this round; a security-step failure of ANY kind (SDK limit,
+      // schema-retry exhaustion, or anything else) must not discard already-approved
+      // work or force another full worker+QA round over an infra/advisory-role hiccup.
+      // Degrade to "not reviewed this round" and let the round pass on QA's own merit.
+      const reason = e instanceof RoleRunError && e.subtype !== undefined ? e.subtype : String(e);
+      (deps.log ?? nullLogger).log('WARN', 'security.report_failed', {
+        taskId: task.id,
+        round: progress.rounds + 1,
+        reason,
+      });
+      io.say(`[Security] ${task.id}: ตรวจไม่สำเร็จ (${reason}) — รอบนี้ผ่านโดยไม่มีผลตรวจความปลอดภัย`);
+      return { report: qaReport, limitHit: false, securityReviewed: false };
+    }
     if (e instanceof RoleRunError && e.subtype !== undefined && LIMIT_SUBTYPES.includes(e.subtype)) {
       const report = limitReport(task, step, e.subtype);
       io.say(`[${stepSayName(task, step)}] ${task.id}: ชนขีดจำกัด ${e.subtype} — นับเป็นรอบที่ไม่ผ่าน`);
-      return { report, limitHit: true };
+      return { report, limitHit: true, securityReviewed: false };
     }
     throw e;
   }
@@ -120,9 +144,10 @@ async function buildTask(
       io.say(
         `[${task.owner}] ทำ task ${task.id}: ${task.title} (รอบที่ ${progress.rounds + 1}/${progress.maxRounds})`,
       );
-      const { report, limitHit } = await runRound(deps, ctx, task, progress);
+      const { report, limitHit, securityReviewed } = await runRound(deps, ctx, task, progress);
       progress.rounds += 1;
       progress.lastReport = report;
+      progress.securityReviewed = securityReviewed;
       await store.saveArtifact(`reports/${task.id}-round${progress.rounds}.json`, report);
 
       const passed = isPass(report);

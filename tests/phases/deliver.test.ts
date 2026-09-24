@@ -63,11 +63,46 @@ describe('runDeliver', () => {
   it('แจ้ง PM ว่า task ไหนรับตามสภาพ', async () => {
     const { deps, runner } = makeDeps({ pm: [asking('ส่งมอบ')] }, ['accept']);
     const state = deliverState();
-    state.progress.api = { rounds: 5, maxRounds: 5, done: true, acceptedWithIssues: true };
+    state.progress.api = {
+      rounds: 5,
+      maxRounds: 5,
+      done: true,
+      acceptedWithIssues: true,
+      securityReviewed: true,
+    };
     await runDeliver(deps, state);
 
     const prompt = (runner.calls[0]!.input as PmInput).prompt;
     expect(prompt).toContain('"id":"api"');
     expect(prompt).toContain('"acceptedWithIssues":true');
+  });
+
+  it('ส่ง securityReviewed ของแต่ละ task ไปให้ PM', async () => {
+    const { deps, runner } = makeDeps({ pm: [asking('ส่งมอบ')] }, ['accept']);
+    const state = deliverState();
+    state.progress.api = {
+      rounds: 5,
+      maxRounds: 5,
+      done: true,
+      acceptedWithIssues: false,
+      securityReviewed: true,
+    };
+    state.progress.ui = {
+      rounds: 5,
+      maxRounds: 5,
+      done: true,
+      acceptedWithIssues: false,
+      securityReviewed: false,
+    };
+    await runDeliver(deps, state);
+
+    const prompt = (runner.calls[0]!.input as PmInput).prompt;
+    const summaryStart = prompt.indexOf('[');
+    const summary = JSON.parse(prompt.slice(summaryStart)) as Array<{
+      id: string;
+      securityReviewed: boolean;
+    }>;
+    expect(summary.find((t) => t.id === 'api')?.securityReviewed).toBe(true);
+    expect(summary.find((t) => t.id === 'ui')?.securityReviewed).toBe(false);
   });
 });

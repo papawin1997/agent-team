@@ -12,12 +12,14 @@ export async function runDeliver(deps: Deps, state: State): Promise<void> {
     title: t.title,
     owner: t.owner,
     acceptedWithIssues: state.progress[t.id]?.acceptedWithIssues ?? false,
+    securityReviewed: state.progress[t.id]?.securityReviewed ?? false,
   }));
   const { turn, sessionId } = await runner.pmTurn({
     sessionId: state.pmSessionId,
     prompt:
-      "งานทั้งหมดผ่าน QA แล้ว ช่วยสรุปส่งมอบให้ user ตรวจรับเป็นภาษาไทย " +
-      "task ที่ acceptedWithIssues=true คือ 'รับตามสภาพ' ให้ระบุให้ชัด:\n" +
+      "งานทั้งหมดจบรอบ BUILD แล้ว (บาง task อาจถูก 'รับตามสภาพ' หรือรอบสุดท้ายยังไม่ผ่านการตรวจความปลอดภัย) " +
+      'ช่วยสรุปส่งมอบให้ user ตรวจรับเป็นภาษาไทย ' +
+      "task ที่ acceptedWithIssues=true คือ 'รับตามสภาพ' และ task ที่ securityReviewed=false คือรอบสุดท้ายที่ส่งมอบยังไม่ผ่านการตรวจความปลอดภัย (อาจเคยถูกตรวจในรอบก่อนหน้าแล้วพบปัญหาก็ได้) ให้ระบุทั้งสองเรื่องแยกกันให้ชัด:\n" +
       JSON.stringify(summary),
   });
   state.pmSessionId = sessionId;

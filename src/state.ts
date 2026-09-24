@@ -17,6 +17,7 @@ export interface TaskProgress {
   maxRounds: number;
   done: boolean;
   acceptedWithIssues: boolean;
+  securityReviewed: boolean;
   lastReport?: QAReport;
 }
 

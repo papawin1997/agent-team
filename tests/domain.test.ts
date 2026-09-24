@@ -59,15 +59,21 @@ describe('isPass', () => {
 describe('initProgress', () => {
   it('สร้าง progress ใหม่ให้ทุก task', () => {
     const progress = initProgress(makeDesign(), {}, 5);
-    expect(progress.api).toEqual({ rounds: 0, maxRounds: 5, done: false, acceptedWithIssues: false });
+    expect(progress.api).toEqual({
+      rounds: 0,
+      maxRounds: 5,
+      done: false,
+      acceptedWithIssues: false,
+      securityReviewed: false,
+    });
     expect(Object.keys(progress)).toEqual(['api', 'ui']);
   });
 
   it('เก็บ progress ที่เสร็จแล้วของ task ที่ changed=false', () => {
     const design = makeDesign([makeTask('api', 'backend', [], false), makeTask('ui', 'frontend', ['api'])]);
     const previous = {
-      api: { rounds: 2, maxRounds: 5, done: true, acceptedWithIssues: false },
-      ui: { rounds: 1, maxRounds: 5, done: true, acceptedWithIssues: false },
+      api: { rounds: 2, maxRounds: 5, done: true, acceptedWithIssues: false, securityReviewed: false },
+      ui: { rounds: 1, maxRounds: 5, done: true, acceptedWithIssues: false, securityReviewed: false },
     };
     const progress = initProgress(design, previous, 5);
     expect(progress.api?.done).toBe(true);

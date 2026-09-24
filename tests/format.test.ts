@@ -55,7 +55,14 @@ describe('formatDesign', () => {
     expect(formatDesign(design)).toContain('เก็บ password แบบ hash');
   });
 
-  it('แสดง (ไม่มี) เมื่อไม่มี security notes', () => {
-    expect(formatDesign(makeDesign())).toContain('ข้อควรระวังด้านความปลอดภัย (Security):\n  (ไม่มี)');
+  it('แสดง (ไม่มี) เมื่อ security ตรวจแล้วไม่พบปัญหา (securityNotes: [])', () => {
+    const design = { ...makeDesign(), securityNotes: [] };
+    expect(formatDesign(design)).toContain('ข้อควรระวังด้านความปลอดภัย (Security):\n  (ไม่มี)');
+  });
+
+  it('แสดงข้อความตรวจไม่สำเร็จ เมื่อ securityNotes เป็น undefined', () => {
+    expect(formatDesign(makeDesign())).toContain(
+      'ข้อควรระวังด้านความปลอดภัย (Security):\n  (Security ตรวจไม่สำเร็จ',
+    );
   });
 });

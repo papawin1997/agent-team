@@ -6,7 +6,7 @@ import { nullLogger } from '../logger';
 import type { State } from '../state';
 
 export async function runDesign(deps: Deps, state: State): Promise<void> {
-  const { runner, store } = deps;
+  const { runner, store, io } = deps;
   if (!state.requirements) throw new Error('DESIGN ต้องมี requirements');
 
   let designError: string | undefined;
@@ -24,11 +24,12 @@ export async function runDesign(deps: Deps, state: State): Promise<void> {
       designError = `design ที่ส่งมาไม่ถูกต้อง: ${e.message} — แก้ให้ถูกแล้วส่งใหม่`;
       continue;
     }
-    let securityNotes: string[] = [];
+    let securityNotes: string[] | undefined;
     try {
       securityNotes = await runner.securityDesign({ design, requirements: state.requirements });
     } catch (e) {
       (deps.log ?? nullLogger).log('WARN', 'security.design_failed', { reason: String(e) });
+      io.say(`[Security] ตรวจ design ไม่สำเร็จ (${String(e)}) — ยังไม่มีผลตรวจความปลอดภัยของ design นี้`);
     }
     state.design = { ...design, securityNotes };
     delete state.designFeedback;

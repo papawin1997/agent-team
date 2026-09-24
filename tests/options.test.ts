@@ -116,6 +116,22 @@ describe('buildQueryOptions', () => {
       expect((readResult as any).hookSpecificOutput).toBeUndefined();
     });
 
+    it('pm role with skills configured: Skill tool allowed via hook', async () => {
+      const config = { ...DEFAULT_CONFIG.roles.pm, skills: ['team:security-checklist'] };
+      const o = buildQueryOptions({ ...base, role: 'pm', config });
+      expect(o.tools).toContain('Skill');
+      const hook = o.hooks?.PreToolUse?.[0].hooks[0];
+      expect(hook).toBeDefined();
+      const signal = new AbortController().signal;
+
+      const skillResult = await hook!(
+        { hook_event_name: 'PreToolUse', tool_name: 'Skill', tool_input: {} } as never,
+        undefined,
+        { signal },
+      );
+      expect((skillResult as any).hookSpecificOutput).toBeUndefined();
+    });
+
     it('qa role: Write to src denied, Write to tests allowed (testPathPatterns wired)', async () => {
       const o = buildQueryOptions({ ...base, role: 'qa', config: DEFAULT_CONFIG.roles.qa });
       const hook = o.hooks?.PreToolUse?.[0].hooks[0];
