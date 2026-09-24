@@ -231,7 +231,7 @@ describe('runReview', () => {
 
     expect(state.phase).toBe('BUILD');
     expect(runner.calls).toHaveLength(2);
-    expect((runner.calls[1]!.input as { prompt: string }).prompt).toBe('ทำไม backend ต้องทำก่อน');
+    expect((runner.calls[1]!.input as { prompt: string }).prompt).toContain('ทำไม backend ต้องทำก่อน');
     expect(io.said.join('\n')).toContain('เพราะ backend ต้องเสร็จก่อน');
   });
 });

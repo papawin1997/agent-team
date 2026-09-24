@@ -1,4 +1,5 @@
 import type { Deps, UserIO } from './deps';
+import type { PmTurn } from './schemas';
 import type { State } from './state';
 
 export async function askNonEmpty(io: UserIO, prompt: string): Promise<string> {
@@ -14,6 +15,7 @@ export async function decide<T extends string>(
   state: State,
   prompt: string,
   options: readonly T[],
+  onTurn?: (turn: PmTurn) => void,
 ): Promise<T> {
   const { runner, io, store } = deps;
   for (;;) {
@@ -21,13 +23,22 @@ export async function decide<T extends string>(
     if (typeof result === 'string') return result;
     if (result.text.trim() === '') continue;
     io.say('[PM] กำลังตอบคำถาม...');
+    const context = `[ระหว่างรอการตัดสินใจ: "${prompt}" ตัวเลือกที่มี: ${options.join(', ')}]\n\n${result.text}`;
+    let turn: PmTurn;
     try {
-      const { turn, sessionId } = await runner.pmTurn({ sessionId: state.pmSessionId, prompt: result.text });
-      state.pmSessionId = sessionId;
-      await store.save(state);
-      io.say(`\n[PM] ${turn.message}\n`);
+      const response = await runner.pmTurn({ sessionId: state.pmSessionId, prompt: context });
+      turn = response.turn;
+      state.pmSessionId = response.sessionId;
     } catch (e) {
       io.say(`\n[PM] ถาม PM ไม่สำเร็จ (${e instanceof Error ? e.message : String(e)}) — ลองถามใหม่หรือเลือกตัวเลือกได้เลย\n`);
+      continue;
+    }
+    io.say(`\n[PM] ${turn.message}\n`);
+    onTurn?.(turn);
+    try {
+      await store.save(state);
+    } catch (e) {
+      io.say(`\n[PM] บันทึกสถานะไม่สำเร็จ (${e instanceof Error ? e.message : String(e)}) — คำตอบข้างบนยังใช้ได้ แต่อาจไม่ถูกบันทึกลงดิสก์\n`);
     }
   }
 }

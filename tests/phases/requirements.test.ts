@@ -124,7 +124,22 @@ describe('runRequirements', () => {
 
     expect(state.phase).toBe('DESIGN');
     expect(runner.calls).toHaveLength(3);
-    expect(pmInput(runner, 2).prompt).toBe('ทำไมต้องใช้ Express');
+    expect(pmInput(runner, 2).prompt).toContain('ทำไมต้องใช้ Express');
     expect(io.said.join('\n')).toContain('เพราะ Express เบาและเร็วพอ');
+  });
+
+  it('PM เสนอ requirements ใหม่ระหว่างตอบคำถาม -> confirm บันทึกเวอร์ชันใหม่ ไม่ใช่เวอร์ชันเก่า', async () => {
+    const original = makeRequirements();
+    const updated = { ...makeRequirements(), goal: 'todo list + แจ้งเตือน' };
+    const { deps, store } = makeDeps(
+      { pm: [proposal(original), proposal(updated, 'ได้ครับ ผมเพิ่มฟีเจอร์แจ้งเตือนให้แล้ว')] },
+      ['อยากได้ todo list', 'เพิ่มแจ้งเตือนได้ไหม', 'confirm'],
+    );
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(state.phase).toBe('DESIGN');
+    expect(state.requirements?.goal).toBe('todo list + แจ้งเตือน');
+    expect(store.artifacts.get('requirements.json')).toEqual(updated);
   });
 });
