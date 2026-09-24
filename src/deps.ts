@@ -46,6 +46,7 @@ export interface UserIO {
   say(text: string): void;
   ask(prompt: string): Promise<string>;
   choose<T extends string>(prompt: string, options: readonly T[]): Promise<T>;
+  chooseOrText<T extends string>(prompt: string, options: readonly T[]): Promise<T | { text: string }>;
 }
 
 export interface StateStore {

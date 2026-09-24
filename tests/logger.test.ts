@@ -94,6 +94,25 @@ describe('LoggingIO', () => {
     ]);
   });
 
+  it('chooseOrText: บันทึก user.choice เมื่อเลือกตรงตัวเลือก', async () => {
+    const { events, logger } = spy();
+    const io = new LoggingIO(new ScriptedIO(['confirm']), logger);
+    expect(await io.chooseOrText('ยืนยัน?', ['confirm', 'revise'] as const)).toBe('confirm');
+    expect(events).toEqual([
+      { level: 'INFO', event: 'user.choice', data: { prompt: 'ยืนยัน?', choice: 'confirm' } },
+    ]);
+  });
+
+  it('chooseOrText: บันทึก user.question เมื่อพิมพ์คำถามแทนตัวเลือก', async () => {
+    const { events, logger } = spy();
+    const io = new LoggingIO(new ScriptedIO(['ทำไมต้องทำแบบนี้']), logger);
+    const result = await io.chooseOrText('ยืนยัน?', ['confirm', 'revise'] as const);
+    expect(result).toEqual({ text: 'ทำไมต้องทำแบบนี้' });
+    expect(events).toEqual([
+      { level: 'INFO', event: 'user.question', data: { prompt: 'ยืนยัน?', question: 'ทำไมต้องทำแบบนี้' } },
+    ]);
+  });
+
   it('ask ที่ล้ม (เช่น stdin ปิด) ไม่กลืน error', async () => {
     const failing: UserIO = {
       say() {},
@@ -101,6 +120,9 @@ describe('LoggingIO', () => {
         throw new Error('EOF');
       },
       choose: async () => {
+        throw new Error('EOF');
+      },
+      chooseOrText: async () => {
         throw new Error('EOF');
       },
     };

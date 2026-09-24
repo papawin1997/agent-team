@@ -52,12 +52,15 @@ export class ScriptedIO implements UserIO {
     return answer;
   }
 
-  async choose<T extends string>(prompt: string, options: readonly T[]): Promise<T> {
+  async chooseOrText<T extends string>(prompt: string, options: readonly T[]): Promise<T | { text: string }> {
     const answer = await this.ask(prompt);
-    if (!options.includes(answer as T)) {
-      throw new Error(`ScriptedIO: "${answer}" ไม่อยู่ใน ${options.join(',')}`);
-    }
-    return answer as T;
+    return options.includes(answer as T) ? (answer as T) : { text: answer };
+  }
+
+  async choose<T extends string>(prompt: string, options: readonly T[]): Promise<T> {
+    const result = await this.chooseOrText(prompt, options);
+    if (typeof result === 'string') return result;
+    throw new Error(`ScriptedIO: "${result.text}" ไม่อยู่ใน ${options.join(',')}`);
   }
 }
 

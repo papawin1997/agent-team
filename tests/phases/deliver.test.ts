@@ -53,6 +53,7 @@ describe('runDeliver', () => {
         persistedAtChoose = store.state?.pmSessionId;
         return io.choose(prompt, options);
       },
+      chooseOrText: (prompt, options) => io.chooseOrText(prompt, options),
     };
     const state = deliverState();
     await runDeliver({ ...deps, io: spyIo }, state);

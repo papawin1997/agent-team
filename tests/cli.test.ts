@@ -91,6 +91,23 @@ describe('CliIO', () => {
     expect(await choice).toBe('revise');
   });
 
+  it('chooseOrText: คืนตัวเลือกเมื่อพิมพ์ตรงกับตัวเลือก', async () => {
+    const { io, input } = makeIO();
+    const result = io.chooseOrText('เลือก', options);
+    input.write('confirm\n');
+    expect(await result).toBe('confirm');
+  });
+
+  it('chooseOrText: คืน { text } เมื่อพิมพ์อย่างอื่น พร้อมโชว์คำใบ้ว่าถามได้', async () => {
+    const { io, input, written } = makeIO();
+    const result = io.chooseOrText('เลือก', options);
+    await vi.waitFor(() => {
+      expect(written()).toContain('หรือพิมพ์คำถาม/ความเห็นถึง PM ก่อนตัดสินใจก็ได้');
+    });
+    input.write('ทำไมต้องเลือกแบบนี้\n');
+    expect(await result).toEqual({ text: 'ทำไมต้องเลือกแบบนี้' });
+  });
+
   describe('Ctrl+C ใน terminal mode (raw mode ไม่ส่ง SIGINT ให้ process)', () => {
     it('เรียก onInterrupt หนึ่งครั้ง โดยที่ ask ที่รออยู่ไม่ถูก reject แล้วยังตอบต่อได้', async () => {
       const onInterrupt = vi.fn();
