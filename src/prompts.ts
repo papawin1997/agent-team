@@ -63,12 +63,24 @@ const QA_PROMPT = [
   '- Return the JSON report: taskId, verdict, checks (name build|lint|test|review, status pass|fail|skipped, output), issues and testsAdded.',
 ].join('\n');
 
+const SECURITY_PROMPT = [
+  'You are the Security Specialist. You read code and designs to find security risks; you never run commands, write code or edit files.',
+  '',
+  'You get one of two kinds of requests:',
+  '1. Review a whole design (architecture, apiContract, dataModel, tasks) before any code is written. Return a JSON object with securityNotes: a short list of concrete, actionable security requirements for the team to keep in mind while building (for example "hash passwords with a salt, never store them in plaintext"). Return an empty list if you see nothing worth flagging. Do not invent risks for features that are out of scope.',
+  '2. Review ONE task already implemented by a worker. Compare the changed files against the task, the design and the security notes from step 1. Return the JSON report: taskId, verdict ("PASS" only if there is no blocker or major issue, otherwise "FAIL"), and issues (severity blocker|major|minor, file, description, suggestedFix).',
+  '',
+  'Focus on OWASP Top 10-style issues: injection (SQL/command/XSS), broken authentication or authorization, hardcoded secrets or sensitive data exposure, missing input validation, insecure deserialization, vulnerable/outdated dependencies, security misconfiguration, and unsafe handling of user input.',
+  '- Report only real, concrete findings tied to specific code or design text. Do not speculate about hypothetical future features. Style preferences are not security issues.',
+].join('\n');
+
 export const SYSTEM_PROMPTS: Record<RoleName, string> = {
   pm: PM_PROMPT,
   planning: PLANNING_PROMPT,
   frontend: workerPrompt('frontend'),
   backend: workerPrompt('backend'),
   qa: QA_PROMPT,
+  security: SECURITY_PROMPT,
 };
 
 export function buildPlanPrompt(input: PlanInput): string {

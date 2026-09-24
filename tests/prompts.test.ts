@@ -24,6 +24,11 @@ describe('SYSTEM_PROMPTS', () => {
     expect(SYSTEM_PROMPTS.frontend).toContain('frontend worker');
     expect(SYSTEM_PROMPTS.backend).toContain('backend worker');
   });
+
+  it('Security เน้น OWASP และห้ามแก้โค้ด', () => {
+    expect(SYSTEM_PROMPTS.security).toContain('OWASP');
+    expect(SYSTEM_PROMPTS.security).toContain('never run commands, write code or edit files');
+  });
 });
 
 describe('prompt builders', () => {

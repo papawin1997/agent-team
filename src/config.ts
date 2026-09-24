@@ -3,8 +3,8 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 
-export type RoleName = 'pm' | 'planning' | 'frontend' | 'backend' | 'qa';
-export const ROLE_NAMES: readonly RoleName[] = ['pm', 'planning', 'frontend', 'backend', 'qa'];
+export type RoleName = 'pm' | 'planning' | 'frontend' | 'backend' | 'qa' | 'security';
+export const ROLE_NAMES: readonly RoleName[] = ['pm', 'planning', 'frontend', 'backend', 'qa', 'security'];
 
 export interface RoleConfig {
   model: string;
@@ -64,6 +64,7 @@ export const DEFAULT_CONFIG: TeamConfig = {
     frontend: { model: SONNET, maxTurns: 80, maxBudgetUsd: 5, tools: WORK_TOOLS, allowedTools: WORK_ALLOWED, skills: [] },
     backend: { model: SONNET, maxTurns: 80, maxBudgetUsd: 5, tools: WORK_TOOLS, allowedTools: WORK_ALLOWED, skills: [] },
     qa: { model: SONNET, maxTurns: 60, maxBudgetUsd: 4, tools: WORK_TOOLS, allowedTools: WORK_ALLOWED, skills: [] },
+    security: { model: SONNET, maxTurns: 60, maxBudgetUsd: 4, tools: READ_TOOLS, allowedTools: READ_TOOLS, skills: [] },
   },
 };
 
@@ -87,6 +88,7 @@ const ConfigOverrideSchema = z
         frontend: RoleOverrideSchema.optional(),
         backend: RoleOverrideSchema.optional(),
         qa: RoleOverrideSchema.optional(),
+        security: RoleOverrideSchema.optional(),
       })
       .strict()
       .optional(),
