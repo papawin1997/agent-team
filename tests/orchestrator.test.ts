@@ -26,7 +26,17 @@ describe('runTeam', () => {
     const final = await runTeam(deps, { resume: false });
 
     expect(final.phase).toBe('DONE');
-    expect(roles(runner.calls)).toEqual(['pm', 'planning', 'pm', 'backend', 'qa', 'frontend', 'qa', 'pm']);
+    expect(roles(runner.calls)).toEqual([
+      'pm',
+      'planning',
+      'security',
+      'pm',
+      'backend',
+      'qa',
+      'frontend',
+      'qa',
+      'pm',
+    ]);
     expect(store.state?.phase).toBe('DONE');
   });
 

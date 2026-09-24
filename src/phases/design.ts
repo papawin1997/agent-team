@@ -23,10 +23,11 @@ export async function runDesign(deps: Deps, state: State): Promise<void> {
       designError = `design ที่ส่งมาไม่ถูกต้อง: ${e.message} — แก้ให้ถูกแล้วส่งใหม่`;
       continue;
     }
-    state.design = design;
+    const securityNotes = await runner.securityDesign({ design, requirements: state.requirements });
+    state.design = { ...design, securityNotes };
     delete state.designFeedback;
     state.phase = 'REVIEW';
-    await store.saveArtifact('design.json', design);
+    await store.saveArtifact('design.json', state.design);
     await store.save(state);
     return;
   }

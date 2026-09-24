@@ -34,6 +34,8 @@ export function formatDesign(d: Design): string {
     `Data model:\n${d.dataModel}`,
     'Tasks:',
     tasks,
+    'ข้อควรระวังด้านความปลอดภัย (Security):',
+    list(d.securityNotes ?? []),
     '',
   ].join('\n');
 }
