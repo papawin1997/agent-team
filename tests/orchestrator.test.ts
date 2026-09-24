@@ -148,7 +148,13 @@ describe('runTeam', () => {
       ['accept'],
     );
     const saved = buildState();
-    saved.progress.api = { rounds: 1, maxRounds: 5, done: true, acceptedWithIssues: false };
+    saved.progress.api = {
+      rounds: 1,
+      maxRounds: 5,
+      done: true,
+      acceptedWithIssues: false,
+      securityReviewed: false,
+    };
     store.state = saved;
 
     const final = await runTeam(deps, { resume: true });
@@ -233,8 +239,20 @@ describe('runTeam', () => {
     );
     const saved = buildState();
     saved.phase = 'DELIVER';
-    saved.progress.api = { rounds: 1, maxRounds: 5, done: true, acceptedWithIssues: false };
-    saved.progress.ui = { rounds: 1, maxRounds: 5, done: true, acceptedWithIssues: false };
+    saved.progress.api = {
+      rounds: 1,
+      maxRounds: 5,
+      done: true,
+      acceptedWithIssues: false,
+      securityReviewed: false,
+    };
+    saved.progress.ui = {
+      rounds: 1,
+      maxRounds: 5,
+      done: true,
+      acceptedWithIssues: false,
+      securityReviewed: false,
+    };
     store.state = saved;
 
     const final = await runTeam(deps, { resume: true });

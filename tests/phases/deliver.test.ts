@@ -63,11 +63,34 @@ describe('runDeliver', () => {
   it('แจ้ง PM ว่า task ไหนรับตามสภาพ', async () => {
     const { deps, runner } = makeDeps({ pm: [asking('ส่งมอบ')] }, ['accept']);
     const state = deliverState();
-    state.progress.api = { rounds: 5, maxRounds: 5, done: true, acceptedWithIssues: true };
+    state.progress.api = {
+      rounds: 5,
+      maxRounds: 5,
+      done: true,
+      acceptedWithIssues: true,
+      securityReviewed: true,
+    };
     await runDeliver(deps, state);
 
     const prompt = (runner.calls[0]!.input as PmInput).prompt;
     expect(prompt).toContain('"id":"api"');
     expect(prompt).toContain('"acceptedWithIssues":true');
+  });
+
+  it('ส่ง securityReviewed ของแต่ละ task ไปให้ PM', async () => {
+    const { deps, runner } = makeDeps({ pm: [asking('ส่งมอบ')] }, ['accept']);
+    const state = deliverState();
+    state.progress.api = {
+      rounds: 5,
+      maxRounds: 5,
+      done: true,
+      acceptedWithIssues: true,
+      securityReviewed: false,
+    };
+    await runDeliver(deps, state);
+
+    const prompt = (runner.calls[0]!.input as PmInput).prompt;
+    expect(prompt).toContain('"id":"api"');
+    expect(prompt).toContain('"securityReviewed":false');
   });
 });

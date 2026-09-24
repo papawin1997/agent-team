@@ -139,7 +139,13 @@ describe('runReview', () => {
     await runReview(deps, state);
 
     expect(state.phase).toBe('BUILD');
-    expect(state.progress.api).toEqual({ rounds: 0, maxRounds: 5, done: false, acceptedWithIssues: false });
+    expect(state.progress.api).toEqual({
+      rounds: 0,
+      maxRounds: 5,
+      done: false,
+      acceptedWithIssues: false,
+      securityReviewed: false,
+    });
     expect(Object.keys(state.progress)).toEqual(['api', 'ui']);
     expect(io.said.join('\n')).toContain('สรุป design ให้ฟัง');
     expect(io.said.join('\n')).toContain('ภาพรวมของระบบ');
@@ -159,7 +165,9 @@ describe('runReview', () => {
     const { deps } = makeDeps({ pm: [asking('สรุป')] }, ['confirm']);
     const state = stateAt('REVIEW');
     state.design = makeDesign([makeTask('api', 'backend', [], false), makeTask('ui', 'frontend', ['api'])]);
-    state.progress = { api: { rounds: 2, maxRounds: 5, done: true, acceptedWithIssues: false } };
+    state.progress = {
+      api: { rounds: 2, maxRounds: 5, done: true, acceptedWithIssues: false, securityReviewed: false },
+    };
     await runReview(deps, state);
 
     expect(state.progress.api?.done).toBe(true);
