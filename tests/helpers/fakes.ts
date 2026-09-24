@@ -5,11 +5,12 @@ import type {
   PmInput,
   QaInput,
   RoleRunner,
+  SecurityDesignInput,
   StateStore,
   UserIO,
   WorkInput,
 } from '../../src/deps';
-import type { Design, PmTurn, QAReport, WorkerResult } from '../../src/schemas';
+import type { Design, PmTurn, QAReport, SecurityReport, WorkerResult } from '../../src/schemas';
 import type { State } from '../../src/state';
 
 export class MemoryStore implements StateStore {
@@ -67,6 +68,10 @@ export interface FakeScript {
   work?: Array<Error | undefined>;
   /** ต่อ call ของ qa: Error = โยน error นั้น */
   qa?: Array<QAReport | Error>;
+  /** ต่อ call ของ securityDesign: Error = โยน error นั้น, undefined/หมด = คืน [] (ไม่มี note) */
+  securityDesign?: Array<string[] | Error>;
+  /** ต่อ call ของ security: Error = โยน error นั้น, undefined/หมด = คืน PASS ว่าง (เผื่อ test ที่ไม่สนใจ security) */
+  security?: Array<SecurityReport | Error>;
 }
 
 export interface RecordedCall {
@@ -80,12 +85,16 @@ export class FakeRunner implements RoleRunner {
   private plans: Design[];
   private workScript: Array<Error | undefined>;
   private qaReports: Array<QAReport | Error>;
+  private securityDesignScript: Array<string[] | Error>;
+  private securityScript: Array<SecurityReport | Error>;
 
   constructor(script: FakeScript) {
     this.pm = [...(script.pm ?? [])];
     this.plans = [...(script.plans ?? [])];
     this.workScript = [...(script.work ?? [])];
     this.qaReports = [...(script.qa ?? [])];
+    this.securityDesignScript = [...(script.securityDesign ?? [])];
+    this.securityScript = [...(script.security ?? [])];
   }
 
   async pmTurn(input: PmInput): Promise<{ turn: PmTurn; sessionId: string }> {
@@ -120,6 +129,20 @@ export class FakeRunner implements RoleRunner {
     if (!report) throw new Error('FakeRunner: qa script หมด');
     if (report instanceof Error) throw report;
     return report;
+  }
+
+  async securityDesign(input: SecurityDesignInput): Promise<string[]> {
+    this.calls.push({ role: 'security', input });
+    const scripted = this.securityDesignScript.shift();
+    if (scripted instanceof Error) throw scripted;
+    return scripted ?? [];
+  }
+
+  async security(input: QaInput): Promise<SecurityReport> {
+    this.calls.push({ role: 'security', input });
+    const scripted = this.securityScript.shift();
+    if (scripted instanceof Error) throw scripted;
+    return scripted ?? { taskId: input.task.id, verdict: 'PASS', issues: [] };
   }
 }
 

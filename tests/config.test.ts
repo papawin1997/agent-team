@@ -16,8 +16,8 @@ describe('DEFAULT_CONFIG', () => {
     }
   });
 
-  it('pm กับ planning ใช้เครื่องมืออ่านอย่างเดียว', () => {
-    for (const role of ['pm', 'planning'] as const) {
+  it('pm, planning และ security ใช้เครื่องมืออ่านอย่างเดียว', () => {
+    for (const role of ['pm', 'planning', 'security'] as const) {
       expect(DEFAULT_CONFIG.roles[role].tools).toEqual(['Read', 'Glob', 'Grep']);
     }
   });
@@ -74,8 +74,8 @@ describe('DEFAULT_CONFIG', () => {
     expect(DEFAULT_CONFIG.roles.backend.allowedTools).not.toContain('Bash(git *)');
   });
 
-  it('pm กับ planning ไม่มี Bash ใน allowedTools', () => {
-    for (const role of ['pm', 'planning'] as const) {
+  it('pm, planning และ security ไม่มี Bash ใน allowedTools', () => {
+    for (const role of ['pm', 'planning', 'security'] as const) {
       expect(DEFAULT_CONFIG.roles[role].allowedTools).toEqual(['Read', 'Glob', 'Grep']);
     }
   });
@@ -83,6 +83,7 @@ describe('DEFAULT_CONFIG', () => {
   it('planning ใช้ claude-opus-5 ส่วน role อื่นใช้ claude-sonnet-5', () => {
     expect(DEFAULT_CONFIG.roles.planning.model).toBe('claude-opus-5');
     expect(DEFAULT_CONFIG.roles.qa.model).toBe('claude-sonnet-5');
+    expect(DEFAULT_CONFIG.roles.security.model).toBe('claude-sonnet-5');
   });
 });
 
@@ -98,6 +99,15 @@ describe('mergeConfig', () => {
 
   it('override maxQaRounds ได้', () => {
     expect(mergeConfig(DEFAULT_CONFIG, { maxQaRounds: 3 }).maxQaRounds).toBe(3);
+  });
+
+  it('override skills ของ security โดยไม่กระทบ role อื่น', () => {
+    const merged = mergeConfig(DEFAULT_CONFIG, {
+      roles: { security: { skills: ['team:security-checklist'] } },
+    });
+    expect(merged.roles.security.skills).toEqual(['team:security-checklist']);
+    expect(merged.roles.security.model).toBe('claude-sonnet-5');
+    expect(merged.roles.qa.skills).toEqual([]);
   });
 
   it('ปฏิเสธ key ที่ไม่รู้จัก', () => {

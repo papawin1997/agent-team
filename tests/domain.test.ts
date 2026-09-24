@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DesignError, initProgress, isPass, orderTasks } from '../src/domain';
+import { DesignError, initProgress, isPass, isSecurityPass, orderTasks } from '../src/domain';
 import { failReport, makeDesign, makeTask, passReport } from './helpers/builders';
 
 describe('orderTasks', () => {
@@ -79,5 +79,38 @@ describe('initProgress', () => {
     const design = makeDesign([makeTask('api', 'backend', [], false)]);
     const progress = initProgress(design, {}, 5);
     expect(progress.api?.done).toBe(false);
+  });
+});
+
+describe('isSecurityPass', () => {
+  it('PASS ที่ไม่มีปัญหา = ผ่าน', () => {
+    expect(isSecurityPass({ taskId: 'a', verdict: 'PASS', issues: [] })).toBe(true);
+  });
+
+  it('FAIL = ไม่ผ่าน', () => {
+    const report = {
+      taskId: 'a',
+      verdict: 'FAIL' as const,
+      issues: [{ severity: 'major' as const, file: 'x', description: 'd', suggestedFix: 'f' }],
+    };
+    expect(isSecurityPass(report)).toBe(false);
+  });
+
+  it('PASS แต่มี blocker = ไม่ผ่าน', () => {
+    const report = {
+      taskId: 'a',
+      verdict: 'PASS' as const,
+      issues: [{ severity: 'blocker' as const, file: 'x', description: 'd', suggestedFix: 'f' }],
+    };
+    expect(isSecurityPass(report)).toBe(false);
+  });
+
+  it('PASS ที่มีแค่ minor issue = ผ่าน', () => {
+    const report = {
+      taskId: 'a',
+      verdict: 'PASS' as const,
+      issues: [{ severity: 'minor' as const, file: 'x', description: 'd', suggestedFix: 'f' }],
+    };
+    expect(isSecurityPass(report)).toBe(true);
   });
 });

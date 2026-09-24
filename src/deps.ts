@@ -1,6 +1,6 @@
 import type { TeamConfig } from './config';
 import type { Logger } from './logger';
-import type { Design, PmTurn, QAReport, Requirements, Task, WorkerResult } from './schemas';
+import type { Design, PmTurn, QAReport, Requirements, SecurityReport, Task, WorkerResult } from './schemas';
 import type { State } from './state';
 
 export interface PmInput {
@@ -28,11 +28,18 @@ export interface QaInput {
   requirements: Requirements;
 }
 
+export interface SecurityDesignInput {
+  design: Design;
+  requirements: Requirements;
+}
+
 export interface RoleRunner {
   pmTurn(input: PmInput): Promise<{ turn: PmTurn; sessionId: string }>;
   plan(input: PlanInput): Promise<Design>;
   work(input: WorkInput): Promise<WorkerResult>;
   qa(input: QaInput): Promise<QAReport>;
+  securityDesign(input: SecurityDesignInput): Promise<string[]>;
+  security(input: QaInput): Promise<SecurityReport>;
 }
 
 export interface UserIO {

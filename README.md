@@ -1,6 +1,6 @@
 # agent-team
 
-ทีม agent 5 บทบาท (PM, Planning, Worker frontend, Worker backend, QA) บน Claude Agent SDK
+ทีม agent 6 บทบาท (PM, Planning, Worker frontend, Worker backend, QA, Security) บน Claude Agent SDK
 
 ## ข้อกำหนดเบื้องต้น
 - Node.js 20 ขึ้นไป
@@ -17,10 +17,12 @@ Ctrl+C หยุดได้ทุกเมื่อ: state ถูกบัน�
 
 ## flow
 1. REQUIREMENTS: คุยกับ PM (ถามตอบ/เสนอไอเดีย) จนคุณกด confirm requirements
-2. DESIGN: Planning ออกแบบและแตก task (frontend / backend)
-3. REVIEW: PM สรุปแบบให้คุณ confirm หรือขอแก้ (ขอแก้ = วนกลับข้อ 1-3 โดยข้อความที่ขอแก้จะส่งให้ทั้ง PM และ Planning)
-4. BUILD: worker ทำทีละ task ตามลำดับ dependency แล้ว QA ตรวจ
-   QA ไม่ผ่านให้ worker แก้ใหม่ สูงสุด 5 รอบต่อ task ถ้าครบแล้วไม่ผ่าน PM จะถามคุณว่า
+2. DESIGN: Planning ออกแบบและแตก task (frontend / backend) จากนั้น Security ตรวจ design ครั้งเดียว
+   (แบบ advisory เท่านั้น — ถ้า Security ตรวจไม่สำเร็จก็ไม่ทำให้ทั้งรอบล้ม แค่ไม่มี securityNotes) แล้วแนบ securityNotes เข้า design
+3. REVIEW: PM สรุปแบบ (รวม securityNotes จาก Security) ให้คุณ confirm หรือขอแก้ (ขอแก้ = วนกลับข้อ 1-3 โดยข้อความที่ขอแก้จะส่งให้ทั้ง PM และ Planning)
+4. BUILD: worker ทำทีละ task ตามลำดับ dependency แล้ว QA ตรวจ และเมื่อ QA ผ่านแล้ว Security ตรวจต่ออีกรอบ (เฉพาะตอน QA ผ่านเท่านั้น เพื่อประหยัด API call)
+   QA ไม่ผ่าน หรือ Security เจอ blocker/major ให้ worker แก้ใหม่ (Security ไม่ผ่าน = เสียรอบเหมือน QA ไม่ผ่าน)
+   สูงสุด 5 รอบต่อ task ถ้าครบแล้วไม่ผ่าน PM จะถามคุณว่า
    continue (ทำต่ออีก 5 รอบ) / accept (รับตามสภาพ) / abort
 5. DELIVER: PM ส่งมอบ ให้คุณตรวจรับ (accept) หรือขอแก้/เพิ่ม (change)
 
@@ -33,24 +35,32 @@ Ctrl+C หยุดได้ทุกเมื่อ: state ถูกบัน�
 บันทึกที่ `<project>/.agent-team/agent-team.log` (ต่อท้ายไฟล์เดิมข้ามรอบรัน/`--resume` เวลาเป็น UTC)
 หนึ่งเหตุการณ์ต่อบรรทัด: `เวลา LEVEL event {json}` ตัวอย่างที่ดูบ่อย:
 
-    grep " agent.result " .agent-team/agent-team.log   # แต่ละครั้งที่เรียก agent: turns, เวลา, cost
-    grep " qa.report "   .agent-team/agent-team.log   # ผล QA ต่อ task ต่อรอบ
-    grep " guard.deny "  .agent-team/agent-team.log   # คำสั่ง/ไฟล์ที่ guard ปฏิเสธ
+    grep " agent.result "    .agent-team/agent-team.log   # แต่ละครั้งที่เรียก agent: turns, เวลา, cost
+    grep " qa.report "       .agent-team/agent-team.log   # ผล QA ต่อ task ต่อรอบ
+    grep " security.report " .agent-team/agent-team.log   # ผล Security ต่อ task ต่อรอบ (เฉพาะรอบที่ QA ผ่านแล้ว)
+    grep " guard.deny "      .agent-team/agent-team.log   # คำสั่ง/ไฟล์ที่ guard ปฏิเสธ
     grep -E " (WARN|ERROR) " .agent-team/agent-team.log
 
 event หลัก: `run.start/run.end/run.error/run.interrupted`, `team.start/team.end`, `phase.change`,
-`agent.start/agent.result/agent.no_result`, `qa.report`, `escalate.decision`, `guard.deny`,
+`agent.start/agent.result/agent.no_result`, `qa.report`, `security.report`, `escalate.decision`, `guard.deny`,
 `say` (ทุกข้อความที่แสดงใน terminal), `user.input` / `user.choice` (สิ่งที่คุณพิมพ์/เลือก)
 ข้อความยาวเกิน 1,000 ตัวอักษรจะถูกตัด และ log เขียนไม่ได้จะไม่ทำให้งานล้ม
 ไม่มี prompt/คำตอบดิบของ agent ใน log (มีเฉพาะสรุป) — `cost` ที่เห็นคำนวณตามราคา API ไม่ใช่ยอดที่ถูกเรียกเก็บจริง
+Security ถูกเรียกเฉพาะรอบที่ QA ผ่านแล้ว ดังนั้นรอบไหนมี `security.report` แปลว่า QA รอบนั้นผ่านจริง
+แต่ Security อาจเจอ issue เพิ่มจนรอบนั้นถูกนับว่าไม่ผ่านอยู่ดี (issue ของ Security จะถูกรวมเข้า `qa.report`/
+`reports/<id>-round<n>.json` ของรอบเดียวกันด้วย) ส่วนรอบที่ QA ไม่ผ่านตั้งแต่แรกจะไม่มี `security.report` เลย
+(ประหยัด API call) — ใช้แยกได้ว่ารอบนั้นเสียเพราะ Security เจอช่องโหว่ ไม่ใช่ QA ไม่ผ่านงานปกติ
 
 ## ตั้งค่า (ไม่บังคับ)
 สร้าง `agent-team.config.json` ที่ราก repo นี้ ตัวอย่าง:
 
     { "maxQaRounds": 5, "roles": { "planning": { "model": "claude-opus-5" },
-      "frontend": { "skills": ["team:frontend-conventions"] } } }
+      "frontend": { "skills": ["team:frontend-conventions"] },
+      "security": { "skills": ["team:security-checklist"] } } }
 
 ปรับได้: model, maxTurns, maxBudgetUsd, skills ต่อ role (เครื่องมือและสิทธิ์แก้ในโค้ด `src/config.ts`)
+`security` override ได้เหมือน role อื่นทุกประการ (รวม model/maxTurns/maxBudgetUsd/skills)
+Security เพิ่มการเรียก Sonnet 1 ครั้งต่อ design (ตรวจครั้งเดียว) และ 1 ครั้งต่อรอบ build ที่ QA ผ่านแล้ว (ต่อ task)
 
 ## Skills
 วาง skill ที่ `skills/skills/<ชื่อ>/SKILL.md` แล้วเปิดให้ role ผ่าน config ด้านบน (ชื่อ `team:<ชื่อ>`)
@@ -58,7 +68,7 @@ event หลัก: `run.start/run.end/run.error/run.interrupted`, `team.start/t
 
 ## ความปลอดภัยและข้อจำกัด
 - เขียนไฟล์ได้เฉพาะในโฟลเดอร์โปรเจกต์ ห้ามแตะ `.git`, `.agent-team`, `.claude`
-- QA เขียนได้เฉพาะไฟล์ test, PM/Planning อ่านอย่างเดียว
+- QA เขียนได้เฉพาะไฟล์ test, PM/Planning/Security อ่านอย่างเดียว (Security ไม่รันคำสั่งและไม่แก้ไฟล์ใด ๆ เลย)
 - git: agent รันได้เฉพาะคำสั่งอ่านอย่างเดียว (status, diff, log, show, ls-files, rev-parse, blame) คำสั่งอื่นเช่น commit/push/reset ถูกปฏิเสธ (agent ไม่ commit/push ให้)
 - Bash ถูกจำกัดด้วย allowlist คำสั่ง (dontAsk) + guard ที่ตรวจข้อความคำสั่งแบบ lexical เป็นด่านเสริมแบบ best-effort ไม่ใช่ sandbox ระดับ OS
 - `node -e` / `python -c` / `go run` ถูกอนุญาตไว้ล่วงหน้า (จำเป็นสำหรับ build/test) จึงทำได้ทุกอย่างที่ผู้ใช้ OS ทำได้ รวมถึงเขียนไฟล์นอกโฟลเดอร์โปรเจกต์หรือแก้ `.git` และ guard มองไม่เห็นสิ่งที่อยู่ข้างใน จึงควรรันกับโปรเจกต์ที่ commit/สำรองไว้ก่อนเสมอ

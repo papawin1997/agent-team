@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { PlanInput } from '../../src/deps';
+import type { PlanInput, SecurityDesignInput } from '../../src/deps';
 import { DesignError } from '../../src/domain';
+import { RoleRunError } from '../../src/errors';
 import { runDesign, runReview } from '../../src/phases/design';
 import { newState, type State } from '../../src/state';
 import { asking, makeDesign, makeRequirements, makeTask } from '../helpers/builders';
@@ -14,15 +15,15 @@ const stateAt = (phase: State['phase']): State => {
 };
 
 describe('runDesign', () => {
-  it('ได้ design ที่ถูกต้อง -> REVIEW และบันทึก design.json', async () => {
+  it('ได้ design ที่ถูกต้อง -> REVIEW และบันทึก design.json (พร้อม securityNotes)', async () => {
     const design = makeDesign();
-    const { deps, store } = makeDeps({ plans: [design] }, []);
+    const { deps, store } = makeDeps({ plans: [design], securityDesign: [['เก็บ password แบบ hash']] }, []);
     const state = stateAt('DESIGN');
     await runDesign(deps, state);
 
     expect(state.phase).toBe('REVIEW');
-    expect(state.design).toEqual(design);
-    expect(store.artifacts.get('design.json')).toEqual(design);
+    expect(state.design).toEqual({ ...design, securityNotes: ['เก็บ password แบบ hash'] });
+    expect(store.artifacts.get('design.json')).toEqual({ ...design, securityNotes: ['เก็บ password แบบ hash'] });
   });
 
   it('design วน dependency: ส่ง feedback ให้ Planning แล้วได้ design ใหม่', async () => {
@@ -32,7 +33,7 @@ describe('runDesign', () => {
     const state = stateAt('DESIGN');
     await runDesign(deps, state);
 
-    expect(state.design).toEqual(good);
+    expect(state.design).toEqual({ ...good, securityNotes: [] });
     expect((runner.calls[1]!.input as PlanInput).feedback).toContain('dependency วน');
   });
 
@@ -52,6 +53,28 @@ describe('runDesign', () => {
     const input = runner.calls[0]!.input as PlanInput;
     expect(input.previousDesign).toEqual(previous);
     expect(input.requirements).toEqual(makeRequirements());
+  });
+
+  it('เรียก security ตรวจ design ก่อนเข้า REVIEW โดยส่ง design และ requirements', async () => {
+    const { deps, runner } = makeDeps({ plans: [makeDesign()], securityDesign: [['ข้อควรระวัง']] }, []);
+    await runDesign(deps, stateAt('DESIGN'));
+
+    const call = runner.calls.find((c) => c.role === 'security');
+    expect(call).toBeDefined();
+    expect((call!.input as SecurityDesignInput).requirements).toEqual(makeRequirements());
+  });
+
+  it('security ตรวจ design พังไม่ทำให้ phase ทั้งหมดพัง: ได้ securityNotes ว่างแทน', async () => {
+    const design = makeDesign();
+    const { deps } = makeDeps(
+      { plans: [design], securityDesign: [new RoleRunError('security: error_max_turns', false, 'error_max_turns')] },
+      [],
+    );
+    const state = stateAt('DESIGN');
+    await runDesign(deps, state);
+
+    expect(state.phase).toBe('REVIEW');
+    expect(state.design).toEqual({ ...design, securityNotes: [] });
   });
 });
 

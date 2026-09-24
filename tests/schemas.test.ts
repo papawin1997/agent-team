@@ -4,6 +4,7 @@ import {
   PmTurnSchema,
   QAReportSchema,
   RequirementsSchema,
+  SecurityReportSchema,
   TaskSchema,
   toJsonSchema,
 } from '../src/schemas';
@@ -65,5 +66,36 @@ describe('schemas', () => {
     const js = toJsonSchema(PmTurnSchema);
     expect(js.required).toContain('message');
     expect(js.required).not.toContain('requirements');
+  });
+
+  it('SecurityReport verdict ต้องเป็น PASS หรือ FAIL', () => {
+    const report = { taskId: 't', verdict: 'MAYBE', issues: [] };
+    expect(SecurityReportSchema.safeParse(report).success).toBe(false);
+  });
+
+  it('SecurityReport รับ issues ที่ครบฟิลด์', () => {
+    const report = {
+      taskId: 't',
+      verdict: 'FAIL',
+      issues: [{ severity: 'blocker', file: 'src/x.ts', description: 'มีช่องโหว่', suggestedFix: 'แก้' }],
+    };
+    expect(SecurityReportSchema.safeParse(report).success).toBe(true);
+  });
+
+  it('Design ไม่ต้องมี securityNotes ก็ผ่าน (เผื่อยังไม่ได้รีวิว)', () => {
+    const design = { overview: 'o', architecture: 'a', apiContract: 'n/a', dataModel: 'n/a', tasks: [validTask] };
+    expect(DesignSchema.safeParse(design).success).toBe(true);
+  });
+
+  it('Design รับ securityNotes เมื่อมี', () => {
+    const design = {
+      overview: 'o',
+      architecture: 'a',
+      apiContract: 'n/a',
+      dataModel: 'n/a',
+      tasks: [validTask],
+      securityNotes: ['เก็บ password แบบ hash'],
+    };
+    expect(DesignSchema.safeParse(design).success).toBe(true);
   });
 });

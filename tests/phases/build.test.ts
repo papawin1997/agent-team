@@ -6,9 +6,11 @@ import {
   asking,
   buildState,
   failReport,
+  failSecurityReport,
   makeDesign,
   makeTask,
   passReport,
+  passSecurityReport,
 } from '../helpers/builders';
 import { makeDeps } from '../helpers/fakes';
 
@@ -23,7 +25,7 @@ describe('runBuild', () => {
     await runBuild(deps, state);
 
     expect(state.phase).toBe('DELIVER');
-    expect(roles(runner.calls)).toEqual(['backend', 'qa', 'frontend', 'qa']);
+    expect(roles(runner.calls)).toEqual(['backend', 'qa', 'security', 'frontend', 'qa', 'security']);
     expect(state.progress.api?.done).toBe(true);
     expect(state.progress.ui?.done).toBe(true);
     expect(store.artifacts.has('reports/api-round1.json')).toBe(true);
@@ -115,7 +117,7 @@ describe('runBuild', () => {
     state.progress.api = { rounds: 1, maxRounds: 5, done: true, acceptedWithIssues: false };
     await runBuild(deps, state);
 
-    expect(roles(runner.calls)).toEqual(['frontend', 'qa']);
+    expect(roles(runner.calls)).toEqual(['frontend', 'qa', 'security']);
   });
 
   it('บันทึก state ทุกรอบ เพื่อให้ resume ได้', async () => {
@@ -153,6 +155,110 @@ describe('runBuild', () => {
     expect(persistedWhenAsked).toBe('pm-session');
     expect(store.state?.pmSessionId).toBe('pm-session');
   });
+
+  it('QA ผ่านแล้วเรียก security ต่อ: security ผ่านด้วย -> task done ปกติ', async () => {
+    const { deps, runner } = makeDeps(
+      { qa: [passReport('api')], security: [passSecurityReport('api')] },
+      [],
+    );
+    const state = buildState(single());
+    await runBuild(deps, state);
+
+    expect(roles(runner.calls)).toEqual(['backend', 'qa', 'security']);
+    expect(state.progress.api?.done).toBe(true);
+  });
+
+  it('QA ไม่ผ่าน: ไม่เรียก security เลย (ประหยัด API call)', async () => {
+    const { deps, runner } = makeDeps(
+      { qa: [failReport('api'), passReport('api')], security: [passSecurityReport('api')] },
+      [],
+    );
+    await runBuild(deps, buildState(single()));
+
+    expect(roles(runner.calls)).toEqual(['backend', 'qa', 'backend', 'qa', 'security']);
+  });
+
+  it('QA ผ่านแต่ Security เจอ blocker: รอบนั้นไม่ผ่าน ใช้ progress.rounds เดิม ส่ง issue กลับให้ worker', async () => {
+    const { deps, runner } = makeDeps(
+      {
+        qa: [passReport('api'), passReport('api')],
+        security: [failSecurityReport('api', 'blocker'), passSecurityReport('api')],
+      },
+      [],
+    );
+    const state = buildState(single());
+    await runBuild(deps, state);
+
+    expect(roles(runner.calls)).toEqual(['backend', 'qa', 'security', 'backend', 'qa', 'security']);
+    expect(state.progress.api?.rounds).toBe(2);
+    expect(state.progress.api?.done).toBe(true);
+    const works = runner.calls.filter((c) => c.role === 'backend');
+    expect((works[1]!.input as WorkInput).previousReport?.verdict).toBe('FAIL');
+    expect((works[1]!.input as WorkInput).previousReport?.issues[0]?.description).toBe('มีช่องโหว่');
+  });
+
+  it('security ผ่าน: say "[Security] ... PASS" และ log event security.report แบบ INFO', async () => {
+    const events: Array<{ level: string; event: string; data: Record<string, unknown> }> = [];
+    const { deps, io } = makeDeps({ qa: [passReport('api')], security: [passSecurityReport('api')] }, []);
+    deps.log = { log: (level, event, data) => void events.push({ level, event, data: data as never }) };
+    const state = buildState(single());
+    await runBuild(deps, state);
+
+    expect(io.said).toContain('[Security] api: PASS (0 issues)');
+    const securityEvents = events.filter((e) => e.event === 'security.report');
+    expect(securityEvents).toHaveLength(1);
+    expect(securityEvents[0]).toMatchObject({
+      level: 'INFO',
+      data: { taskId: 'api', issues: 0, blockers: 0, majors: 0 },
+    });
+  });
+
+  it('security เจอ blocker: say "[Security] ... FAIL", log event security.report แบบ WARN พร้อม blockers/majors และ artifact ของรอบนั้นมี issue ของ security', async () => {
+    const events: Array<{ level: string; event: string; data: Record<string, unknown> }> = [];
+    const { deps, io, store } = makeDeps(
+      {
+        qa: [passReport('api'), passReport('api')],
+        security: [failSecurityReport('api', 'blocker'), passSecurityReport('api')],
+      },
+      [],
+    );
+    deps.log = { log: (level, event, data) => void events.push({ level, event, data: data as never }) };
+    const state = buildState(single());
+    await runBuild(deps, state);
+
+    expect(io.said).toContain('[Security] api: FAIL (1 issues)');
+    const securityEvents = events.filter((e) => e.event === 'security.report');
+    expect(securityEvents[0]).toMatchObject({
+      level: 'WARN',
+      data: { taskId: 'api', issues: 1, blockers: 1, majors: 0 },
+    });
+
+    const artifact = store.artifacts.get('reports/api-round1.json') as { issues: unknown[] };
+    expect(artifact.issues).toEqual(failSecurityReport('api', 'blocker').issues);
+  });
+
+  it('security ชน error_max_turns: นับเป็นรอบที่ไม่ผ่านเหมือน QA/worker', async () => {
+    const { deps, runner } = makeDeps(
+      {
+        qa: [passReport('api'), passReport('api')],
+        security: [
+          new RoleRunError('security: error_max_turns', false, 'error_max_turns'),
+          passSecurityReport('api'),
+        ],
+      },
+      [],
+    );
+    const state = buildState(single());
+    await runBuild(deps, state);
+
+    const works = runner.calls.filter((c) => c.role === 'backend');
+    expect(works).toHaveLength(2);
+    const previous = (works[1]!.input as WorkInput).previousReport;
+    expect(previous?.issues[0]?.description).toContain('Security');
+    expect(previous?.issues[0]?.description).toContain('error_max_turns');
+    expect(state.progress.api?.rounds).toBe(2);
+    expect(state.progress.api?.done).toBe(true);
+  });
 });
 
 describe('runBuild: SDK limit errors นับเป็นรอบที่ไม่ผ่าน', () => {
@@ -166,7 +272,7 @@ describe('runBuild: SDK limit errors นับเป็นรอบที่ไ�
 
     const works = runner.calls.filter((c) => c.role === 'backend');
     expect(works).toHaveLength(2);
-    expect(roles(runner.calls)).toEqual(['backend', 'backend', 'qa']);
+    expect(roles(runner.calls)).toEqual(['backend', 'backend', 'qa', 'security']);
     const previous = (works[1]!.input as WorkInput).previousReport;
     expect(previous?.taskId).toBe('api');
     expect(previous?.verdict).toBe('FAIL');

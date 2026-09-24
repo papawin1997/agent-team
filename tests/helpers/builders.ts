@@ -1,5 +1,5 @@
 import { initProgress } from '../../src/domain';
-import type { Design, PmTurn, QAReport, Requirements, Task } from '../../src/schemas';
+import type { Design, PmTurn, QAReport, Requirements, SecurityReport, Task } from '../../src/schemas';
 import { newState, type State } from '../../src/state';
 
 export function makeRequirements(): Requirements {
@@ -61,6 +61,21 @@ export function failReport(
     checks: [{ name: 'test', status: 'fail', output: '1 failed' }],
     issues: [{ severity, file: 'src/x.ts', description: 'ผิด', suggestedFix: 'แก้' }],
     testsAdded: [],
+  };
+}
+
+export function passSecurityReport(taskId: string): SecurityReport {
+  return { taskId, verdict: 'PASS', issues: [] };
+}
+
+export function failSecurityReport(
+  taskId: string,
+  severity: 'blocker' | 'major' | 'minor' = 'major',
+): SecurityReport {
+  return {
+    taskId,
+    verdict: 'FAIL',
+    issues: [{ severity, file: 'src/x.ts', description: 'มีช่องโหว่', suggestedFix: 'แก้' }],
   };
 }
 

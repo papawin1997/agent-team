@@ -2,6 +2,7 @@ import { askNonEmpty } from '../io-util';
 import type { Deps } from '../deps';
 import { DesignError, initProgress, orderTasks } from '../domain';
 import { formatDesign } from '../format';
+import { nullLogger } from '../logger';
 import type { State } from '../state';
 
 export async function runDesign(deps: Deps, state: State): Promise<void> {
@@ -23,10 +24,16 @@ export async function runDesign(deps: Deps, state: State): Promise<void> {
       designError = `design ที่ส่งมาไม่ถูกต้อง: ${e.message} — แก้ให้ถูกแล้วส่งใหม่`;
       continue;
     }
-    state.design = design;
+    let securityNotes: string[] = [];
+    try {
+      securityNotes = await runner.securityDesign({ design, requirements: state.requirements });
+    } catch (e) {
+      (deps.log ?? nullLogger).log('WARN', 'security.design_failed', { reason: String(e) });
+    }
+    state.design = { ...design, securityNotes };
     delete state.designFeedback;
     state.phase = 'REVIEW';
-    await store.saveArtifact('design.json', design);
+    await store.saveArtifact('design.json', state.design);
     await store.save(state);
     return;
   }

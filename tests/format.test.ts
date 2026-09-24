@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { formatRequirements } from '../src/format';
-import { makeRequirements } from './helpers/builders';
+import { formatDesign, formatRequirements } from '../src/format';
+import { makeDesign, makeRequirements } from './helpers/builders';
 
 describe('formatRequirements', () => {
   it('contains all section headings', () => {
@@ -40,5 +40,22 @@ describe('formatRequirements', () => {
     const constraintsLine = formatted.split('\n').indexOf('ข้อจำกัด:');
     const nextLine = formatted.split('\n')[constraintsLine + 1];
     expect(nextLine).toBe('  (ไม่มี)');
+  });
+});
+
+describe('formatDesign', () => {
+  it('แสดงหัวข้อและ task list', () => {
+    const formatted = formatDesign(makeDesign());
+    expect(formatted).toContain('--- Design ---');
+    expect(formatted).toContain('[backend] api: task api');
+  });
+
+  it('แสดง security notes เมื่อมี', () => {
+    const design = { ...makeDesign(), securityNotes: ['เก็บ password แบบ hash'] };
+    expect(formatDesign(design)).toContain('เก็บ password แบบ hash');
+  });
+
+  it('แสดง (ไม่มี) เมื่อไม่มี security notes', () => {
+    expect(formatDesign(makeDesign())).toContain('ข้อควรระวังด้านความปลอดภัย (Security):\n  (ไม่มี)');
   });
 });
