@@ -15,8 +15,10 @@ const EOF_MESSAGE = 'stdin ถูกปิด (EOF) — หยุดการท
 
 export function parseChoice<T extends string>(input: string, options: readonly T[]): T | undefined {
   const text = input.trim().replace(/[.)]+$/, '');
-  const n = Number(text);
-  if (text !== '' && Number.isInteger(n) && n >= 1 && n <= options.length) return options[n - 1];
+  if (/^\d+$/.test(text)) {
+    const n = Number(text);
+    if (n >= 1 && n <= options.length) return options[n - 1];
+  }
   const lower = text.toLowerCase();
   return options.find((o) => o.toLowerCase() === lower || LABELS[o] === text);
 }

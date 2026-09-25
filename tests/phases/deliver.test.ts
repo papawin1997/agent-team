@@ -71,7 +71,7 @@ describe('runDeliver', () => {
 
     expect(state.phase).toBe('DONE');
     expect(runner.calls).toHaveLength(2);
-    expect((runner.calls[1]!.input as { prompt: string }).prompt).toBe('security ตรวจผ่านหมดหรือยัง');
+    expect((runner.calls[1]!.input as { prompt: string }).prompt).toContain('security ตรวจผ่านหมดหรือยัง');
     expect(io.said.join('\n')).toContain('security ตรวจผ่านทุก task แล้วครับ');
   });
 

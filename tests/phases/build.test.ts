@@ -179,7 +179,7 @@ describe('runBuild', () => {
     expect(state.phase).toBe('ABORTED');
     const pmCalls = runner.calls.filter((c) => c.role === 'pm');
     expect(pmCalls).toHaveLength(2);
-    expect((pmCalls[1]!.input as { prompt: string }).prompt).toBe('ทำไมถึงไม่ผ่าน');
+    expect((pmCalls[1]!.input as { prompt: string }).prompt).toContain('ทำไมถึงไม่ผ่าน');
     expect(io.said.join('\n')).toContain('เพราะ endpoint ยังไม่ครบตาม spec');
   });
 

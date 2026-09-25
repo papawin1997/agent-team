@@ -36,6 +36,13 @@ describe('parseChoice', () => {
     expect(parseChoice('1.', options)).toBe('confirm');
     expect(parseChoice('2)', options)).toBe('revise');
   });
+
+  it('ไม่ตีความเลขแบบหลวม (เช่น +1, 1e0, 0x2, 1.0) ว่าเป็นตัวเลือก', () => {
+    expect(parseChoice('+1', options)).toBeUndefined();
+    expect(parseChoice('1e0', options)).toBeUndefined();
+    expect(parseChoice('0x2', options)).toBeUndefined();
+    expect(parseChoice('1.0', options)).toBeUndefined();
+  });
 });
 
 describe('CliIO', () => {

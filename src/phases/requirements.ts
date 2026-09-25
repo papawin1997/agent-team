@@ -16,18 +16,23 @@ export async function runRequirements(deps: Deps, state: State): Promise<void> {
   state.pendingPrompt = undefined;
 
   for (;;) {
-    const { turn, sessionId } = await runner.pmTurn({ prompt, sessionId: state.pmSessionId });
+    let { turn, sessionId } = await runner.pmTurn({ prompt, sessionId: state.pmSessionId });
     state.pmSessionId = sessionId;
     await store.save(state);
     io.say(`\n[PM] ${turn.message}\n`);
 
     if (turn.status === 'proposal' && turn.requirements) {
       io.say(formatRequirements(turn.requirements));
-      const decision = await decide(deps, state, 'ยืนยัน requirements นี้ไหม?', ['confirm', 'revise'] as const);
+      const decision = await decide(deps, state, 'ยืนยัน requirements นี้ไหม?', ['confirm', 'revise'] as const, (newTurn) => {
+        if (newTurn.status === 'proposal' && newTurn.requirements) {
+          turn = newTurn;
+          io.say(formatRequirements(newTurn.requirements));
+        }
+      });
       if (decision === 'confirm') {
-        state.requirements = turn.requirements;
+        state.requirements = turn.requirements!;
         state.phase = 'DESIGN';
-        await store.saveArtifact('requirements.json', turn.requirements);
+        await store.saveArtifact('requirements.json', turn.requirements!);
         await store.save(state);
         return;
       }
