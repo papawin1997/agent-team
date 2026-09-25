@@ -24,6 +24,12 @@ export interface TaskProgress {
 export interface State {
   version: 1;
   phase: Phase;
+  /** ชื่องาน จากข้อความแรกที่ user พิมพ์ใน REQUIREMENTS */
+  title?: string;
+  /** ISO 8601 ตั้งทุกครั้งที่ save */
+  updatedAt?: string;
+  /** ISO 8601 ตั้งตอน save ในเฟส BUILD ที่มีรอบแล้ว (worker แก้โค้ดได้แค่ในเฟสนี้) */
+  lastBuildAt?: string;
   pmSessionId?: string;
   pendingPrompt?: string;
   designFeedback?: string;
@@ -36,12 +42,12 @@ export function newState(): State {
   return { version: 1, phase: 'REQUIREMENTS', progress: {} };
 }
 
+/** เก็บ state และ artifact ของงานหนึ่งงานในโฟลเดอร์ .agent-team/jobs/<jobId>/ */
 export class FileStateStore implements StateStore {
-  private readonly dir: string;
-
-  constructor(projectDir: string) {
-    this.dir = path.join(projectDir, '.agent-team');
-  }
+  constructor(
+    private readonly dir: string,
+    private readonly now: () => Date = () => new Date(),
+  ) {}
 
   async load(): Promise<State | undefined> {
     let raw: string;
@@ -59,6 +65,11 @@ export class FileStateStore implements StateStore {
   }
 
   async save(state: State): Promise<void> {
+    const at = this.now().toISOString();
+    state.updatedAt = at;
+    if (state.phase === 'BUILD' && Object.values(state.progress).some((p) => p.rounds > 0)) {
+      state.lastBuildAt = at;
+    }
     await fs.mkdir(this.dir, { recursive: true });
     const file = path.join(this.dir, 'state.json');
     const tmp = `${file}.tmp`;

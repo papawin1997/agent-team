@@ -42,7 +42,7 @@ async function main(): Promise<void> {
     log: (line) => io.say(line),
     debug: process.env.AGENT_TEAM_DEBUG === '1',
   });
-  const store = new FileStateStore(args.projectDir);
+  const store = new FileStateStore(path.join(args.projectDir, '.agent-team'));
 
   process.on('SIGINT', () => {
     logger.log('WARN', 'run.interrupted', { signal: 'SIGINT' });
