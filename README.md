@@ -52,6 +52,12 @@ Ctrl+C หยุดได้ทุกเมื่อ: state ถูกบัน�
 event หลัก: `run.start/run.end/run.error/run.interrupted`, `team.start/team.end`, `phase.change`,
 `agent.start/agent.result/agent.no_result`, `qa.report`, `security.report`, `escalate.decision`, `guard.deny`,
 `say` (ทุกข้อความที่แสดงใน terminal), `user.input` / `user.choice` (สิ่งที่คุณพิมพ์/เลือก)
+event เกี่ยวกับ job (housekeeping ของหลายงานใน `jobs/`):
+`job.selected` (งานที่เลือกในแต่ละรอบรัน), `job.migrated` (ย้าย state แบบเก่าเข้า `jobs/` สำเร็จ),
+`job.unreadable` (ข้ามงานที่อ่าน state/lock ไม่ได้ระหว่าง list), `job.missing_state` (โฟลเดอร์งานไม่มี state.json),
+`job.legacy_leftover` (มี artifact แบบเก่าตกค้างที่ root โดยไม่มี state.json ให้ย้าย),
+`job.unlock_failed` (ปลด lock ไม่สำเร็จ), `job.remove_failed` (ลบงานเปล่า/งานที่ขอลบไม่สำเร็จแบบ best-effort)
+log ไฟล์นี้ใช้ร่วมกันทุกงาน (ไม่แยกไฟล์ต่อ jobId) มีเฉพาะ `job.selected` เท่านั้นที่บอก `jobId` ของรอบรันนั้น
 ข้อความยาวเกิน 1,000 ตัวอักษรจะถูกตัด และ log เขียนไม่ได้จะไม่ทำให้งานล้ม
 ไม่มี prompt/คำตอบดิบของ agent ใน log (มีเฉพาะสรุป) — `cost` ที่เห็นคำนวณตามราคา API ไม่ใช่ยอดที่ถูกเรียกเก็บจริง
 Security ถูกเรียกเฉพาะรอบที่ QA ผ่านแล้ว ดังนั้นรอบไหนมี `security.report` แปลว่า QA รอบนั้นผ่านจริง

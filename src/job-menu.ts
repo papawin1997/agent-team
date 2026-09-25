@@ -37,8 +37,13 @@ export async function selectJob(
 async function removeEmptyJobs(repo: JobRepository, all: readonly JobInfo[]): Promise<void> {
   for (const job of all) {
     if (!isEmptyJob(job.state) || job.lock) continue;
-    // lock ก่อนลบ: สถานะ lock ที่อ่านจาก list() อาจเก่าแล้ว
-    if (await repo.lock(job.id)) await repo.remove(job.id);
+    try {
+      // lock ก่อนลบ: สถานะ lock ที่อ่านจาก list() อาจเก่าแล้ว
+      if (await repo.lock(job.id)) await repo.removeQuietly(job.id);
+    } catch {
+      // best-effort: ห้ามทำให้ selectJob ล้ม ปล่อย lock ที่อาจถือไว้แล้วข้ามไปงานถัดไป
+      await repo.unlock(job.id);
+    }
   }
 }
 

@@ -264,6 +264,29 @@ describe('selectJob', () => {
       expect(io.said.join('\n')).toContain('[PM] มีงานค้าง 1 งาน:');
     });
 
+    it('งานเปล่าที่ลบไม่สำเร็จ: selectJob ไม่ throw และแสดงเมนูต่อได้ปกติ', async () => {
+      const real = await seed('งานจริง', d(24, 9));
+      clock = d(25, 9);
+      const setup = repoFor(9999);
+      const empty = (await setup.create()).id;
+      await setup.unlock(empty);
+
+      class FailingRemoveRepo extends JobRepository {
+        override async remove(id: string): Promise<void> {
+          if (id === empty) throw new Error('remove ล้มเหลว');
+          return super.remove(id);
+        }
+      }
+      const repo = new FailingRemoveRepo(projectDir, { now: () => clock, pid: 1000, isAlive: (p) => alive.has(p) });
+      const io = new ScriptedIO(['r1']);
+
+      const job = await selectJob(repo, io, { resume: false });
+
+      expect(job.id).toBe(real);
+      // ลบไม่สำเร็จ (best-effort) แต่ selectJob ยังทำงานต่อได้ปกติ ไม่ throw
+      expect(existsSync(repo.jobDir(empty))).toBe(true);
+    });
+
     it('งานเปล่าที่ process อื่นถือ lock อยู่ไม่ถูกลบและไม่ขึ้นในเมนู', async () => {
       const real = await seed('งานจริง', d(24, 9));
       alive.add(2000);

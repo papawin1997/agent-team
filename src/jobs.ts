@@ -60,7 +60,11 @@ export function isEmptyJob(state: State): boolean {
 function parseLock(raw: string): JobLock | undefined {
   try {
     const data = JSON.parse(raw) as Partial<JobLock>;
-    if (typeof data.pid === 'number' && typeof data.startedAt === 'string') {
+    if (
+      typeof data.pid === 'number' &&
+      typeof data.startedAt === 'string' &&
+      !Number.isNaN(Date.parse(data.startedAt))
+    ) {
       return { pid: data.pid, startedAt: data.startedAt };
     }
   } catch {
@@ -115,7 +119,12 @@ export class JobRepository {
       // lock ก่อน state.json เพื่อไม่ให้อีก process เห็นเป็นงานเปล่าที่ไม่มีใครถือ
       if (!(await this.lock(id))) throw new Error(`lock งานใหม่ ${id} ไม่สำเร็จ`);
       const store = this.store(id);
-      await store.save(newState());
+      try {
+        await store.save(newState());
+      } catch (e) {
+        await this.remove(id).catch(() => {});
+        throw e;
+      }
       return { id, store };
     }
   }
@@ -142,11 +151,16 @@ export class JobRepository {
         this.log.log('WARN', 'job.missing_state', { jobId: id });
         continue;
       }
-      const updatedAt = state.updatedAt
-        ? new Date(state.updatedAt)
-        : (await fsp.stat(path.join(this.jobDir(id), 'state.json'))).mtime;
-      const lock = await this.liveLock(id);
-      jobs.push(lock ? { id, state, updatedAt, lock } : { id, state, updatedAt });
+      try {
+        const updatedAt = state.updatedAt
+          ? new Date(state.updatedAt)
+          : (await fsp.stat(path.join(this.jobDir(id), 'state.json'))).mtime;
+        const lock = await this.liveLock(id);
+        jobs.push(lock ? { id, state, updatedAt, lock } : { id, state, updatedAt });
+      } catch (e) {
+        // โฟลเดอร์ถูกลบ/แก้ระหว่างที่กำลังอ่าน (อีก process ทำ housekeeping พร้อมกัน)
+        this.log.log('WARN', 'job.unreadable', { jobId: id, message: errMessage(e) });
+      }
     }
     return jobs;
   }
@@ -186,6 +200,17 @@ export class JobRepository {
 
   async remove(id: string): Promise<void> {
     await fsp.rm(this.jobDir(id), { recursive: true, force: true });
+  }
+
+  /** เหมือน remove() แต่ไม่ throw: ลบไม่สำเร็จ log WARN แล้วคืน false (housekeeping ที่ต้องไม่ทำให้ caller ล้ม) */
+  async removeQuietly(id: string): Promise<boolean> {
+    try {
+      await this.remove(id);
+      return true;
+    } catch (e) {
+      this.log.log('WARN', 'job.remove_failed', { jobId: id, message: errMessage(e) });
+      return false;
+    }
   }
 
   /** ย้าย .agent-team/state.json แบบเก่า (ก่อนมีหลายงาน) เข้า jobs/<id>/ รันซ้ำได้ผลเดิม */
@@ -236,7 +261,8 @@ export class JobRepository {
       await fsp.writeFile(file, body, { encoding: 'utf8', flag: 'wx' });
       return true;
     } catch (e) {
-      if (errCode(e) === 'EEXIST') return false;
+      // EEXIST = มี lock อยู่แล้ว, ENOENT = โฟลเดอร์งานถูกลบไปแล้ว (housekeeping ของอีก process)
+      if (errCode(e) === 'EEXIST' || errCode(e) === 'ENOENT') return false;
       throw e;
     }
   }

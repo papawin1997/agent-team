@@ -143,6 +143,21 @@ describe('JobRepository', () => {
     expect(await make({ pid: 2000 }).lock(id)).toBe(true);
   });
 
+  it('startedAt ใน lock อ่านค่าวันที่ไม่ได้ถือว่าค้าง', async () => {
+    const repo = make();
+    const { id } = await repo.create();
+    await fs.writeFile(repo.lockPath(id), JSON.stringify({ pid: 1000, startedAt: 'garbage' }), 'utf8');
+    // pid 1000 ยังอยู่ (alive) แต่ startedAt พังจึงถือว่า lock ค้าง ไม่ใช่ยังทำงานอยู่
+    expect(await make({ pid: 2000 }).lock(id)).toBe(true);
+  });
+
+  it('lock บนโฟลเดอร์งานที่ถูกลบไปแล้วคืน false ไม่ throw', async () => {
+    const repo = make();
+    const { id } = await repo.create();
+    await fs.rm(repo.jobDir(id), { recursive: true, force: true });
+    await expect(repo.lock(id)).resolves.toBe(false);
+  });
+
   it('unlock/unlockSync ลบเฉพาะ lock ของตัวเอง', async () => {
     const repo = make();
     const { id } = await repo.create();
@@ -166,6 +181,35 @@ describe('JobRepository', () => {
     await repo.unlock(id);
     await expect(repo.unlock(id)).resolves.toBeUndefined();
     expect(() => repo.unlockSync(id)).not.toThrow();
+  });
+
+  it('create ลบโฟลเดอร์งานทิ้งถ้า save state เริ่มต้นล้มเหลว', async () => {
+    let calls = 0;
+    // เรียก now() ครั้งที่ 1 = formatJobId, ครั้งที่ 2 = lock body, ครั้งที่ 3 = ใน store.save() ให้ throw
+    const now = () => {
+      calls += 1;
+      if (calls > 2) throw new Error('now ล้มเหลว');
+      return at;
+    };
+    const repo = new JobRepository(projectDir, { now, pid: 1000, isAlive: (pid) => alive.has(pid) });
+
+    await expect(repo.create()).rejects.toThrow('now ล้มเหลว');
+
+    expect(existsSync(path.join(projectDir, '.agent-team', 'jobs', '20260925-093015'))).toBe(false);
+  });
+
+  it('list ข้ามงานที่ run.lock อ่านไม่ได้ (เช่นเป็นโฟลเดอร์) แทนที่จะ throw', async () => {
+    const events: string[] = [];
+    const repo = make({ log: { log: (_level, event) => void events.push(event) } });
+    const { id, store } = await repo.create();
+    await store.save(buildState());
+    await repo.unlock(id);
+    await fs.mkdir(repo.lockPath(id));
+
+    const jobs = await repo.list();
+
+    expect(jobs).toEqual([]);
+    expect(events).toContain('job.unreadable');
   });
 
   it('remove ลบทั้งโฟลเดอร์งาน', async () => {
