@@ -219,7 +219,7 @@
   ถ้ามี `pmSessionId` อยู่แล้ว (งาน legacy) ไม่ตั้ง title
 - `tests/state.test.ts`: ปรับให้ตรงกับ constructor ใหม่ + `updatedAt`/`lastBuildAt`
 - `tests/orchestrator.test.ts`: ลบ 3 เทสต์ที่ระบุไว้ในหัวข้อ `runTeam` และเปลี่ยนวิธีเรียก
-  ส่วน `initial state is saved when first ask throws` (บรรทัด 216-224) ต้องผ่านโดยไม่แก้ (v2#5)
+  ส่วน `initial state is saved when first ask throws` (บรรทัด 216-224) เปลี่ยนแค่วิธีเรียกเป็น `runTeam(deps)` ส่วน assertion ต้องผ่านโดยไม่แก้ (v2#5)
 - จบด้วย `npm test` และ `npm run typecheck` ต้องผ่านทั้งหมด
 
 ## ไม่ทำ (out of scope)
