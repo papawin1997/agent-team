@@ -53,7 +53,7 @@ async function main(): Promise<void> {
   });
 
   try {
-    const final = await runTeam({ runner, io, store, config, log: logger }, { resume: args.resume });
+    const final = await runTeam({ runner, io, store, config, log: logger });
     console.log(
       final.phase === 'DONE'
         ? '\nเสร็จสมบูรณ์'
