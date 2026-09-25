@@ -24,10 +24,15 @@ export interface JobRepositoryOptions {
   pid?: number;
   /** เช็กว่า pid ยังทำงานอยู่ไหม (เทสต์ส่งค่าปลอมได้) */
   isAlive?: (pid: number) => boolean;
+  /** ย้ายไฟล์/โฟลเดอร์ (เทสต์ส่งตัวที่ล้มได้) */
+  rename?: (from: string, to: string) => Promise<void>;
 }
 
 const errCode = (e: unknown): string | undefined => (e as NodeJS.ErrnoException).code;
 const errMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** artifact แบบเก่าที่อยู่ที่ .agent-team/ (state.json ย้ายแยกเป็นอย่างสุดท้าย) */
+const LEGACY_ARTIFACTS = ['requirements.json', 'design.json', 'reports'] as const;
 
 export function isProcessAlive(pid: number): boolean {
   try {
@@ -71,6 +76,7 @@ export class JobRepository {
   private readonly log: Logger;
   private readonly pid: number;
   private readonly isAlive: (pid: number) => boolean;
+  private readonly rename: (from: string, to: string) => Promise<void>;
 
   constructor(projectDir: string, opts: JobRepositoryOptions = {}) {
     this.root = path.join(projectDir, '.agent-team');
@@ -79,6 +85,7 @@ export class JobRepository {
     this.log = opts.log ?? nullLogger;
     this.pid = opts.pid ?? process.pid;
     this.isAlive = opts.isAlive ?? isProcessAlive;
+    this.rename = opts.rename ?? fsp.rename;
   }
 
   jobDir(id: string): string {
@@ -179,6 +186,49 @@ export class JobRepository {
 
   async remove(id: string): Promise<void> {
     await fsp.rm(this.jobDir(id), { recursive: true, force: true });
+  }
+
+  /** ย้าย .agent-team/state.json แบบเก่า (ก่อนมีหลายงาน) เข้า jobs/<id>/ รันซ้ำได้ผลเดิม */
+  async migrateLegacy(): Promise<void> {
+    const legacyState = path.join(this.root, 'state.json');
+    if (!fs.existsSync(legacyState)) {
+      const leftovers = LEGACY_ARTIFACTS.filter((name) => fs.existsSync(path.join(this.root, name)));
+      if (leftovers.length > 0) this.log.log('WARN', 'job.legacy_leftover', { files: leftovers });
+      return;
+    }
+    let mtime: Date;
+    try {
+      mtime = (await fsp.stat(legacyState)).mtime;
+    } catch (e) {
+      if (errCode(e) === 'ENOENT') return; // อีก process ย้ายไปแล้ว
+      throw e;
+    }
+    const id = this.legacyTarget(formatJobId(mtime));
+    const dir = this.jobDir(id);
+    // state.json ย้ายเป็นอย่างสุดท้าย: ถ้าล้มกลางทาง รอบหน้ายังเจอ state.json และได้ id เดิมจาก mtime
+    for (const name of [...LEGACY_ARTIFACTS, 'state.json']) {
+      await this.moveIfPresent(path.join(this.root, name), path.join(dir, name));
+    }
+    this.log.log('INFO', 'job.migrated', { jobId: id });
+  }
+
+  /** id จาก mtime; ใช้โฟลเดอร์ที่ยังไม่มี state.json ต่อได้ (ย้ายค้างจากรอบก่อน) ถ้าชนงานจริงค่อยต่อท้าย suffix */
+  private legacyTarget(base: string): string {
+    for (let n = 1; ; n++) {
+      const id = n === 1 ? base : `${base}-${n}`;
+      if (!fs.existsSync(path.join(this.jobDir(id), 'state.json'))) return id;
+    }
+  }
+
+  private async moveIfPresent(from: string, to: string): Promise<void> {
+    if (!fs.existsSync(from)) return;
+    await fsp.mkdir(path.dirname(to), { recursive: true });
+    try {
+      await this.rename(from, to);
+    } catch (e) {
+      if (errCode(e) === 'ENOENT') return; // อีก process ที่เริ่มพร้อมกันย้ายไปแล้ว
+      throw new Error(`ย้าย ${from} ไป ${to} ไม่สำเร็จ: ${errMessage(e)}`);
+    }
   }
 
   private async tryCreateLock(file: string, body: string): Promise<boolean> {

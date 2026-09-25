@@ -176,3 +176,99 @@ describe('JobRepository', () => {
     expect(existsSync(repo.jobDir(id))).toBe(false);
   });
 });
+
+describe('migrateLegacy', () => {
+  const legacyAt = new Date(2026, 8, 20, 8, 0, 0);
+  const legacyId = '20260920-080000';
+  const allFiles = ['state.json', 'requirements.json', 'design.json', 'reports/api-round1.json'];
+
+  async function writeLegacy(files: string[] = allFiles): Promise<string> {
+    const root = path.join(projectDir, '.agent-team');
+    for (const f of files) {
+      const file = path.join(root, f);
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      const body = f === 'state.json' ? JSON.stringify(buildState()) : JSON.stringify({ file: f });
+      await fs.writeFile(file, body, 'utf8');
+    }
+    if (files.includes('state.json')) await fs.utimes(path.join(root, 'state.json'), legacyAt, legacyAt);
+    return root;
+  }
+
+  const failOn = (name: string, code: string) => async (from: string, to: string) => {
+    if (from.endsWith(name)) throw Object.assign(new Error(`${code} ${name}`), { code });
+    await fs.rename(from, to);
+  };
+
+  it('ย้าย state และ artifact ทั้งหมดเข้า jobs/<id จาก mtime>/ และไม่แตะ log', async () => {
+    const root = await writeLegacy();
+    await fs.writeFile(path.join(root, 'agent-team.log'), 'old log\n', 'utf8');
+    const repo = make();
+
+    await repo.migrateLegacy();
+
+    const dir = path.join(root, 'jobs', legacyId);
+    for (const f of allFiles) {
+      expect(existsSync(path.join(dir, f))).toBe(true);
+      expect(existsSync(path.join(root, f))).toBe(false);
+    }
+    expect(existsSync(path.join(root, 'agent-team.log'))).toBe(true);
+    const jobs = await repo.list();
+    expect(jobs.map((j) => j.id)).toEqual([legacyId]);
+    expect(jobs[0]!.state.phase).toBe('BUILD');
+  });
+
+  it('ไม่มี legacy ก็ไม่ทำอะไร', async () => {
+    await make().migrateLegacy();
+    expect(existsSync(path.join(projectDir, '.agent-team', 'jobs'))).toBe(false);
+  });
+
+  it('ย้ายค้างครึ่งทางจากรอบก่อน: ใช้โฟลเดอร์เดิมต่อจนครบ ไม่ต่อท้าย -2', async () => {
+    const root = await writeLegacy();
+    const dir = path.join(root, 'jobs', legacyId);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.rename(path.join(root, 'requirements.json'), path.join(dir, 'requirements.json'));
+
+    await make().migrateLegacy();
+
+    expect(await fs.readdir(path.join(root, 'jobs'))).toEqual([legacyId]);
+    for (const f of allFiles) expect(existsSync(path.join(dir, f))).toBe(true);
+  });
+
+  it('rename ล้มกลางทาง: throw พร้อมชื่อไฟล์ state.json ยังอยู่ที่ root แล้วรอบถัดไปย้ายต่อได้', async () => {
+    const root = await writeLegacy();
+
+    await expect(make({ rename: failOn('design.json', 'EBUSY') }).migrateLegacy()).rejects.toThrow('design.json');
+    expect(existsSync(path.join(root, 'state.json'))).toBe(true);
+
+    await make().migrateLegacy();
+
+    expect(await fs.readdir(path.join(root, 'jobs'))).toEqual([legacyId]);
+    for (const f of allFiles) expect(existsSync(path.join(root, 'jobs', legacyId, f))).toBe(true);
+    expect(existsSync(path.join(root, 'state.json'))).toBe(false);
+  });
+
+  it('rename ได้ ENOENT (อีก process ย้ายไปแล้ว): ข้ามไฟล์นั้นแล้วทำต่อ', async () => {
+    const root = await writeLegacy();
+    await make({ rename: failOn('design.json', 'ENOENT') }).migrateLegacy();
+    expect(existsSync(path.join(root, 'jobs', legacyId, 'state.json'))).toBe(true);
+  });
+
+  it('artifact ค้างที่ root โดยไม่มี state.json: WARN และไม่ throw ไม่ย้าย', async () => {
+    const events: string[] = [];
+    const root = await writeLegacy(['design.json']);
+    await make({ log: { log: (_level, event) => void events.push(event) } }).migrateLegacy();
+    expect(events).toContain('job.legacy_leftover');
+    expect(existsSync(path.join(root, 'design.json'))).toBe(true);
+  });
+
+  it('id ชนกับงานที่มี state.json อยู่แล้ว: ต่อท้าย -2', async () => {
+    const root = await writeLegacy();
+    const taken = path.join(root, 'jobs', legacyId);
+    await fs.mkdir(taken, { recursive: true });
+    await fs.writeFile(path.join(taken, 'state.json'), JSON.stringify(buildState()), 'utf8');
+
+    await make().migrateLegacy();
+
+    expect(existsSync(path.join(root, 'jobs', `${legacyId}-2`, 'state.json'))).toBe(true);
+  });
+});
