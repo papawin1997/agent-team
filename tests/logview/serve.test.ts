@@ -67,4 +67,18 @@ describe('startLiveServer', () => {
     });
     expect(status).toBe(403);
   });
+
+  it('Host header ตัวพิมพ์ใหญ่ (เช่น LOCALHOST) ก็ยังผ่าน (case-insensitive)', async () => {
+    server = await startLiveServer({ load: () => data(1) });
+    const port = Number(new URL(server.url).port);
+    const status = await new Promise<number>((resolve, reject) => {
+      http
+        .get({ host: '127.0.0.1', port, path: '/data', headers: { host: `LOCALHOST:${port}` } }, (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        })
+        .on('error', reject);
+    });
+    expect(status).toBe(200);
+  });
 });

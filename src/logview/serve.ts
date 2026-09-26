@@ -13,7 +13,7 @@ export function startLiveServer(opts: { load: () => ViewData; port?: number }): 
   let allowedHosts: string[] = [];
   const server = http.createServer((req, res) => {
     // กัน DNS rebinding: เว็บอื่นที่ชี้ชื่อโดเมนมาที่ 127.0.0.1 จะส่ง Host เป็นชื่อโดเมนนั้น
-    if (!allowedHosts.includes(req.headers.host ?? '')) {
+    if (!allowedHosts.includes((req.headers.host ?? '').toLowerCase())) {
       send(res, 403, 'text/plain; charset=utf-8', 'forbidden');
       return;
     }

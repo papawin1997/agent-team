@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { browserCommand, openInBrowser } from '../../src/logview/open-browser';
 
 describe('browserCommand', () => {
-  it('Windows ใช้ cmd start พร้อม quote path (verbatim)', () => {
-    expect(browserCommand('C:\\a b\\logs.html', 'win32')).toEqual({
-      cmd: 'cmd',
-      args: ['/c', 'start', '""', '"C:\\a b\\logs.html"'],
-      verbatim: true,
+  it('Windows ใช้ explorer.exe ส่ง path ตรงๆ ไม่ผ่าน cmd.exe (กัน %VAR% ถูกขยาย)', () => {
+    expect(browserCommand('C:\\a b\\100%TEMP%\\logs.html', 'win32')).toEqual({
+      cmd: 'explorer.exe',
+      args: ['C:\\a b\\100%TEMP%\\logs.html'],
+      verbatim: false,
     });
   });
 

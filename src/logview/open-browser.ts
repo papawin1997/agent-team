@@ -12,8 +12,9 @@ export function browserCommand(
   target: string,
   platform: NodeJS.Platform = process.platform,
 ): { cmd: string; args: string[]; verbatim: boolean } {
-  // start ของ cmd ถือ argument แรกที่มี quote เป็นชื่อหน้าต่าง จึงต้องใส่ "" ก่อน และ quote path เอง (verbatim)
-  if (platform === 'win32') return { cmd: 'cmd', args: ['/c', 'start', '""', `"${target}"`], verbatim: true };
+  // ห้ามผ่าน cmd.exe: cmd จะขยาย %VAR% แม้อยู่ในเครื่องหมายคำพูด ทำให้ path ที่มี % เปิดผิดเป้าหมายแบบเงียบๆ
+  // explorer.exe เปิดได้ทั้งไฟล์ .html และ http URL ด้วยเบราว์เซอร์ default (exit code 1 แม้สำเร็จ ซึ่งเราไม่สนอยู่แล้ว)
+  if (platform === 'win32') return { cmd: 'explorer.exe', args: [target], verbatim: false };
   if (platform === 'darwin') return { cmd: 'open', args: [target], verbatim: false };
   return { cmd: 'xdg-open', args: [target], verbatim: false };
 }
