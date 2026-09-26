@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { PmInput } from '../../src/deps';
 import { runRequirements } from '../../src/phases/requirements';
 import { newState } from '../../src/state';
@@ -146,7 +146,8 @@ describe('runRequirements', () => {
   it('ตั้ง title จากข้อความแรกและ save ก่อนเรียก PM', async () => {
     const { deps, store } = makeDeps({ pm: [] }, ['อยากได้ระบบ todo']);
     const state = newState();
-    await expect(runRequirements(deps, state)).rejects.toThrow('pm script หมด');
+    // PM ล้ม -> ถามให้ลองใหม่ -> ScriptedIO ไม่มีคำตอบเหลือ (title ต้องถูก save ไว้แล้ว)
+    await expect(runRequirements(deps, state)).rejects.toThrow('ScriptedIO');
     expect(store.state?.title).toBe('อยากได้ระบบ todo');
   });
 
@@ -171,5 +172,30 @@ describe('runRequirements', () => {
     state.pmSessionId = 'pm-session';
     await runRequirements(deps, state);
     expect(state.title).toBeUndefined();
+  });
+
+  describe('PM ตอบไม่สำเร็จ ไม่ทำให้ทั้ง run หยุด', () => {
+    it('กด Enter = ส่งข้อความเดิมให้ PM อีกครั้ง', async () => {
+      const { deps, runner, io } = makeDeps({ pm: [proposal()] }, ['อยากได้ todo list', '', 'confirm']);
+      vi.spyOn(runner, 'pmTurn').mockRejectedValueOnce(new Error('pm: error_max_structured_output_retries'));
+      const state = newState();
+
+      await runRequirements(deps, state);
+
+      expect(state.phase).toBe('DESIGN');
+      expect(pmInput(runner, 0).prompt).toBe('อยากได้ todo list');
+      expect(io.said.join('\n')).toContain('PM ตอบไม่สำเร็จ (pm: error_max_structured_output_retries)');
+    });
+
+    it('พิมพ์ข้อความใหม่ = ส่งข้อความใหม่แทน', async () => {
+      const { deps, runner } = makeDeps({ pm: [proposal()] }, ['อยากได้ todo list', 'ขอแบบสั้น ๆ', 'confirm']);
+      vi.spyOn(runner, 'pmTurn').mockRejectedValueOnce(new Error('boom'));
+      const state = newState();
+
+      await runRequirements(deps, state);
+
+      expect(state.phase).toBe('DESIGN');
+      expect(pmInput(runner, 0).prompt).toBe('ขอแบบสั้น ๆ');
+    });
   });
 });

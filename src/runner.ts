@@ -49,6 +49,13 @@ export interface SdkRunnerDeps {
 
 const BACKOFF_MS = [1000, 3000];
 
+/** SDK ยอมแพ้เพราะ agent ส่ง StructuredOutput ที่ parse เป็น JSON ไม่ได้ซ้ำหลายครั้ง (เกิดกับ payload ภาษาไทยยาว ๆ) */
+const STRUCTURED_OUTPUT_EXHAUSTED = 'error_max_structured_output_retries';
+const STRUCTURED_OUTPUT_RECOVERY =
+  'การเรียก StructuredOutput ก่อนหน้าส่ง JSON ที่ parse ไม่ได้ (ขาด field หรือปิดวงเล็บไม่ครบ) ' +
+  'เรียก StructuredOutput ใหม่อีกครั้งด้วย JSON ที่ถูกต้อง ครบทุก field ที่ schema กำหนด ปิด ] และ } ให้ครบ ' +
+  'และเขียนแต่ละข้อความให้สั้นกระชับ';
+
 export class SdkRoleRunner implements RoleRunner {
   private readonly queryFn: QueryFn;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -105,17 +112,35 @@ export class SdkRoleRunner implements RoleRunner {
     resume?: string,
   ): Promise<{ data: T; sessionId: string }> {
     const jsonSchema = toJsonSchema(schema);
-    const first = await this.withRetry(role, label, prompt, jsonSchema, resume);
+    const first = await this.withRecovery(role, label, prompt, jsonSchema, resume);
     const parsed = schema.safeParse(first.output);
     if (parsed.success) return { data: parsed.data, sessionId: first.sessionId };
 
     const reask =
       `ผลลัพธ์ก่อนหน้าไม่ผ่านการตรวจ schema:\n${z.prettifyError(parsed.error)}\n` +
       'ส่งผลลัพธ์ใหม่ให้ตรง schema';
-    const second = await this.withRetry(role, label, reask, jsonSchema, first.sessionId);
+    const second = await this.withRecovery(role, label, reask, jsonSchema, first.sessionId);
     const reparsed = schema.safeParse(second.output);
     if (reparsed.success) return { data: reparsed.data, sessionId: second.sessionId };
     throw new RoleOutputError(`${role}: output ผิด schema ซ้ำ:\n${z.prettifyError(reparsed.error)}`);
+  }
+
+  /** เหมือน withRetry แต่ถ้า SDK ยอมแพ้เรื่อง JSON ของ StructuredOutput ให้ resume session เดิมขอส่งใหม่ 1 ครั้ง */
+  private async withRecovery(
+    role: RoleName,
+    label: string,
+    prompt: string,
+    jsonSchema: Record<string, unknown>,
+    resume?: string,
+  ): Promise<{ output: unknown; sessionId: string }> {
+    try {
+      return await this.withRetry(role, label, prompt, jsonSchema, resume);
+    } catch (e) {
+      const aborted = this.deps.abortController?.signal.aborted ?? false;
+      if (aborted || !(e instanceof RoleRunError) || e.subtype !== STRUCTURED_OUTPUT_EXHAUSTED || !e.sessionId) throw e;
+      this.log(`[${role}] ส่ง JSON ไม่ผ่าน — ขอให้ส่งใหม่อีกครั้ง`);
+      return this.withRetry(role, label, STRUCTURED_OUTPUT_RECOVERY, jsonSchema, e.sessionId);
+    }
   }
 
   private async withRetry(
@@ -200,6 +225,7 @@ export class SdkRoleRunner implements RoleRunner {
             `${role}: ${reason}`,
             !msg.subtype.startsWith('error_max_'),
             msg.subtype,
+            sessionId || undefined,
           );
         }
       }

@@ -21,8 +21,21 @@ export async function runRequirements(deps: Deps, state: State): Promise<void> {
   state.pendingPrompt = undefined;
 
   for (;;) {
-    let { turn, sessionId } = await runner.pmTurn({ prompt, sessionId: state.pmSessionId });
-    state.pmSessionId = sessionId;
+    let response;
+    try {
+      response = await runner.pmTurn({ prompt, sessionId: state.pmSessionId });
+    } catch (e) {
+      // PM ล้ม (เช่นส่ง JSON ไม่ผ่านซ้ำ) ไม่ควรทำให้ทั้ง run หยุด: ให้ user ส่งข้อความเดิมซ้ำหรือพิมพ์ใหม่
+      io.say(
+        `\n[PM] PM ตอบไม่สำเร็จ (${e instanceof Error ? e.message : String(e)}) — ` +
+          'กด Enter เพื่อส่งข้อความเดิมอีกครั้ง หรือพิมพ์ข้อความใหม่\n',
+      );
+      const retry = (await io.ask('> ')).trim();
+      if (retry !== '') prompt = retry;
+      continue;
+    }
+    let { turn } = response;
+    state.pmSessionId = response.sessionId;
     await store.save(state);
     io.say(`\n[PM] ${turn.message}\n`);
 
