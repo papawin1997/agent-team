@@ -1,0 +1,169 @@
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { beforeEach, describe, expect, it } from 'vitest';
+import type { AgentCall } from '../../src/logview/parse-log';
+import {
+  clip,
+  loadCallTranscript,
+  MAX_STEP_CHARS,
+  sliceTranscript,
+  transcriptsDir,
+} from '../../src/logview/transcripts';
+
+const at = (ms: string) => `2026-01-10T09:${ms}.000Z`;
+const jsonl = (...entries: unknown[]) => `${entries.map((e) => JSON.stringify(e)).join('\n')}\n`;
+
+// รูปแบบเลียนแบบ transcript จริงของ Claude Agent SDK
+const userPrompt = (ms: string) => ({
+  type: 'user',
+  timestamp: at(ms),
+  message: { role: 'user', content: [{ type: 'text', text: 'Task under review: ...' }] },
+});
+const toolUse = (ms: string) => ({
+  type: 'assistant',
+  timestamp: at(ms),
+  message: {
+    role: 'assistant',
+    content: [
+      { type: 'thinking', thinking: '' },
+      { type: 'text', text: 'จะรันเทสต์' },
+      { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'python -m pytest' } },
+    ],
+  },
+});
+const toolResult = (ms: string, content: unknown) => ({
+  type: 'user',
+  timestamp: at(ms),
+  message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', is_error: true, content }] },
+});
+const overloaded = (ms: string) => ({
+  type: 'system',
+  subtype: 'api_error',
+  level: 'error',
+  timestamp: at(ms),
+  error: {
+    message: '529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
+    status: 529,
+    formatted: '529 Overloaded',
+    connection: null,
+    isNetworkDown: false,
+  },
+});
+const offline = (ms: string) => ({
+  type: 'system',
+  subtype: 'api_error',
+  level: 'error',
+  timestamp: at(ms),
+  error: {
+    message: 'Connection error.',
+    formatted: "Can't reach the API server (ENOTFOUND)",
+    connection: { code: 'ENOTFOUND' },
+    isNetworkDown: true,
+  },
+});
+const call = (over: Partial<AgentCall> = {}): AgentCall => ({
+  id: 0,
+  role: 'qa',
+  resumed: false,
+  start: at('01:00'),
+  end: at('06:00'),
+  status: 'failed',
+  ...over,
+});
+
+describe('transcriptsDir', () => {
+  it('แปลง projectDir เป็นชื่อโฟลเดอร์แบบ Claude Code', () => {
+    expect(transcriptsDir('C:\\work\\my\\mail-sender', {}, '/home/u')).toBe(
+      path.join('/home/u', '.claude', 'projects', 'C--work-my-mail-sender'),
+    );
+  });
+
+  it('ใช้ CLAUDE_CONFIG_DIR ถ้าตั้งไว้', () => {
+    expect(transcriptsDir('/work/app', { CLAUDE_CONFIG_DIR: '/cfg' }, '/home/u')).toBe(
+      path.join('/cfg', 'projects', '-work-app'),
+    );
+  });
+});
+
+describe('clip', () => {
+  it('ตัดข้อความที่ยาวเกินและบอกจำนวนที่ตัด', () => {
+    expect(clip('x'.repeat(MAX_STEP_CHARS + 5))).toBe(`${'x'.repeat(MAX_STEP_CHARS)}…(ตัด 5 ตัวอักษร)`);
+    expect(clip('สั้น')).toBe('สั้น');
+  });
+});
+
+describe('sliceTranscript', () => {
+  it('แปลง entry เป็น step และข้าม prompt ของ user, thinking และ entry นอกช่วงเวลา', () => {
+    const text = jsonl(
+      toolUse('00:30'),
+      userPrompt('01:00'),
+      toolUse('02:00'),
+      toolResult('02:10', 'No module named pytest'),
+      overloaded('03:00'),
+      toolUse('09:00'),
+    );
+    expect(sliceTranscript(text, at('01:00'), at('06:00'))).toEqual([
+      { kind: 'text', time: at('02:00'), text: 'จะรันเทสต์' },
+      { kind: 'tool_use', time: at('02:00'), name: 'Bash', input: '{"command":"python -m pytest"}' },
+      { kind: 'tool_result', time: at('02:10'), isError: true, text: 'No module named pytest' },
+      { kind: 'api_error', time: at('03:00'), status: 529, message: '529 Overloaded', networkDown: false },
+    ]);
+  });
+
+  it('api error แบบเน็ตหลุด -> networkDown และไม่มี status', () => {
+    expect(sliceTranscript(jsonl(offline('02:00')), at('01:00'))).toEqual([
+      {
+        kind: 'api_error',
+        time: at('02:00'),
+        status: undefined,
+        message: "Can't reach the API server (ENOTFOUND)",
+        networkDown: true,
+      },
+    ]);
+  });
+
+  it('tool_result แบบ array ของ text และบรรทัดพังถูกข้าม', () => {
+    const text = `{broken\n${jsonl(toolResult('02:00', [{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }]))}`;
+    expect(sliceTranscript(text, at('01:00'))).toEqual([
+      { kind: 'tool_result', time: at('02:00'), isError: true, text: 'a\nb' },
+    ]);
+  });
+
+  it('ไม่มีเวลาจบ (call ค้าง) -> เอาทุกอย่างหลังเวลาเริ่ม', () => {
+    expect(sliceTranscript(jsonl(overloaded('59:00')), at('01:00'))).toHaveLength(1);
+  });
+});
+
+describe('loadCallTranscript', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-team-tx-'));
+  });
+
+  it('อ่านไฟล์ <sessionId>.jsonl แล้วตัดตามช่วงเวลา', async () => {
+    await fs.writeFile(path.join(dir, 's-qa.jsonl'), jsonl(overloaded('03:00'), overloaded('09:00')));
+    const t = loadCallTranscript(dir, call({ sessionId: 's-qa' }));
+    expect(t.file).toBe(path.join(dir, 's-qa.jsonl'));
+    expect(t.steps).toHaveLength(1);
+    expect(t.note).toBeUndefined();
+  });
+
+  it('ไม่พบไฟล์ -> note บอกชื่อไฟล์', () => {
+    const t = loadCallTranscript(dir, call({ sessionId: 'nope' }));
+    expect(t.steps).toEqual([]);
+    expect(t.note).toContain('nope.jsonl');
+  });
+
+  it('ไม่มี sessionId -> หาไฟล์ที่ entry แรกอยู่ในช่วงเวลาของ call', async () => {
+    await fs.writeFile(path.join(dir, 'older.jsonl'), jsonl(userPrompt('00:10'), overloaded('03:00')));
+    await fs.writeFile(path.join(dir, 'match.jsonl'), jsonl(userPrompt('01:00'), overloaded('03:00')));
+    const t = loadCallTranscript(dir, call());
+    expect(t.file).toBe(path.join(dir, 'match.jsonl'));
+    expect(t.steps).toHaveLength(1);
+  });
+
+  it('ไม่มี sessionId และไม่มีโฟลเดอร์ -> note', () => {
+    expect(loadCallTranscript(path.join(dir, 'missing'), call()).note).toContain('ไม่พบ transcript');
+  });
+});
