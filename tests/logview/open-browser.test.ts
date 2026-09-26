@@ -1,0 +1,46 @@
+import { describe, expect, it } from 'vitest';
+import { browserCommand, openInBrowser } from '../../src/logview/open-browser';
+
+describe('browserCommand', () => {
+  it('Windows ใช้ cmd start พร้อม quote path (verbatim)', () => {
+    expect(browserCommand('C:\\a b\\logs.html', 'win32')).toEqual({
+      cmd: 'cmd',
+      args: ['/c', 'start', '""', '"C:\\a b\\logs.html"'],
+      verbatim: true,
+    });
+  });
+
+  it('macOS ใช้ open, Linux ใช้ xdg-open', () => {
+    expect(browserCommand('/x.html', 'darwin')).toEqual({ cmd: 'open', args: ['/x.html'], verbatim: false });
+    expect(browserCommand('/x.html', 'linux')).toEqual({ cmd: 'xdg-open', args: ['/x.html'], verbatim: false });
+  });
+});
+
+describe('openInBrowser', () => {
+  it('spawn แบบ detached แล้ว unref', () => {
+    const calls: unknown[] = [];
+    let unref = false;
+    openInBrowser('/x.html', {
+      platform: 'linux',
+      spawn: (cmd, args, opts) => {
+        calls.push([cmd, args, opts]);
+        return { on: () => undefined, unref: () => { unref = true; } };
+      },
+    });
+    expect(calls).toEqual([
+      ['xdg-open', ['/x.html'], { detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: false }],
+    ]);
+    expect(unref).toBe(true);
+  });
+
+  it('spawn โยน error -> ไม่ทำให้ล้ม', () => {
+    expect(() =>
+      openInBrowser('/x.html', {
+        platform: 'linux',
+        spawn: () => {
+          throw new Error('ENOENT');
+        },
+      }),
+    ).not.toThrow();
+  });
+});
