@@ -69,12 +69,26 @@ export function diagnoseRun(run: Run, transcripts: ReadonlyMap<number, CallTrans
     const rate = pick((e) => e.status === 429);
     const auth = pick((e) => e.status === 401 || e.status === 403);
     const other = pick(() => true);
-    if (overloaded.length) add('overloaded', OVERLOADED, call.id, overloaded.length);
-    if (network.length) add('network', NETWORK, call.id, network.length);
-    if (rate.length) add('rate_limit', RATE_LIMIT, call.id, rate.length);
-    if (auth.length) add('auth', AUTH, call.id, auth.length);
+    let contributed = 0;
+    if (network.length) {
+      add('network', NETWORK, call.id, network.length);
+      contributed++;
+    }
+    if (overloaded.length) {
+      add('overloaded', OVERLOADED, call.id, overloaded.length);
+      contributed++;
+    }
+    if (rate.length) {
+      add('rate_limit', RATE_LIMIT, call.id, rate.length);
+      contributed++;
+    }
+    if (auth.length) {
+      add('auth', AUTH, call.id, auth.length);
+      contributed++;
+    }
     if (other.length) {
       add('api_other', { severity: 'warn', title: 'API error อื่น ๆ', detail: other[0]!.message }, call.id, other.length);
+      contributed++;
     }
 
     if (call.subtype === 'error_max_turns') {
@@ -87,6 +101,7 @@ export function diagnoseRun(run: Run, transcripts: ReadonlyMap<number, CallTrans
         },
         call.id,
       );
+      contributed++;
     }
     if (call.subtype === 'error_max_budget_usd') {
       add(
@@ -98,6 +113,7 @@ export function diagnoseRun(run: Run, transcripts: ReadonlyMap<number, CallTrans
         },
         call.id,
       );
+      contributed++;
     }
     const denied = denials.some((e) => e.data.role === call.role && inWindow(e, call));
     if (call.status === 'failed' && call.subtype === 'success' && errs.length === 0 && !denied) {
@@ -110,6 +126,7 @@ export function diagnoseRun(run: Run, transcripts: ReadonlyMap<number, CallTrans
         },
         call.id,
       );
+      contributed++;
     }
     const stopped =
       call.subtype === 'no_result' ||
@@ -124,6 +141,33 @@ export function diagnoseRun(run: Run, transcripts: ReadonlyMap<number, CallTrans
         },
         call.id,
       );
+      contributed++;
+    }
+
+    if (call.status === 'failed' && contributed === 0 && !denied) {
+      const key = `failed:${call.role}:${call.subtype ?? '?'}`;
+      if (call.subtype === 'error_max_structured_output_retries') {
+        add(
+          key,
+          {
+            severity: 'warn',
+            title: `agent ${call.role} ส่งผลลัพธ์ผิดรูปแบบซ้ำจนเกินจำนวนครั้ง`,
+            detail:
+              'agent พยายามส่ง structured output แต่ JSON ไม่ผ่าน schema หลายครั้ง — เปิด transcript ของครั้งนี้ดูผลลัพธ์สุดท้าย แล้วลองรันใหม่ด้วย -r',
+          },
+          call.id,
+        );
+      } else {
+        add(
+          key,
+          {
+            severity: 'warn',
+            title: `agent ${call.role} ล้มเหลว (${call.subtype ?? 'ไม่ทราบ subtype'})`,
+            detail: 'SDK รายงานว่า agent จบแบบ error — เปิด transcript ของครั้งนี้ดูข้อความสุดท้ายของ agent',
+          },
+          call.id,
+        );
+      }
     }
   }
 

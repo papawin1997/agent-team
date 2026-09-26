@@ -157,4 +157,45 @@ describe('diagnoseRun', () => {
     );
     expect(f.map((x) => x.severity)).toEqual(['error', 'warn']);
   });
+
+  it('error_max_structured_output_retries -> warn เฉพาะเจาะจง', () => {
+    const f = diagnoseRun(
+      run([call(0, { status: 'failed', subtype: 'error_max_structured_output_retries' })]),
+      new Map(),
+    );
+    expect(f).toEqual([
+      {
+        severity: 'warn',
+        title: 'agent qa ส่งผลลัพธ์ผิดรูปแบบซ้ำจนเกินจำนวนครั้ง',
+        detail:
+          'agent พยายามส่ง structured output แต่ JSON ไม่ผ่าน schema หลายครั้ง — เปิด transcript ของครั้งนี้ดูผลลัพธ์สุดท้าย แล้วลองรันใหม่ด้วย -r',
+        callIds: [0],
+        count: 1,
+      },
+    ]);
+  });
+
+  it('subtype error_* อื่น ๆ ที่ไม่รู้จัก -> warn ทั่วไปแทนที่จะหายไป', () => {
+    const f = diagnoseRun(run([call(0, { status: 'failed', subtype: 'error_during_execution' })]), new Map());
+    expect(f.map((x) => x.title)).toEqual(['agent qa ล้มเหลว (error_during_execution)']);
+  });
+
+  it('guard.deny ของ role อื่น ไม่บัง finding ของ failed call ที่ subtype ไม่รู้จัก', () => {
+    const f = diagnoseRun(
+      run(
+        [call(0, { role: 'qa', status: 'failed', subtype: 'error_during_execution' })],
+        { events: [deny('02:00', 'backend')] },
+      ),
+      new Map(),
+    );
+    expect(f.map((x) => x.title).sort()).toEqual(
+      ['agent qa ล้มเหลว (error_during_execution)', 'guard ปฏิเสธคำสั่งของ backend'].sort(),
+    );
+  });
+
+  it('error_max_turns ไม่ขึ้น fallback ซ้ำ (มี finding เดียว)', () => {
+    const f = diagnoseRun(run([call(0, { status: 'failed', subtype: 'error_max_turns' })]), new Map());
+    expect(f).toHaveLength(1);
+    expect(f[0]!.title).toBe('agent qa ใช้ turn ครบ maxTurns');
+  });
 });
