@@ -9,23 +9,48 @@ import { selectJob } from './job-menu';
 import { JobRepository } from './jobs';
 import { FileLogger, LoggingIO } from './logger';
 import { runTeam } from './orchestrator';
+import { selectProject } from './project-menu';
+import { ProjectRegistry, teamRootError } from './projects';
 import { SdkRoleRunner } from './runner';
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  if (!fs.existsSync(args.projectDir) || !fs.statSync(args.projectDir).isDirectory()) {
-    console.error(`ไม่พบโฟลเดอร์โปรเจกต์: ${args.projectDir} (สร้างโฟลเดอร์ก่อนแล้วรันใหม่)`);
+  const cli = new CliIO();
+  // CliIO ส่ง Ctrl+C ต่อเป็น process 'SIGINT' แต่ handler หลักยังไม่ถูกตั้งตอนอยู่ในเมนูโปรเจกต์
+  const quitBeforeStart = (): void => {
+    cli.close();
+    process.exit(130);
+  };
+  process.on('SIGINT', quitBeforeStart);
+  const registry = new ProjectRegistry(undefined, { warn: (m) => cli.say(m) });
+  const projectDir = args.projectDir ?? (await selectProject({ registry, io: cli }));
+  if (!projectDir) {
+    cli.close();
+    return;
+  }
+  const rootError = teamRootError(projectDir);
+  if (rootError) {
+    console.error(rootError);
     process.exit(1);
   }
+  if (!fs.existsSync(projectDir) || !fs.statSync(projectDir).isDirectory()) {
+    console.error(`ไม่พบโฟลเดอร์โปรเจกต์: ${projectDir} (สร้างโฟลเดอร์ก่อน หรือรัน agent-team แล้วกด n เพื่อสร้าง)`);
+    process.exit(1);
+  }
+  try {
+    await registry.touch(projectDir);
+  } catch (e) {
+    cli.say(`บันทึกรายชื่อโปรเจกต์ไม่สำเร็จ (${e instanceof Error ? e.message : String(e)}) — ทำงานต่อได้ตามปกติ`);
+  }
+  process.off('SIGINT', quitBeforeStart);
 
   const config = loadConfig();
   const abortController = new AbortController();
-  const logFile = path.join(args.projectDir, '.agent-team', 'agent-team.log');
+  const logFile = path.join(projectDir, '.agent-team', 'agent-team.log');
   const logger = new FileLogger(logFile);
-  const cli = new CliIO();
   const io = new LoggingIO(cli, logger);
   logger.log('INFO', 'run.start', {
-    projectDir: args.projectDir,
+    projectDir,
     resume: args.resume,
     pid: process.pid,
     node: process.version,
@@ -37,7 +62,7 @@ async function main(): Promise<void> {
     io.say(`ไม่ส่ง ${ignored.join(', ')} ให้ agent — ใช้โควตา subscription ที่ login ไว้เท่านั้น`);
   }
   const runner = new SdkRoleRunner({
-    projectDir: args.projectDir,
+    projectDir,
     config,
     abortController,
     logger,
@@ -45,7 +70,7 @@ async function main(): Promise<void> {
     status: cli.status,
     debug: process.env.AGENT_TEAM_DEBUG === '1',
   });
-  const repo = new JobRepository(args.projectDir, { log: logger });
+  const repo = new JobRepository(projectDir, { log: logger });
   let jobId: string | undefined;
 
   const onSignal = makeInterruptHandler({
