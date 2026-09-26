@@ -116,6 +116,29 @@ describe('selectProject', () => {
     expect(existsSync(shop)).toBe(true);
   });
 
+  it('d<เลข> ที่ registry.remove พัง -> แจ้งข้อความแล้ววนเมนูต่อ (ไม่ล้ม)', async () => {
+    class FailingRemoveRegistry extends ProjectRegistry {
+      async remove(): Promise<void> {
+        throw new Error('disk เต็ม');
+      }
+    }
+    registry = new FailingRemoveRegistry(path.join(dir, 'home', 'projects.json'), { now: () => clock });
+    const shop = await addProject('shop', clock);
+    const { io, result } = run(['d1', 'q']);
+    expect(await result).toBeUndefined();
+    expect(io.said.join('\n')).toContain('เอาออกจากเมนูไม่สำเร็จ: disk เต็ม');
+    expect(existsSync(shop)).toBe(true);
+  });
+
+  it('~ ในหน้า path ใหม่ ถูกขยายเป็น home directory ก่อน resolve', async () => {
+    await addProject('shop', clock);
+    const expected = path.join(os.homedir(), 'agent-team-test-tilde-xyz');
+    const { io, result } = run(['n', '~/agent-team-test-tilde-xyz', 'n', '', 'q']);
+    expect(await result).toBeUndefined();
+    expect(io.asked.some((p) => p.includes(expected))).toBe(true);
+    expect(existsSync(expected)).toBe(false);
+  });
+
   it('พิมพ์ผิด -> บอกวิธีใช้แล้วถามใหม่', async () => {
     const shop = await addProject('shop', clock);
     const { io, result } = run(['x', '9', '1']);

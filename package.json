@@ -6,8 +6,15 @@
   "bin": {
     "agent-team": "bin/agent-team.mjs"
   },
+  "files": [
+    "bin",
+    "src",
+    "skills",
+    "scripts",
+    "tsconfig.json"
+  ],
   "engines": {
-    "node": ">=20"
+    "node": ">=20.6"
   },
   "scripts": {
     "start": "tsx src/index.ts",

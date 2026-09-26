@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import type { UserIO } from './deps';
 import { localDateTime } from './format';
@@ -26,6 +27,13 @@ export async function countPendingJobs(dir: string): Promise<number> {
 
 const isDir = (p: string): boolean => fs.existsSync(p) && fs.statSync(p).isDirectory();
 
+/** ขยาย `~` / `~/xxx` / `~\xxx` เป็น home directory ก่อน resolve (ไม่แตะ path อื่นที่แค่ขึ้นต้นด้วย ~ เช่น ~foo) */
+const expandHome = (raw: string): string => {
+  if (raw === '~') return os.homedir();
+  if (raw.startsWith('~/') || raw.startsWith('~\\')) return path.join(os.homedir(), raw.slice(2));
+  return raw;
+};
+
 /** เลือกโปรเจกต์ตอนรัน agent-team โดยไม่ระบุ path: คืน path เต็ม หรือ undefined เมื่อผู้ใช้ออก */
 export async function selectProject(deps: ProjectMenuDeps): Promise<string | undefined> {
   const { registry, io } = deps;
@@ -51,8 +59,12 @@ export async function selectProject(deps: ProjectMenuDeps): Promise<string | und
       continue;
     }
     if (match[1] === 'd') {
-      await registry.remove(project.path);
-      io.say(`เอา ${project.path} ออกจากเมนูแล้ว (ไฟล์ในโฟลเดอร์ยังอยู่ครบ)`);
+      try {
+        await registry.remove(project.path);
+        io.say(`เอา ${project.path} ออกจากเมนูแล้ว (ไฟล์ในโฟลเดอร์ยังอยู่ครบ)`);
+      } catch (e) {
+        io.say(`เอาออกจากเมนูไม่สำเร็จ: ${e instanceof Error ? e.message : String(e)}`);
+      }
       continue;
     }
     if (!isDir(project.path)) {
@@ -90,7 +102,7 @@ async function askNewProject(deps: ProjectMenuDeps): Promise<string | undefined>
     // "Copy as path" ของ Windows ครอบ path ด้วย "
     const raw = (await io.ask(ASK_PATH)).trim().replace(/^["']|["']$/g, '');
     if (raw === '') return undefined;
-    const dir = path.resolve(raw);
+    const dir = path.resolve(expandHome(raw));
     const rootErr = teamRootError(dir, deps.teamRoot);
     if (rootErr) {
       io.say(rootErr);

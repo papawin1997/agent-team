@@ -3,15 +3,14 @@
 ทีม agent 6 บทบาท (PM, Planning, Worker frontend, Worker backend, QA, Security) บน Claude Agent SDK
 
 ## ข้อกำหนดเบื้องต้น
-- Node.js 20 ขึ้นไป
+- Node.js 20.6 ขึ้นไป
 - login Claude (subscription) ที่ SDK ใช้ได้ (ตรวจด้วย `npm run smoke:auth`)
   agent-team ใช้โควตา subscription เท่านั้น: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`
   และ `CLAUDE_CODE_USE_BEDROCK/VERTEX/FOUNDRY` จะถูกตัดออกจาก env ที่ส่งให้ agent เสมอ
   (ปิด "extra usage" ในบัญชีที่ claude.ai ด้วย ไม่งั้นการใช้เกินโควตาอาจถูกคิดเงิน — ตั้งจากโค้ดไม่ได้)
 
-
 ## ติดตั้ง
-ทุกเครื่อง (ต้องมี Node.js 20+ และ git):
+ทุกเครื่อง (ต้องมี Node.js 20.6+ และ git):
 
     npm i -g github:papawin1997/agent-team
 
@@ -25,7 +24,12 @@
     npm install
     npm link
 
-ตรวจว่า login Claude ใช้ได้: `npm run smoke:auth` (รันในโฟลเดอร์ repo)
+ตรวจว่า login Claude ใช้ได้: `npm run smoke:auth`
+- เครื่องที่ clone repo (ใช้ `npm link`): รันในโฟลเดอร์ repo ได้เลย
+- เครื่องที่ติดตั้งแบบ global จาก GitHub เท่านั้น (ไม่มีโฟลเดอร์ repo): ต้อง cd เข้าโฟลเดอร์แพ็กเกจที่ติดตั้งไว้ก่อน
+
+      cd "$(npm root -g)/agent-team" && npm run smoke:auth   # bash
+      cd (Join-Path (npm root -g) agent-team); npm run smoke:auth   # PowerShell
 
 ## วิธีใช้
 เปิด terminal ที่ไหนก็ได้ แล้วพิมพ์:
@@ -117,6 +121,8 @@ Security ถูกเรียกเฉพาะรอบที่ QA ผ่า�
 
 ## ตั้งค่า (ไม่บังคับ)
 สร้าง `agent-team.config.json` ที่ราก repo นี้ ตัวอย่าง:
+(ไฟล์นี้จะอยู่ถาวรเฉพาะเครื่องที่ clone แล้ว `npm link` เท่านั้น — เครื่องที่ติดตั้งแบบ global จาก GitHub
+ทุกครั้งที่รัน `npm i -g` ซ้ำเพื่ออัปเดตเวอร์ชัน โฟลเดอร์แพ็กเกจเดิมจะถูกลบแล้วติดตั้งใหม่ ไฟล์ที่แก้เองจะหายไปด้วย)
 
     { "maxQaRounds": 5, "roles": { "planning": { "model": "claude-opus-5" },
       "frontend": { "skills": ["team:frontend-conventions"] },

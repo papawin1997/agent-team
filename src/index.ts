@@ -31,10 +31,12 @@ async function main(): Promise<void> {
   const rootError = teamRootError(projectDir);
   if (rootError) {
     console.error(rootError);
+    cli.close();
     process.exit(1);
   }
   if (!fs.existsSync(projectDir) || !fs.statSync(projectDir).isDirectory()) {
     console.error(`ไม่พบโฟลเดอร์โปรเจกต์: ${projectDir} (สร้างโฟลเดอร์ก่อน หรือรัน agent-team แล้วกด n เพื่อสร้าง)`);
+    cli.close();
     process.exit(1);
   }
   try {
