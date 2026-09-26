@@ -219,3 +219,83 @@ describe('SdkRoleRunner', () => {
     expect(out).toEqual(report);
   });
 });
+
+describe('SdkRoleRunner: สถานะระหว่าง agent ทำงาน', () => {
+  function runnerWithStatus(scripts: Array<Msg[] | Error>) {
+    const events: string[] = [];
+    const queryFn = (() => {
+      const script = scripts.shift();
+      if (!script) throw new Error('queryFn: script หมด');
+      return (async function* () {
+        if (script instanceof Error) throw script;
+        for (const message of script) yield message;
+      })();
+    }) as never;
+    const runner = new SdkRoleRunner({
+      projectDir: 'proj',
+      config: DEFAULT_CONFIG,
+      queryFn,
+      sleep: async () => {},
+      status: {
+        start: (label) => void events.push(`start ${label}`),
+        update: (detail) => void events.push(`update ${detail}`),
+        stop: () => void events.push('stop'),
+      },
+    });
+    return { runner, events };
+  }
+
+  const toolUse = (name: string, input: unknown): Msg => ({
+    type: 'assistant',
+    session_id: 's1',
+    parent_tool_use_id: null,
+    message: { content: [{ type: 'text', text: 'ขอดูไฟล์ก่อน' }, { type: 'tool_use', id: 't1', name, input }] },
+  });
+
+  it('start → update ทุก tool_use → stop', async () => {
+    const { runner, events } = runnerWithStatus([
+      [initMsg(), toolUse('Read', { file_path: 'src/a.ts' }), toolUse('Bash', { command: 'npm test' }), okResult(validTurn)],
+    ]);
+
+    await runner.pmTurn({ prompt: 'hi' });
+
+    expect(events).toEqual([
+      'start [PM] กำลังคิด',
+      'update อ่านไฟล์ src/a.ts',
+      'update รันคำสั่ง npm test',
+      'stop',
+    ]);
+  });
+
+  it('label ของ worker และ security มี task id', async () => {
+    const result = { taskId: 'ui', summary: 'เสร็จ', filesChanged: [], howToVerify: '' };
+    const report = { taskId: 'api', verdict: 'PASS', issues: [] };
+    const { runner, events } = runnerWithStatus([
+      [initMsg(), okResult(result)],
+      [initMsg(), okResult(report)],
+    ]);
+
+    await runner.work({ task: makeTask('ui', 'frontend'), design: makeDesign(), requirements: makeRequirements() });
+    await runner.security({
+      task: makeTask('api'),
+      design: makeDesign(),
+      requirements: makeRequirements(),
+      result: { taskId: 'api', summary: 'เสร็จ', filesChanged: ['src/api.ts'], howToVerify: 'npm test' },
+    });
+
+    expect(events).toEqual([
+      'start [frontend] ui: กำลังทำงาน',
+      'stop',
+      'start [Security] api: กำลังตรวจความปลอดภัย',
+      'stop',
+    ]);
+  });
+
+  it('stop เสมอแม้ agent ล้ม และ retry เริ่มนับใหม่', async () => {
+    const { runner, events } = runnerWithStatus([new Error('network'), [initMsg(), errResult('error_max_turns')]]);
+
+    await expect(runner.pmTurn({ prompt: 'hi' })).rejects.toThrow('error_max_turns');
+
+    expect(events).toEqual(['start [PM] กำลังคิด', 'stop', 'start [PM] กำลังคิด', 'stop']);
+  });
+});

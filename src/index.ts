@@ -42,6 +42,7 @@ async function main(): Promise<void> {
     abortController,
     logger,
     log: (line) => io.say(line),
+    status: cli.status,
     debug: process.env.AGENT_TEAM_DEBUG === '1',
   });
   const repo = new JobRepository(args.projectDir, { log: logger });
