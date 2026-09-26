@@ -146,6 +146,14 @@ describe('SdkRoleRunner', () => {
     expect(calls).toHaveLength(2);
   });
 
+  it('success แต่ไม่มี structured_output ทุกรอบ: error บอกชัดว่าไม่ได้ส่ง structured output (ไม่ใช่ "pm: success")', async () => {
+    const noOutput = { type: 'result', subtype: 'success', session_id: 's1' };
+    const { runner } = makeRunner([[initMsg(), noOutput], [initMsg(), noOutput], [initMsg(), noOutput]]);
+    await expect(runner.pmTurn({ prompt: 'hi' })).rejects.toThrow(
+      'pm: จบงานโดยไม่ได้ส่ง structured output (ดู guard.deny ใน log)',
+    );
+  });
+
   it('output ผิด schema: ถาม agent เดิมซ้ำ 1 ครั้งด้วย resume', async () => {
     const { runner, calls } = makeRunner([
       [initMsg('s1'), okResult({ message: '', status: 'asking' })],

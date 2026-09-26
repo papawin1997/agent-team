@@ -23,7 +23,8 @@ const deny = (reason: string): Verdict => ({ ok: false, reason });
 
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
 const READ_TOOLS = new Set(['Read', 'Glob', 'Grep']);
-const READ_ONLY_EXTRA_TOOLS = new Set(['Skill']);
+// StructuredOutput = tool ที่ SDK ใช้รับผลลัพธ์ JSON ตาม outputFormat (ไม่แตะไฟล์) บล็อกแล้ว agent ส่งผลไม่ได้เลย
+const READ_ONLY_EXTRA_TOOLS = new Set(['Skill', 'StructuredOutput']);
 const PROTECTED_DIRS = ['.git', '.agent-team', '.claude'];
 
 // ---------------------------------------------------------------------------
