@@ -14,6 +14,19 @@ import { makeDeps, ScriptedIO } from './helpers/fakes';
 const roles = (calls: { role: string }[]) => calls.map((c) => c.role);
 
 describe('runTeam', () => {
+  it('ไม่มี flag: ใช้ state ที่มีอยู่ทันที (งานที่จบแล้วคืนค่าเลยโดยไม่ save)', async () => {
+    const { deps, runner, store } = makeDeps({}, []);
+    const done = buildState();
+    done.phase = 'DONE';
+    store.state = done;
+
+    const final = await runTeam(deps);
+
+    expect(final.phase).toBe('DONE');
+    expect(runner.calls).toHaveLength(0);
+    expect(store.saves).toBe(0);
+  });
+
   it('flow เต็ม: requirements -> design -> review -> build/QA -> deliver -> DONE', async () => {
     const { deps, runner, store } = makeDeps(
       {
@@ -23,7 +36,7 @@ describe('runTeam', () => {
       },
       ['อยากได้ todo', 'confirm', 'confirm', 'accept'],
     );
-    const final = await runTeam(deps, { resume: false });
+    const final = await runTeam(deps);
 
     expect(final.phase).toBe('DONE');
     expect(roles(runner.calls)).toEqual([
@@ -53,7 +66,7 @@ describe('runTeam', () => {
       ['อยากได้ todo', 'confirm', 'confirm', 'accept'],
     );
     deps.log = { log: (_level, event, data) => void events.push({ event, data: data as never }) };
-    await runTeam(deps, { resume: false });
+    await runTeam(deps);
 
     const changes = events.filter((e) => e.event === 'phase.change').map((e) => `${e.data?.from}>${e.data?.to}`);
     expect(changes).toEqual([
@@ -75,7 +88,7 @@ describe('runTeam', () => {
       },
       ['อยากได้ todo', 'confirm', 'revise', 'เพิ่มการค้นหา', 'confirm', 'confirm', 'accept'],
     );
-    const final = await runTeam(deps, { resume: false });
+    const final = await runTeam(deps);
 
     expect(final.phase).toBe('DONE');
     expect(roles(runner.calls).filter((r) => r === 'planning')).toHaveLength(2);
@@ -102,7 +115,7 @@ describe('runTeam', () => {
       },
       ['อยากได้ todo', 'confirm', 'confirm', 'change', 'ปรับหน้าตา', 'confirm', 'confirm', 'accept'],
     );
-    const final = await runTeam(deps, { resume: false });
+    const final = await runTeam(deps);
 
     expect(final.phase).toBe('DONE');
     expect(runner.calls.filter((c) => c.role === 'backend')).toHaveLength(1);
@@ -122,7 +135,7 @@ describe('runTeam', () => {
       },
       ['อยากได้ todo', 'confirm', 'confirm', 'abort'],
     );
-    const final = await runTeam(deps, { resume: false });
+    const final = await runTeam(deps);
     expect(final.phase).toBe('ABORTED');
   });
 
@@ -135,7 +148,7 @@ describe('runTeam', () => {
       },
       ['อยากได้ todo', 'confirm', 'confirm', 'abort'],
     );
-    const final = await runTeam(deps, { resume: false });
+    const final = await runTeam(deps);
 
     expect(final.phase).toBe('ABORTED');
     expect(roles(runner.calls)).not.toContain('frontend');
@@ -157,68 +170,17 @@ describe('runTeam', () => {
     };
     store.state = saved;
 
-    const final = await runTeam(deps, { resume: true });
+    const final = await runTeam(deps);
     expect(final.phase).toBe('DONE');
     expect(roles(runner.calls)).toEqual(['frontend', 'qa', 'security', 'pm']);
   });
-
-  it('resume โดยไม่มี state -> error', async () => {
-    const { deps } = makeDeps({}, []);
-    await expect(runTeam(deps, { resume: true })).rejects.toThrow('ไม่พบ state');
-  });
-
-  it('เริ่มใหม่ทั้งที่มีงานค้าง -> error บอกให้ใช้ --resume', async () => {
-    const { deps, store } = makeDeps({}, []);
-    store.state = buildState();
-    await expect(runTeam(deps, { resume: false })).rejects.toThrow('--resume');
-  });
-
-  it.each([
-    { existingPhase: 'DONE' as const, staleData: true },
-    { existingPhase: 'ABORTED' as const, staleData: true },
-  ])(
-    'เริ่มใหม่จากสถานะ $existingPhase ด้วย resume: false -> ทำความสะอาดข้อมูลเก่า',
-    async ({ existingPhase }) => {
-      const staleState = buildState();
-      staleState.phase = existingPhase;
-      staleState.requirements = {
-        goal: 'stale goal',
-        features: ['stale'],
-        constraints: [],
-        outOfScope: [],
-        acceptanceCriteria: [],
-      };
-      staleState.pmSessionId = 'old-session';
-      staleState.pendingPrompt = 'old prompt';
-
-      const { deps, runner, store } = makeDeps(
-        {
-          pm: [proposal(), asking('สรุป design'), asking('สรุปส่งมอบ')],
-          plans: [makeDesign()],
-          qa: [passReport('api'), passReport('ui')],
-        },
-        ['อยากได้ todo', 'confirm', 'confirm', 'accept'],
-      );
-      store.state = staleState;
-
-      const final = await runTeam(deps, { resume: false });
-
-      expect(final.phase).toBe('DONE');
-      expect(final.requirements?.goal).toBe('todo list');
-      expect(final.pmSessionId).not.toBe('old-session');
-      expect(final.pendingPrompt).toBeUndefined();
-      const firstPmCall = runner.calls.find((c) => c.role === 'pm');
-      const firstPrompt = (firstPmCall?.input as any)?.prompt ?? '';
-      expect(firstPrompt).not.toContain('stale goal');
-    },
-  );
 
   it('initial state is saved when first ask throws', async () => {
     const { deps, store } = makeDeps({}, []);
     const io = new ScriptedIO([]);
     deps.io = io;
 
-    await expect(runTeam(deps, { resume: false })).rejects.toThrow();
+    await expect(runTeam(deps)).rejects.toThrow();
     expect(store.state?.phase).toBe('REQUIREMENTS');
     expect(store.saves).toBeGreaterThanOrEqual(1);
   });
@@ -229,7 +191,7 @@ describe('runTeam', () => {
     (bogusState as any).phase = 'BOGUS';
     store.state = bogusState;
 
-    await expect(runTeam(deps, { resume: true })).rejects.toThrow('BOGUS');
+    await expect(runTeam(deps)).rejects.toThrow('BOGUS');
   });
 
   it('resume จาก DELIVER phase: รับงาน -> DONE', async () => {
@@ -255,7 +217,7 @@ describe('runTeam', () => {
     };
     store.state = saved;
 
-    const final = await runTeam(deps, { resume: true });
+    const final = await runTeam(deps);
     expect(final.phase).toBe('DONE');
     expect(roles(runner.calls)).toEqual(['pm']);
   });
@@ -297,7 +259,7 @@ describe('runTeam', () => {
       config: origDeps.config,
     };
 
-    const final = await runTeam(deps as any, { resume: true });
+    const final = await runTeam(deps as any);
     expect(final.phase).toBe('DONE');
     const pmCalls = runner.calls.filter((c) => c.role === 'pm');
     const firstReqPrompt = (pmCalls[0]?.input as any)?.prompt ?? '';

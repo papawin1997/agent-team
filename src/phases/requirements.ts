@@ -10,6 +10,11 @@ export async function runRequirements(deps: Deps, state: State): Promise<void> {
     ? 'พิมพ์ข้อความถึง PM เพื่อคุยต่อ\n> '
     : 'คุณอยากได้ระบบอะไร? เล่า requirement ให้ PM ฟังได้เลย\n> ';
   let prompt = state.pendingPrompt ?? (await askNonEmpty(io, opening));
+  if (!state.title && !state.pmSessionId) {
+    // save ก่อนเรียก PM: ถ้า Ctrl+C ระหว่าง PM ตอบ งานก็ยังมีชื่อ ไม่กลายเป็นงานเปล่า
+    state.title = Array.from(prompt).slice(0, 60).join('');
+    await store.save(state);
+  }
   if (state.requirements) {
     prompt = `requirements ปัจจุบัน:\n${JSON.stringify(state.requirements)}\n\nคำขอแก้ไขจาก user: ${prompt}`;
   }

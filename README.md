@@ -12,8 +12,13 @@
 ## วิธีใช้
     npm install
     npm start -- --project C:/path/to/app          # โฟลเดอร์ต้องมีอยู่แล้ว (ว่างได้)
-    npm start -- --project C:/path/to/app --resume  # ทำต่อจากที่หยุดไว้
-Ctrl+C หยุดได้ทุกเมื่อ: state ถูกบันทึกทุกครั้งที่เปลี่ยน phase/รอบ จึงเสียอย่างมากแค่รอบที่กำลังทำอยู่ แล้วรันต่อด้วย --resume (stdin ที่ถูกปิด/pipe จะหยุดพร้อมข้อความ EOF ไม่ค้าง)
+    npm start -- --project C:/path/to/app --resume  # ทำต่องานค้างล่าสุดทันทีโดยไม่ถาม
+ถ้ามีงานค้าง PM จะแสดงรายการงานค้างทั้งหมด (เป้าหมาย, เฟส, ความคืบหน้า, เวลารันล่าสุด) แล้วให้เลือก:
+`r<เลข>` ทำต่องานนั้น, `d<เลข>` ลบงานนั้น (ถามยืนยัน y/n แล้วลบถาวร), `n` เริ่มงานใหม่ (งานค้างเดิมยังอยู่)
+ถ้ามีงานอื่นแก้โค้ดหลังจากงานที่ค้างไว้ จะมีคำเตือน ⚠ ว่าโค้ดอาจเปลี่ยนไปแล้ว (ยังทำต่อได้)
+ถ้ามีงานอื่นกำลังรันอยู่ในโปรเจกต์เดียวกัน (อีกหน้าต่าง) `r`/`n` จะเตือนว่า worker อาจแก้ไฟล์ชนกันแล้วถาม y/n ก่อน
+`--resume` ข้ามเมนูแล้วทำต่องานค้างที่รันล่าสุด และบอกชื่องานที่เลือก ถ้าไม่มีงานค้าง หรือมีงานอื่นกำลังรันอยู่ในโปรเจกต์นี้ จะ error (ไม่เริ่มงานซ้อน)
+Ctrl+C หยุดได้ทุกเมื่อ: state ถูกบันทึกทุกครั้งที่เปลี่ยน phase/รอบ จึงเสียอย่างมากแค่รอบที่กำลังทำอยู่ แล้วรันใหม่เลือกงานนี้จากเมนู หรือใช้ --resume (stdin ที่ถูกปิด/pipe จะหยุดพร้อมข้อความ EOF ไม่ค้าง)
 
 ## flow
 1. REQUIREMENTS: คุยกับ PM (ถามตอบ/เสนอไอเดีย) จนคุณกด confirm requirements
@@ -27,9 +32,13 @@ Ctrl+C หยุดได้ทุกเมื่อ: state ถูกบัน�
 5. DELIVER: PM ส่งมอบ ให้คุณตรวจรับ (accept) หรือขอแก้/เพิ่ม (change)
 
 ## state
-บันทึกใน `<project>/.agent-team/` (`state.json`, `requirements.json`, `design.json`,
-`reports/<taskId>-round<n>.json`) แนะนำให้เพิ่ม `.agent-team/` ใน `.gitignore` ของโปรเจกต์นั้น
-ถ้าใช้ `--resume` ระหว่างคุยกับ PM ให้พิมพ์ข้อความต่อจากบทสนทนาเดิม
+แต่ละงานเก็บแยกโฟลเดอร์ที่ `<project>/.agent-team/jobs/<jobId>/` (`state.json`, `requirements.json`, `design.json`,
+`reports/<taskId>-round<n>.json`) โดย `jobId` คือเวลาที่สร้างงาน แนะนำให้เพิ่ม `.agent-team/` ใน `.gitignore` ของโปรเจกต์นั้น
+ถ้าเจอ `.agent-team/state.json` แบบเก่า (ก่อนรองรับหลายงาน) จะย้ายเข้า `jobs/` ให้อัตโนมัติตอนเริ่มรัน
+งานที่กำลังรันมีไฟล์ `run.lock` (pid) กันไม่ให้ process อื่นทำต่อหรือลบงานเดียวกัน ถ้า lock ค้าง
+(เช่น pid ถูก process อื่นเอาไปใช้ซ้ำ) เมนูจะบอก path ของไฟล์ให้ลบเอง
+ข้อจำกัด: ถ้าเปิดงานเดียวกันจาก 2 หน้าต่างแทบพร้อมกันในจังหวะที่ lock เดิมค้างอยู่ ทั้งสองอาจได้ lock (ไม่มีการกันกรณีนี้) อย่าเปิดงานเดียวกันพร้อมกัน
+ถ้าทำต่องานที่ค้างระหว่างคุยกับ PM ให้พิมพ์ข้อความต่อจากบทสนทนาเดิม
 
 ## log
 บันทึกที่ `<project>/.agent-team/agent-team.log` (ต่อท้ายไฟล์เดิมข้ามรอบรัน/`--resume` เวลาเป็น UTC)
@@ -39,11 +48,19 @@ Ctrl+C หยุดได้ทุกเมื่อ: state ถูกบัน�
     grep " qa.report "       .agent-team/agent-team.log   # ผล QA ต่อ task ต่อรอบ
     grep " security.report " .agent-team/agent-team.log   # ผล Security ต่อ task ต่อรอบ (เฉพาะรอบที่ QA ผ่านแล้ว)
     grep " guard.deny "      .agent-team/agent-team.log   # คำสั่ง/ไฟล์ที่ guard ปฏิเสธ
+    grep " job.selected "    .agent-team/agent-team.log   # งานที่เลือกในแต่ละรอบรัน (jobId)
     grep -E " (WARN|ERROR) " .agent-team/agent-team.log
 
 event หลัก: `run.start/run.end/run.error/run.interrupted`, `team.start/team.end`, `phase.change`,
 `agent.start/agent.result/agent.no_result`, `qa.report`, `security.report`, `escalate.decision`, `guard.deny`,
 `say` (ทุกข้อความที่แสดงใน terminal), `user.input` / `user.choice` (สิ่งที่คุณพิมพ์/เลือก)
+event เกี่ยวกับ job (housekeeping ของหลายงานใน `jobs/`):
+`job.selected` (งานที่เลือกในแต่ละรอบรัน), `job.migrated` (ย้าย state แบบเก่าเข้า `jobs/` สำเร็จ),
+`job.unreadable` (ข้ามงานที่อ่าน state/lock ไม่ได้ระหว่าง list), `job.missing_state` (โฟลเดอร์งานไม่มี state.json),
+`job.orphan_removed` (ลบโฟลเดอร์ที่สร้างงานไม่เสร็จ: มีแค่ lock ค้าง ไม่มี state.json),
+`job.legacy_leftover` (มี artifact แบบเก่าตกค้างที่ root โดยไม่มี state.json ให้ย้าย),
+`job.unlock_failed` (ปลด lock ไม่สำเร็จ), `job.remove_failed` (ลบงานเปล่า/งานที่ขอลบไม่สำเร็จแบบ best-effort)
+log ไฟล์นี้ใช้ร่วมกันทุกงาน (ไม่แยกไฟล์ต่อ jobId) มีเฉพาะ `job.selected` เท่านั้นที่บอก `jobId` ของรอบรันนั้น
 ข้อความยาวเกิน 1,000 ตัวอักษรจะถูกตัด และ log เขียนไม่ได้จะไม่ทำให้งานล้ม
 ไม่มี prompt/คำตอบดิบของ agent ใน log (มีเฉพาะสรุป) — `cost` ที่เห็นคำนวณตามราคา API ไม่ใช่ยอดที่ถูกเรียกเก็บจริง
 Security ถูกเรียกเฉพาะรอบที่ QA ผ่านแล้ว ดังนั้นรอบไหนมี `security.report` แปลว่า QA รอบนั้นผ่านจริง

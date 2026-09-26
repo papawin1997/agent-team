@@ -142,4 +142,34 @@ describe('runRequirements', () => {
     expect(state.requirements?.goal).toBe('todo list + แจ้งเตือน');
     expect(store.artifacts.get('requirements.json')).toEqual(updated);
   });
+
+  it('ตั้ง title จากข้อความแรกและ save ก่อนเรียก PM', async () => {
+    const { deps, store } = makeDeps({ pm: [] }, ['อยากได้ระบบ todo']);
+    const state = newState();
+    await expect(runRequirements(deps, state)).rejects.toThrow('pm script หมด');
+    expect(store.state?.title).toBe('อยากได้ระบบ todo');
+  });
+
+  it('title ถูกตัดเหลือ 60 ตัวอักษร', async () => {
+    const { deps } = makeDeps({ pm: [proposal()] }, ['ก'.repeat(80), 'confirm']);
+    const state = newState();
+    await runRequirements(deps, state);
+    expect(state.title).toBe('ก'.repeat(60));
+  });
+
+  it('ไม่เขียนทับ title ที่มีอยู่แล้ว', async () => {
+    const { deps } = makeDeps({ pm: [proposal()] }, ['ข้อความใหม่', 'confirm']);
+    const state = newState();
+    state.title = 'ชื่อเดิม';
+    await runRequirements(deps, state);
+    expect(state.title).toBe('ชื่อเดิม');
+  });
+
+  it('ไม่ตั้ง title ถ้ามี pmSessionId อยู่แล้ว (งาน legacy ที่คุยค้าง)', async () => {
+    const { deps } = makeDeps({ pm: [proposal()] }, ['ต่อเลย', 'confirm']);
+    const state = newState();
+    state.pmSessionId = 'pm-session';
+    await runRequirements(deps, state);
+    expect(state.title).toBeUndefined();
+  });
 });

@@ -4,10 +4,12 @@ import { parseArgs } from './args';
 import { CliIO } from './cli';
 import { loadConfig } from './config';
 import { presentBillingVars } from './env';
+import { makeInterruptHandler } from './interrupt';
+import { selectJob } from './job-menu';
+import { JobRepository } from './jobs';
 import { FileLogger, LoggingIO } from './logger';
 import { runTeam } from './orchestrator';
 import { SdkRoleRunner } from './runner';
-import { FileStateStore } from './state';
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
@@ -42,33 +44,43 @@ async function main(): Promise<void> {
     log: (line) => io.say(line),
     debug: process.env.AGENT_TEAM_DEBUG === '1',
   });
-  const store = new FileStateStore(args.projectDir);
+  const repo = new JobRepository(args.projectDir, { log: logger });
+  let jobId: string | undefined;
 
-  process.on('SIGINT', () => {
-    logger.log('WARN', 'run.interrupted', { signal: 'SIGINT' });
-    abortController.abort();
-    cli.close();
-    console.log('\nหยุดแล้ว — state ถูกบันทึกไว้ใน .agent-team/ รันต่อด้วย --resume');
-    process.exit(130);
+  const onSignal = makeInterruptHandler({
+    repo,
+    getJobId: () => jobId,
+    logger,
+    abort: () => abortController.abort(),
+    closeCli: () => cli.close(),
+    print: (text) => console.log(text),
+    exit: (code) => process.exit(code),
   });
+  process.on('SIGINT', () => onSignal('SIGINT'));
+  process.on('SIGHUP', () => onSignal('SIGHUP'));
 
   try {
-    const final = await runTeam({ runner, io, store, config, log: logger }, { resume: args.resume });
+    const job = await selectJob(repo, io, { resume: args.resume });
+    jobId = job.id;
+    logger.log('INFO', 'job.selected', { jobId, resume: args.resume });
+    const final = await runTeam({ runner, io, store: job.store, config, log: logger });
     console.log(
       final.phase === 'DONE'
         ? '\nเสร็จสมบูรณ์'
-        : '\nยกเลิกงานแล้ว (state ยังอยู่ใน .agent-team/)',
+        : `\nยกเลิกงานแล้ว (state ยังอยู่ใน .agent-team/jobs/${jobId}/)`,
     );
-    logger.log('INFO', 'run.end', { phase: final.phase });
+    logger.log('INFO', 'run.end', { phase: final.phase, jobId });
   } catch (e) {
     console.error(`\nหยุดเพราะ error: ${e instanceof Error ? e.message : String(e)}`);
-    console.error('รันต่อได้ด้วย --resume');
+    if (jobId) console.error('รันใหม่แล้วเลือกงานนี้จากเมนู หรือใช้ --resume เพื่อทำต่องานล่าสุด');
     logger.log('ERROR', 'run.error', {
+      jobId,
       message: e instanceof Error ? e.message : String(e),
       stack: e instanceof Error ? e.stack : undefined,
     });
     process.exitCode = 1;
   } finally {
+    if (jobId) await repo.unlock(jobId);
     cli.close();
   }
 }

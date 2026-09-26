@@ -6,25 +6,13 @@ import { runDesign, runReview } from './phases/design';
 import { runRequirements } from './phases/requirements';
 import { newState, type State } from './state';
 
-export async function runTeam(deps: Deps, opts: { resume: boolean }): Promise<State> {
+export async function runTeam(deps: Deps): Promise<State> {
   const existing = await deps.store.load();
-  let state: State;
-
-  if (opts.resume) {
-    if (!existing) throw new Error('ไม่พบ state ให้ resume (.agent-team/state.json)');
-    state = existing;
-  } else {
-    if (existing && existing.phase !== 'DONE' && existing.phase !== 'ABORTED') {
-      throw new Error(
-        'มีงานค้างอยู่ใน .agent-team/ — ใช้ --resume เพื่อทำต่อ หรือลบโฟลเดอร์นั้นเพื่อเริ่มใหม่',
-      );
-    }
-    state = newState();
-    await deps.store.save(state);
-  }
+  const state = existing ?? newState();
+  if (!existing) await deps.store.save(state);
 
   const log = deps.log ?? nullLogger;
-  log.log('INFO', 'team.start', { resume: opts.resume, phase: state.phase });
+  log.log('INFO', 'team.start', { phase: state.phase });
 
   while (state.phase !== 'DONE' && state.phase !== 'ABORTED') {
     const from = state.phase;

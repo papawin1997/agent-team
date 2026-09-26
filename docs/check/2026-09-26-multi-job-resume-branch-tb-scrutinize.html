@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scrutinize: multi-job-resume</title>
+<style>
+  :root { --bg:#fafaf9; --fg:#1c1917; --muted:#57534e; --card:#fff; --border:#e7e5e4;
+    --red:#dc2626; --orange:#ea580c; --gray:#78716c; --yellow:#ca8a04; --green:#16a34a; --code:#f5f5f4; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#1c1917; --fg:#f5f5f4; --muted:#a8a29e;
+    --card:#292524; --border:#44403c; --code:#3a3532; } }
+  body { background:var(--bg); color:var(--fg); font:15px/1.65 system-ui, "Noto Sans Thai", sans-serif; margin:0; padding:24px 16px; }
+  main { max-width:860px; margin:0 auto; }
+  h1 { font-size:1.5rem; margin:0 0 4px; } h2 { margin-top:32px; font-size:1.15rem; }
+  .meta { color:var(--muted); font-size:.9rem; }
+  .card { background:var(--card); border:1px solid var(--border); border-left:6px solid var(--gray); border-radius:8px; padding:14px 18px; margin:14px 0; }
+  .card.major { border-left-color:var(--orange); } .card.blocker { border-left-color:var(--red); }
+  .sev { display:inline-block; font-size:.75rem; font-weight:700; padding:1px 8px; border-radius:99px; color:#fff; background:var(--gray); margin-right:6px; }
+  .major .sev { background:var(--orange); }
+  .card h3 { margin:0 0 8px; font-size:1rem; display:flex; gap:4px; align-items:baseline; flex-wrap:wrap; }
+  dt { font-weight:600; margin-top:8px; } dd { margin:2px 0 0 0; }
+  code { background:var(--code); padding:1px 5px; border-radius:4px; font-size:.88em; word-break:break-word; }
+  .verdict { display:inline-block; background:var(--yellow); color:#fff; font-weight:700; padding:6px 14px; border-radius:6px; }
+  ul { padding-left:20px; }
+</style>
+</head>
+<body>
+<main>
+<h1>Scrutinize: branch <code>feat/multi-job-resume</code></h1>
+<div class="meta">2026-09-26 · ช่วงที่ review: <code>main..e5f1453</code> (16 ไฟล์, +1479/−119)</div>
+
+<h2>เจตนา</h2>
+<p>ให้ 1 โปรเจกต์เก็บงานค้างได้หลายงานใน <code>.agent-team/jobs/&lt;id&gt;/</code> ตอนเริ่มรันมีเมนูให้เลือกทำต่อ ลบ หรือเริ่มงานใหม่ และมี <code>run.lock</code> แยกต่องาน กันไม่ให้ 2 process ใช้งานเดียวกัน</p>
+<p><b>มีวิธีง่ายกว่าไหม?</b> ภาพรวมไม่มี ความต้องการ (หลายงาน + เมนู) ต้องแยกโฟลเดอร์ต่องานอยู่แล้ว และสเปกผ่าน scrutinize มา 3 รอบ ข้อที่มีทางง่ายกว่าคือ commit ล่าสุด <code>e5f1453</code> ดู finding #1</p>
+
+<h2>สิ่งที่ไล่โค้ดแล้ว</h2>
+<ul>
+  <li><code>index.ts</code> → <code>selectJob</code> → <code>migrateLegacy</code> / <code>list</code> / <code>removeEmptyJobs</code> / <code>menu</code> / <code>resumeLatest</code> → <code>runTeam</code> → <code>finally unlock</code></li>
+  <li><code>JobRepository.create/lock/unlock/unlockSync/list/remove</code>, <code>FileStateStore.save</code> (<code>updatedAt</code>/<code>lastBuildAt</code>), <code>makeInterruptHandler</code>, การตั้ง <code>title</code> ใน <code>runRequirements</code></li>
+  <li>artifact ทุกตัว (<code>requirements.json</code>, <code>design.json</code>, <code>reports/</code>) เขียนผ่าน <code>store.saveArtifact</code> จึงไปลงโฟลเดอร์ของงานนั้นถูกต้อง ไม่มีโค้ดส่วนไหน hardcode <code>.agent-team/</code> ค้างไว้ (ตรวจแล้ว)</li>
+</ul>
+
+<h2>Findings</h2>
+
+<div class="card major">
+<h3><span class="sev">MAJOR</span> <code>fs.link</code> ใน <code>tryCreateLock</code> ทำให้ทั้งโปรแกรมใช้ไม่ได้บนไดรฟ์ที่ไม่รองรับ hard link (<code>src/jobs.ts:260-274</code>)</h3>
+<dl>
+<dt>ทำไมสำคัญ</dt><dd>commit <code>e5f1453</code> เปลี่ยนจาก <code>writeFile(wx)</code> ที่ใช้ได้ทุก filesystem มาใช้ <code>fsp.link</code> ถ้าโปรเจกต์อยู่บน exFAT/FAT32 (USB drive), network share บางแบบ หรือ mount ของ Docker/WSL <code>link</code> จะ throw error ที่ไม่ใช่ <code>EEXIST</code>/<code>ENOENT</code> ผลคือ <code>create()</code> และ <code>lock()</code> throw ทุกครั้ง และเริ่มงานไม่ได้เลย ทั้งที่เดิมใช้ได้ การแก้ race ที่แทบไม่เกิดจึงไปสร้างความเสี่ยงที่ทำให้โปรแกรมใช้ไม่ได้ทั้งหมด</dd>
+<dt>หลักฐาน</dt><dd><code>selectJob</code> → <code>repo.create()</code> → <code>lock(id)</code> → <code>tryCreateLock</code> → <code>fsp.link</code> throw (เช่น EPERM/ENOTSUP) → ไม่เข้าเงื่อนไข <code>EEXIST||ENOENT</code> → <code>throw e</code> → <code>index.ts</code> catch → "หยุดเพราะ error" ยังไม่ได้ลองบนไดรฟ์จริง แต่ exFAT/FAT ไม่มี hard link อยู่แล้วโดยโครงสร้าง (สถานะ: PLAUSIBLE)</dd>
+<dt>แนวทางแก้ไข</dt><dd>ทางที่ง่ายกว่าคือ<b>กลับไปใช้ <code>wx</code></b> แล้วแก้ที่ฝั่งคนอ่านแทน ใน <code>lock()</code> ถ้า <code>readLock</code> คืน <code>undefined</code> (ไฟล์ว่างหรือพัง) แต่ mtime ของไฟล์ยังไม่เกิน ~5 วินาที ให้คืน <code>false</code> ไปก่อน ไม่ต้องถือว่าค้าง วิธีนี้ปิด race ข้อ 2 ได้เหมือนกัน ใช้ได้ทุก filesystem และไม่ต้องมีไฟล์ชั่วคราว ถ้าอยากเก็บ <code>link</code> ไว้ ต้องมี fallback เป็น <code>wx</code> เมื่อ <code>link</code> ล้มด้วย error อื่นที่ไม่ใช่ <code>EEXIST</code>/<code>ENOENT</code></dd>
+</dl>
+</div>
+
+<div class="card major">
+<h3><span class="sev">MAJOR</span> ระบบให้รัน 2 งานที่ต่างกันพร้อมกันบนโค้ดชุดเดียวกันได้โดยไม่เตือน (<code>src/job-menu.ts:84-99</code>)</h3>
+<dl>
+<dt>ทำไมสำคัญ</dt><dd>lock กันได้แค่ "งานเดียวกัน" ถ้าหน้าต่าง A กำลัง BUILD งาน X อยู่ หน้าต่าง B กด <code>n</code> หรือ <code>r</code> งาน Y ได้ทันที worker ของทั้งสองงานจะแก้ไฟล์ใน working tree เดียวกันพร้อมกัน QA ของงานหนึ่งจะเห็นโค้ดที่อีกงานแก้ค้างครึ่งทาง และ <code>codeChangedWarning</code> เตือนได้แค่ <i>หลังจาก</i>เกิดไปแล้ว สเปกไม่ได้ระบุว่าตั้งใจให้เป็นแบบนี้หรือเป็น out of scope</dd>
+<dt>หลักฐาน</dt><dd>เมนูโชว์ "(กำลังรันอยู่ pid …)" ของงาน X แต่ <code>menu()</code> เช็ก <code>job.lock</code> เฉพาะงานที่เลือก ส่วน <code>n</code> → <code>repo.create()</code> ไม่ได้ดู lock ของงานอื่นเลย <code>--resume</code> (<code>resumeLatest</code>) ก็ข้ามงานที่ถูก lock แล้วไปหยิบงานค้างอื่นมารันต่อเงียบ ๆ</dd>
+<dt>แนวทางแก้ไข</dt><dd>ต้องตัดสินใจก่อนว่าตั้งใจไหม ถ้าไม่ตั้งใจ แก้ที่เล็กที่สุดคือ ก่อน <code>n</code>/<code>r</code>/<code>--resume</code> ถ้าใน <code>all</code> มีงานอื่นที่มี live lock ให้ขึ้นเตือน "มีงาน … กำลังรันในโปรเจกต์นี้ แก้โค้ดชนกันได้" แล้วถาม y/n (ส่วน <code>--resume</code> ให้ error) ถ้าตั้งใจ ให้เขียนใน README และสเปกว่าไม่รองรับการรันพร้อมกัน</dd>
+</dl>
+</div>
+
+<div class="card">
+<h3><span class="sev">NIT</span> กด Ctrl+C ระหว่าง <code>create()</code> ทิ้งโฟลเดอร์ที่ไม่มี state ไว้ถาวร (<code>src/jobs.ts:108-129</code>, <code>src/index.ts:61-62</code>)</h3>
+<dl>
+<dt>ทำไมสำคัญ</dt><dd>ถ้าหยุดหลัง <code>mkdir</code>+<code>lock</code> แต่ก่อน <code>save</code> จะเหลือโฟลเดอร์ที่มีแค่ <code>run.lock</code> ทุกครั้งที่รันหลังจากนั้น <code>list()</code> จะ log <code>job.missing_state</code> และไม่มีโค้ดส่วนไหนเก็บกวาดโฟลเดอร์นี้ให้ ช่วงเวลาที่เกิดได้สั้นมาก (ระดับ ms)</dd>
+<dt>หลักฐาน</dt><dd>ตอนนั้น <code>jobId</code> ใน <code>index.ts</code> ยังเป็น <code>undefined</code> (ตั้งหลัง <code>selectJob</code> คืนค่า) handler จึงไม่ unlock ส่วน <code>list()</code> เจอ <code>state</code> เป็น <code>undefined</code> ก็ <code>continue</code> ข้ามไป <code>removeEmptyJobs</code> จึงไม่เคยเห็นงานนี้</dd>
+<dt>แนวทางแก้ไข</dt><dd>ใน <code>list()</code> ถ้าไม่มี <code>state.json</code> และไม่มี live lock ให้ <code>removeQuietly</code> ทิ้ง (โฟลเดอร์ที่ <code>create()</code> ทำไม่เสร็จ) แทนการ WARN อย่างเดียว</dd>
+</dl>
+</div>
+
+<div class="card">
+<h3><span class="sev">NIT</span> เทสต์ race ที่เพิ่มใน <code>e5f1453</code> ไม่ได้พิสูจน์การแก้ (<code>tests/jobs.test.ts</code> "สอง process lock พร้อมกัน…")</h3>
+<dl>
+<dt>ทำไมสำคัญ</dt><dd>รันกับโค้ดเดิม (<code>wx</code>) ก็ผ่าน 3/3 รอบ จึงกันไม่ให้พังซ้ำไม่ได้จริง แถมยังทำให้ดูเหมือนมีเทสต์คลุมแล้ว</dd>
+<dt>แนวทางแก้ไข</dt><dd>ถ้าใช้วิธี mtime-grace ตาม finding #1 จะเทสต์แบบได้ผลแน่นอนได้: เขียน <code>run.lock</code> ว่างที่ mtime = ตอนนี้ แล้วเช็กว่า <code>lock()</code> ของอีก pid ได้ <code>false</code> และถ้า mtime เก่ากว่า grace แล้วได้ <code>true</code> ส่วนเทสต์ loop 50 รอบให้ลบทิ้ง</dd>
+</dl>
+</div>
+
+<div class="card">
+<h3><span class="sev">NIT</span> ชื่อไฟล์ชั่วคราว <code>run.lock.&lt;pid&gt;.tmp</code> ชนกันได้ถ้า process เดียวกัน lock งานเดียวกันพร้อมกัน (<code>src/jobs.ts:262</code>)</h3>
+<dl>
+<dt>ทำไมสำคัญ</dt><dd>production เรียก <code>lock</code> ทีละครั้ง จึงยังไม่เกิด แต่ถ้า <code>finally rm</code> ของคำสั่งหนึ่งลบไฟล์ชั่วคราวก่อนที่อีกคำสั่งจะ <code>link</code> คำสั่งหลังจะได้ <code>ENOENT</code> แล้วคืน <code>false</code> ผิด ๆ ข้อนี้หายไปเองถ้าแก้ตาม finding #1</dd>
+</dl>
+</div>
+
+<h2>คำตัดสิน</h2>
+<p><span class="verdict">FIX-THEN-SHIP</span></p>
+<p>เหตุผลหลัก: <code>fs.link</code> ใน commit ล่าสุดเสี่ยงทำให้โปรแกรมเริ่มงานไม่ได้เลยบนไดรฟ์ที่ไม่รองรับ hard link ขณะที่ race ที่มันแก้แทบไม่เกิด ควรเปลี่ยนเป็นวิธี mtime-grace ที่ใช้ได้ทุกไดรฟ์ ส่วนเรื่องรัน 2 งานพร้อมกัน ต้องให้ user ตัดสินใจก่อน merge</p>
+</main>
+</body>
+</html>
