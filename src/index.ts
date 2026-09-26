@@ -8,6 +8,7 @@ import { makeInterruptHandler } from './interrupt';
 import { selectJob } from './job-menu';
 import { JobRepository } from './jobs';
 import { FileLogger, LoggingIO } from './logger';
+import { runLogsCommand } from './logview/command';
 import { runTeam } from './orchestrator';
 import { selectProject } from './project-menu';
 import { ProjectRegistry, teamRootError } from './projects';
@@ -45,6 +46,16 @@ async function main(): Promise<void> {
     cli.say(`บันทึกรายชื่อโปรเจกต์ไม่สำเร็จ (${e instanceof Error ? e.message : String(e)}) — ทำงานต่อได้ตามปกติ`);
   }
   process.off('SIGINT', quitBeforeStart);
+  if (args.command === 'logs') {
+    cli.close();
+    const server = await runLogsCommand(projectDir, args.live, { say: (text) => console.log(text) });
+    if (server) {
+      process.on('SIGINT', () => {
+        void server.close().then(() => process.exit(0));
+      });
+    }
+    return;
+  }
 
   const config = loadConfig();
   const abortController = new AbortController();
@@ -101,6 +112,7 @@ async function main(): Promise<void> {
   } catch (e) {
     console.error(`\nหยุดเพราะ error: ${e instanceof Error ? e.message : String(e)}`);
     if (jobId) console.error('รันใหม่แล้วเลือกงานนี้จากเมนู หรือใช้ --resume เพื่อทำต่องานล่าสุด');
+    console.error(`ดูสาเหตุ: agent-team logs "${projectDir}"`);
     logger.log('ERROR', 'run.error', {
       jobId,
       message: e instanceof Error ? e.message : String(e),

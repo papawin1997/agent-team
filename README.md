@@ -82,6 +82,19 @@ Ctrl+C หยุดได้ทุกเมื่อ: state ถูกบัน�
    continue (ทำต่ออีก 5 รอบ) / accept (รับตามสภาพ) / abort
 5. DELIVER: PM ส่งมอบ ให้คุณตรวจรับ (accept) หรือขอแก้/เพิ่ม (change)
 
+## ดู log / หาสาเหตุเมื่อ agent error
+    agent-team logs                  # เลือกโปรเจกต์จากเมนู → สร้างหน้า log แล้วเปิดเบราว์เซอร์
+    agent-team logs C:/path/to/app   # ระบุโปรเจกต์ตรง ๆ (หรือ agent-team logs . ในโฟลเดอร์โปรเจกต์)
+    agent-team logs . --live         # เปิด server ที่ 127.0.0.1 หน้าเว็บอัปเดตเองทุก 3 วินาที (Ctrl+C เพื่อหยุด)
+
+- แบบปกติเขียนไฟล์ `<project>/.agent-team/logs.html` (ไฟล์เดียว เปิด offline ได้) แล้วเปิดเบราว์เซอร์ให้ ถ้าเบราว์เซอร์ไม่เปิดเอง ให้เปิดไฟล์ตาม path ที่พิมพ์ไว้
+- บนสุดคือกล่อง "สาเหตุที่น่าจะเป็น" ที่วิเคราะห์จาก log + transcript ของ agent: 529 Overloaded (เซิร์ฟเวอร์ Anthropic รับโหลดไม่ไหว), เชื่อมต่อ API ไม่ได้, 429 rate limit, 401/403, ใช้ turn/งบเกิน, guard ปฏิเสธคำสั่ง, agent จบโดยไม่ส่งผลลัพธ์, agent หยุดกลางคัน
+- เลือกรอบรันได้จาก dropdown (ค่าเริ่มต้นคือรอบล่าสุด) มีสรุปเวลา/ค่าใช้จ่าย, การ์ดของแต่ละครั้งที่เรียก agent (กดขยายดู transcript ย่อ: ข้อความ agent, tool ที่เรียกพร้อมผล, API error — ตัดแต่ละชิ้นที่ 2,000 ตัวอักษร ไม่แสดง prompt เต็ม) และ timeline ทุก event พร้อมตัวกรอง
+- transcript อ่านจาก `~/.claude/projects/<path โปรเจกต์ที่แปลงเป็นชื่อโฟลเดอร์>/<sessionId>.jsonl` ที่ Claude Agent SDK เขียนไว้ (ใช้ `CLAUDE_CONFIG_DIR` ถ้าตั้งไว้) ถ้าไฟล์ถูกลบหรือเปิดจากคนละเครื่องจะขึ้นว่าไม่พบ transcript
+- `logs.html` มีสิ่งที่คุณพิมพ์และข้อความของ agent อยู่ด้วย ระวังก่อนส่งต่อ และให้ `.agent-team/` อยู่ใน `.gitignore`
+- `logs` ต้องเป็นคำแรกหลัง `agent-team` เสมอ ถ้าโฟลเดอร์โปรเจกต์ชื่อ `logs` ให้พิมพ์ `agent-team ./logs`; `--live` ใช้ได้กับ `logs` เท่านั้น และใช้ `-r` กับ `logs` ไม่ได้
+- งานที่หยุดเพราะ error จะพิมพ์ `ดูสาเหตุ: agent-team logs "<path>"` ให้ copy ไปรันได้เลย
+
 ## state
 แต่ละงานเก็บแยกโฟลเดอร์ที่ `<project>/.agent-team/jobs/<jobId>/` (`state.json`, `requirements.json`, `design.json`,
 `reports/<taskId>-round<n>.json`) โดย `jobId` คือเวลาที่สร้างงาน แนะนำให้เพิ่ม `.agent-team/` ใน `.gitignore` ของโปรเจกต์นั้น

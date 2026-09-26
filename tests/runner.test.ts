@@ -150,7 +150,7 @@ describe('SdkRoleRunner', () => {
     const noOutput = { type: 'result', subtype: 'success', session_id: 's1' };
     const { runner } = makeRunner([[initMsg(), noOutput], [initMsg(), noOutput], [initMsg(), noOutput]]);
     await expect(runner.pmTurn({ prompt: 'hi' })).rejects.toThrow(
-      'pm: จบงานโดยไม่ได้ส่ง structured output (ดู guard.deny ใน log)',
+      'pm: จบงานโดยไม่ได้ส่ง structured output (ดูสาเหตุด้วย agent-team logs)',
     );
   });
 

@@ -220,7 +220,7 @@ export class SdkRoleRunner implements RoleRunner {
           });
           if (ok) return { output: msg.structured_output, sessionId };
           const reason =
-            msg.subtype === 'success' ? 'จบงานโดยไม่ได้ส่ง structured output (ดู guard.deny ใน log)' : msg.subtype;
+            msg.subtype === 'success' ? 'จบงานโดยไม่ได้ส่ง structured output (ดูสาเหตุด้วย agent-team logs)' : msg.subtype;
           throw new RoleRunError(
             `${role}: ${reason}`,
             !msg.subtype.startsWith('error_max_'),
