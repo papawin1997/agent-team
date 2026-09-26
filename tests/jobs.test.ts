@@ -151,6 +151,27 @@ describe('JobRepository', () => {
     expect(await make({ pid: 2000 }).lock(id)).toBe(true);
   });
 
+  it('สอง process lock พร้อมกันได้ lock แค่ตัวเดียว (ไม่อ่านเจอไฟล์ lock ที่ยังเขียนไม่เสร็จ)', async () => {
+    const a = make();
+    const b = make({ pid: 2000 });
+    alive.add(2000);
+    const { id } = await a.create();
+    for (let i = 0; i < 50; i++) {
+      await a.unlock(id);
+      await b.unlock(id);
+      const results = await Promise.all([a.lock(id), b.lock(id)]);
+      expect(results.filter(Boolean)).toHaveLength(1);
+    }
+  });
+
+  it('lock ไม่ทิ้งไฟล์ชั่วคราวไว้ในโฟลเดอร์งาน', async () => {
+    const repo = make();
+    const { id } = await repo.create();
+    alive.add(2000);
+    expect(await make({ pid: 2000 }).lock(id)).toBe(false);
+    expect((await fs.readdir(repo.jobDir(id))).sort()).toEqual(['run.lock', 'state.json']);
+  });
+
   it('lock บนโฟลเดอร์งานที่ถูกลบไปแล้วคืน false ไม่ throw', async () => {
     const repo = make();
     const { id } = await repo.create();

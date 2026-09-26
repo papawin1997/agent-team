@@ -256,14 +256,19 @@ export class JobRepository {
     }
   }
 
+  /** เขียนไฟล์ชั่วคราวให้ครบก่อนแล้ว link เข้าที่ (atomic, ล้มถ้ามีอยู่แล้ว) คนอื่นจึงไม่เห็น lock ที่เขียนไม่เสร็จ */
   private async tryCreateLock(file: string, body: string): Promise<boolean> {
+    const tmp = `${file}.${this.pid}.tmp`;
     try {
-      await fsp.writeFile(file, body, { encoding: 'utf8', flag: 'wx' });
+      await fsp.writeFile(tmp, body, 'utf8');
+      await fsp.link(tmp, file);
       return true;
     } catch (e) {
       // EEXIST = มี lock อยู่แล้ว, ENOENT = โฟลเดอร์งานถูกลบไปแล้ว (housekeeping ของอีก process)
       if (errCode(e) === 'EEXIST' || errCode(e) === 'ENOENT') return false;
       throw e;
+    } finally {
+      await fsp.rm(tmp, { force: true }).catch(() => {});
     }
   }
 
