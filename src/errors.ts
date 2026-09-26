@@ -3,6 +3,8 @@ export class RoleRunError extends Error {
     message: string,
     readonly retryable: boolean,
     readonly subtype?: string,
+    /** session ที่ล้ม (ใช้ resume เพื่อกู้คืน) */
+    readonly sessionId?: string,
   ) {
     super(message);
     this.name = 'RoleRunError';

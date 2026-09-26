@@ -154,6 +154,28 @@ describe('SdkRoleRunner', () => {
     );
   });
 
+  it('error_max_structured_output_retries: resume session เดิม 1 ครั้งเพื่อให้ส่ง JSON ใหม่', async () => {
+    const { runner, calls } = makeRunner([
+      [initMsg('s1'), errResult('error_max_structured_output_retries')],
+      [initMsg('s1'), okResult(validTurn)],
+    ]);
+    const out = await runner.pmTurn({ prompt: 'hi' });
+
+    expect(out.turn).toEqual(validTurn);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.options.resume).toBe('s1');
+    expect(calls[1]!.prompt).toContain('StructuredOutput');
+  });
+
+  it('error_max_structured_output_retries ซ้ำหลังกู้คืน: throw ไม่วนต่อ', async () => {
+    const { runner, calls } = makeRunner([
+      [initMsg('s1'), errResult('error_max_structured_output_retries')],
+      [initMsg('s1'), errResult('error_max_structured_output_retries')],
+    ]);
+    await expect(runner.pmTurn({ prompt: 'hi' })).rejects.toThrow('error_max_structured_output_retries');
+    expect(calls).toHaveLength(2);
+  });
+
   it('output ผิด schema: ถาม agent เดิมซ้ำ 1 ครั้งด้วย resume', async () => {
     const { runner, calls } = makeRunner([
       [initMsg('s1'), okResult({ message: '', status: 'asking' })],
