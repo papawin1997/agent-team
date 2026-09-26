@@ -22,7 +22,6 @@ export async function decide<T extends string>(
     const result = await io.chooseOrText(prompt, options);
     if (typeof result === 'string') return result;
     if (result.text.trim() === '') continue;
-    io.say('[PM] กำลังตอบคำถาม...');
     const context = `[ระหว่างรอการตัดสินใจ: "${prompt}" ตัวเลือกที่มี: ${options.join(', ')}]\n\n${result.text}`;
     let turn: PmTurn;
     try {

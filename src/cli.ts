@@ -1,5 +1,6 @@
 import { stdin, stdout } from 'node:process';
 import * as readline from 'node:readline/promises';
+import { Spinner } from './activity';
 import type { UserIO } from './deps';
 
 const LABELS: Record<string, string> = {
@@ -37,9 +38,17 @@ export class CliIO implements UserIO {
   private readonly output: NodeJS.WritableStream;
   private isClosed = false;
   private readonly closed: Promise<never>;
+  /** บรรทัดสถานะระหว่าง agent ทำงาน index.ts ส่งให้ SdkRoleRunner ตรง ๆ (ไม่ผ่าน LoggingIO จึงไม่ลง log) */
+  readonly status: Spinner;
 
   constructor(options: CliIOOptions = {}) {
     this.output = options.output ?? stdout;
+    const screen = this.output as Partial<NodeJS.WriteStream>;
+    this.status = new Spinner({
+      output: this.output,
+      tty: options.terminal ?? screen.isTTY === true,
+      columns: () => screen.columns,
+    });
     this.rl = readline.createInterface({
       input: options.input ?? stdin,
       output: this.output,
@@ -60,10 +69,13 @@ export class CliIO implements UserIO {
   }
 
   say(text: string): void {
+    this.status.clear();
     this.output.write(`${text}\n`);
+    this.status.redraw();
   }
 
   async ask(prompt: string): Promise<string> {
+    this.status.stop();
     if (this.isClosed) throw new Error(EOF_MESSAGE);
     return (await Promise.race([this.rl.question(prompt), this.closed])).trim();
   }
@@ -84,6 +96,7 @@ export class CliIO implements UserIO {
   }
 
   close(): void {
+    this.status.stop();
     this.rl.close();
   }
 }

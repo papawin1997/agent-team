@@ -1,6 +1,7 @@
 import { once } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ERASE_LINE } from '../src/activity';
 import { CliIO, type CliIOOptions, parseChoice } from '../src/cli';
 
 const options = ['confirm', 'revise'] as const;
@@ -160,6 +161,40 @@ describe('CliIO', () => {
         process.removeAllListeners('SIGINT');
         for (const l of original) process.on('SIGINT', l);
       }
+    });
+  });
+
+  describe('status (บรรทัดสถานะระหว่าง agent ทำงาน)', () => {
+    it('terminal: say ลบบรรทัด spinner ก่อนพิมพ์ แล้ววาดกลับต่อท้าย', () => {
+      const { io, written } = makeIO({ terminal: true });
+      io.status.start('[PM] กำลังคิด');
+      io.say('สวัสดี');
+      expect(written()).toContain(`${ERASE_LINE}สวัสดี\n${ERASE_LINE}⠋ [PM] กำลังคิด 0m00s`);
+    });
+
+    it('ไม่ใช่ terminal: พิมพ์บรรทัดเริ่มบรรทัดเดียว ไม่มี escape code', () => {
+      const { io, written } = makeIO();
+      io.status.start('[PM] กำลังคิด');
+      io.status.update('อ่านไฟล์ a.ts');
+      io.say('สวัสดี');
+      io.status.stop();
+      expect(written()).toBe('[PM] กำลังคิด...\nสวัสดี\n');
+    });
+
+    it('ask หยุด spinner ก่อนถาม', async () => {
+      const { io, input } = makeIO();
+      io.status.start('[QA] T1: กำลังตรวจ');
+      const answer = io.ask('q> ');
+      expect(io.status.active).toBe(false);
+      input.write('ok\n');
+      expect(await answer).toBe('ok');
+    });
+
+    it('close หยุด spinner', () => {
+      const { io } = makeIO({ terminal: true });
+      io.status.start('[QA] T1: กำลังตรวจ');
+      io.close();
+      expect(io.status.active).toBe(false);
     });
   });
 });
