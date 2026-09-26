@@ -1,5 +1,6 @@
 import type { StateStore, UserIO } from './deps';
 import { codeChangedWarning, formatJobSummary, jobTitle } from './format';
+import { confirmYesNo } from './io-util';
 import { isEmptyJob, type JobInfo, type JobRepository } from './jobs';
 
 export interface SelectedJob {
@@ -9,7 +10,7 @@ export interface SelectedJob {
 
 const MENU_HELP = 'เลือก: r<เลข> = ทำต่องานนั้น   d<เลข> = ลบงานนั้น   n = เริ่มงานใหม่';
 
-const isPending = (job: JobInfo): boolean =>
+export const isPending = (job: JobInfo): boolean =>
   job.state.phase !== 'DONE' && job.state.phase !== 'ABORTED' && !isEmptyJob(job.state);
 
 /** เลือกงานตอนเริ่มรัน งานที่คืนออกมาถูก lock ไว้แล้วเสมอ */
@@ -87,15 +88,6 @@ function lockedMessage(repo: JobRepository, job: JobInfo): string {
     `งาน "${jobTitle(job.state)}" กำลังรันอยู่ใน process อื่น${who} — ` +
     `ถ้าแน่ใจว่าไม่ได้รันอยู่ ให้ลบไฟล์ ${repo.lockPath(job.id)} แล้วเลือกใหม่`
   );
-}
-
-async function confirmYesNo(io: UserIO, question: string): Promise<boolean> {
-  for (;;) {
-    const answer = (await io.ask(question)).trim().toLowerCase();
-    if (answer === 'y' || answer === 'yes') return true;
-    if (answer === 'n' || answer === 'no') return false;
-    io.say('กรุณาตอบ y หรือ n');
-  }
 }
 
 /** คืนงานที่เลือก หรือ undefined เมื่อต้องอ่านรายการงานแล้วแสดงเมนูใหม่ (พิมพ์ผิด, หลังลบ, ยกเลิกการลบ หรือเจอ lock) */

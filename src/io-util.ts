@@ -10,6 +10,15 @@ export async function askNonEmpty(io: UserIO, prompt: string): Promise<string> {
   }
 }
 
+export async function confirmYesNo(io: UserIO, question: string): Promise<boolean> {
+  for (;;) {
+    const answer = (await io.ask(question)).trim().toLowerCase();
+    if (answer === 'y' || answer === 'yes') return true;
+    if (answer === 'n' || answer === 'no') return false;
+    io.say('กรุณาตอบ y หรือ n');
+  }
+}
+
 export async function decide<T extends string>(
   deps: Deps,
   state: State,

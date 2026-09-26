@@ -54,7 +54,7 @@ const PHASE_LABELS: Record<Phase, string> = {
 
 const pad2 = (n: number): string => String(n).padStart(2, '0');
 const hhmm = (d: Date): string => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
-const localDateTime = (d: Date): string =>
+export const localDateTime = (d: Date): string =>
   `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${hhmm(d)}`;
 
 export function jobTitle(state: State): string {
