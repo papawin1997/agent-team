@@ -84,6 +84,13 @@ describe('pm, planning และ security ใช้ Skill tool ได้ (สำ
     expect(allowed(role, 'Skill', {})).toBe(true);
   });
 
+  it.each(['pm', 'planning', 'security'] as const)(
+    '%s ใช้ StructuredOutput ได้ (SDK ใช้ส่งผลลัพธ์ JSON ตาม schema ถ้าบล็อก agent จะส่งผลไม่ได้เลย)',
+    (role) => {
+      expect(allowed(role, 'StructuredOutput', { message: 'x', status: 'asking' })).toBe(true);
+    },
+  );
+
   it('SomeFutureTool ยังถูกปฏิเสธเหมือนเดิม (regression check)', () => {
     expect(allowed('security', 'SomeFutureTool', {})).toBe(false);
   });
