@@ -26,12 +26,32 @@ export async function selectJob(
 
     if (pending.length === 0) {
       if (opts.resume) throw new Error('ไม่พบงานค้างให้ resume');
+      if (!(await confirmConcurrent(io, all))) throw new Error('ยกเลิก: มีงานอื่นกำลังรันอยู่ในโปรเจกต์นี้');
       return repo.create();
     }
-    if (opts.resume) return resumeLatest(repo, io, pending);
+    if (opts.resume) {
+      const running = runningJobs(all)[0];
+      if (running) throw new Error(`${runningMessage(running)} — --resume ไม่เริ่มงานซ้อน ให้รันใหม่หลังงานนั้นจบ`);
+      return resumeLatest(repo, io, pending);
+    }
     const picked = await menu(repo, io, pending, all);
     if (picked) return picked;
   }
+}
+
+/** งานที่ process อื่นกำลังรันอยู่ (JobInfo.lock มีค่าเฉพาะเมื่อ process ที่ถือยังอยู่) */
+const runningJobs = (all: readonly JobInfo[], exceptId?: string): JobInfo[] =>
+  all.filter((job) => job.lock && job.id !== exceptId);
+
+const runningMessage = (job: JobInfo): string =>
+  `มีงาน "${jobTitle(job.state)}" กำลังรันอยู่ในโปรเจกต์นี้ (pid ${job.lock!.pid})`;
+
+/** lock กันได้แค่งานเดียวกัน งานต่างกันที่รันพร้อมกันจะให้ worker แก้ไฟล์ชุดเดียวกันซ้อนกัน จึงถามก่อน */
+async function confirmConcurrent(io: UserIO, all: readonly JobInfo[], exceptId?: string): Promise<boolean> {
+  const running = runningJobs(all, exceptId);
+  if (running.length === 0) return true;
+  const more = running.length > 1 ? ` และอีก ${running.length - 1} งาน` : '';
+  return confirmYesNo(io, `⚠ ${runningMessage(running[0]!)}${more} worker อาจแก้ไฟล์ชนกันได้ เริ่มต่อไหม? (y/n)\n> `);
 }
 
 async function removeEmptyJobs(repo: JobRepository, all: readonly JobInfo[]): Promise<void> {
@@ -69,9 +89,9 @@ function lockedMessage(repo: JobRepository, job: JobInfo): string {
   );
 }
 
-async function confirmDelete(io: UserIO, job: JobInfo): Promise<boolean> {
+async function confirmYesNo(io: UserIO, question: string): Promise<boolean> {
   for (;;) {
-    const answer = (await io.ask(`ลบงาน "${jobTitle(job.state)}" ถาวรใช่ไหม? (y/n)\n> `)).trim().toLowerCase();
+    const answer = (await io.ask(question)).trim().toLowerCase();
     if (answer === 'y' || answer === 'yes') return true;
     if (answer === 'n' || answer === 'no') return false;
     io.say('กรุณาตอบ y หรือ n');
@@ -87,7 +107,9 @@ async function menu(
 ): Promise<SelectedJob | undefined> {
   io.say(renderMenu(pending, all));
   const answer = (await io.ask('> ')).trim().toLowerCase();
-  if (answer === 'n' || answer === 'new') return repo.create();
+  if (answer === 'n' || answer === 'new') {
+    return (await confirmConcurrent(io, all)) ? repo.create() : undefined;
+  }
   const match = /^([rd])\s*(\d+)$/.exec(answer);
   const job = match ? pending[Number(match[2]) - 1] : undefined;
   if (!match || !job) {
@@ -99,11 +121,12 @@ async function menu(
     return undefined;
   }
   if (match[1] === 'r') {
+    if (!(await confirmConcurrent(io, all, job.id))) return undefined;
     if (await repo.lock(job.id)) return { id: job.id, store: repo.store(job.id) };
     io.say(lockedMessage(repo, job));
     return undefined;
   }
-  if (!(await confirmDelete(io, job))) return undefined;
+  if (!(await confirmYesNo(io, `ลบงาน "${jobTitle(job.state)}" ถาวรใช่ไหม? (y/n)\n> `))) return undefined;
   // lock ก่อนลบ: ระหว่างรอ user ตอบ อีก process อาจเลือกงานนี้ไปแล้ว
   if (!(await repo.lock(job.id))) {
     io.say(lockedMessage(repo, job));

@@ -34,6 +34,9 @@ const errMessage = (e: unknown): string => (e instanceof Error ? e.message : Str
 /** artifact แบบเก่าที่อยู่ที่ .agent-team/ (state.json ย้ายแยกเป็นอย่างสุดท้าย) */
 const LEGACY_ARTIFACTS = ['requirements.json', 'design.json', 'reports'] as const;
 
+/** ไฟล์ lock ที่อ่านไม่ออกแต่อายุไม่เกินนี้ ถือว่ามีคนกำลังเขียนอยู่ ยังไม่ค้าง */
+const LOCK_WRITE_GRACE_MS = 5000;
+
 export function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -148,6 +151,7 @@ export class JobRepository {
         continue;
       }
       if (!state) {
+        if (await this.removeOrphan(id)) continue;
         this.log.log('WARN', 'job.missing_state', { jobId: id });
         continue;
       }
@@ -172,6 +176,8 @@ export class JobRepository {
     const held = await this.readLock(file);
     if (held?.pid === this.pid) return true;
     if (held && this.isAlive(held.pid)) return false;
+    // อ่านไม่ออกแต่เพิ่งสร้าง = อีก process เพิ่งสร้างด้วย wx และยังเขียนเนื้อหาไม่เสร็จ ไม่ใช่ lock ค้าง
+    if (!held && (await this.isFresh(file))) return false;
     // lock ค้าง: ลบแล้วลอง wx ใหม่ 1 ครั้ง (ไม่เขียนทับ) ถ้าอีก process ชิงไปก่อนจะได้ false
     await fsp.rm(file, { force: true });
     return this.tryCreateLock(file, body);
@@ -256,19 +262,45 @@ export class JobRepository {
     }
   }
 
-  /** เขียนไฟล์ชั่วคราวให้ครบก่อนแล้ว link เข้าที่ (atomic, ล้มถ้ามีอยู่แล้ว) คนอื่นจึงไม่เห็น lock ที่เขียนไม่เสร็จ */
-  private async tryCreateLock(file: string, body: string): Promise<boolean> {
-    const tmp = `${file}.${this.pid}.tmp`;
+  /**
+   * โฟลเดอร์ที่ create() ทำไม่เสร็จ (process ตายหลัง lock แต่ก่อน save state) มีแค่ lock ค้าง
+   * ลบเฉพาะเมื่อมีไฟล์ lock อยู่แล้ว: โฟลเดอร์ที่ยังไม่มี lock อาจเป็นอีก process ที่เพิ่ง mkdir
+   */
+  private async removeOrphan(id: string): Promise<boolean> {
     try {
-      await fsp.writeFile(tmp, body, 'utf8');
-      await fsp.link(tmp, file);
+      if (!fs.existsSync(this.lockPath(id)) || (await this.liveLock(id))) return false;
+      if (!(await this.lock(id))) return false;
+      if (!(await this.removeQuietly(id))) {
+        await this.unlock(id);
+        return false;
+      }
+      this.log.log('INFO', 'job.orphan_removed', { jobId: id });
+      return true;
+    } catch (e) {
+      this.log.log('WARN', 'job.unreadable', { jobId: id, message: errMessage(e) });
+      return false;
+    }
+  }
+
+  private async tryCreateLock(file: string, body: string): Promise<boolean> {
+    try {
+      await fsp.writeFile(file, body, { encoding: 'utf8', flag: 'wx' });
       return true;
     } catch (e) {
       // EEXIST = มี lock อยู่แล้ว, ENOENT = โฟลเดอร์งานถูกลบไปแล้ว (housekeeping ของอีก process)
       if (errCode(e) === 'EEXIST' || errCode(e) === 'ENOENT') return false;
       throw e;
-    } finally {
-      await fsp.rm(tmp, { force: true }).catch(() => {});
+    }
+  }
+
+  /** ไฟล์ถูกแก้ภายใน LOCK_WRITE_GRACE_MS (ใช้ Math.abs เผื่อนาฬิกา/ความละเอียดของ mtime) */
+  private async isFresh(file: string): Promise<boolean> {
+    try {
+      const age = this.now().getTime() - (await fsp.stat(file)).mtime.getTime();
+      return Math.abs(age) < LOCK_WRITE_GRACE_MS;
+    } catch (e) {
+      if (errCode(e) === 'ENOENT') return false;
+      throw e;
     }
   }
 

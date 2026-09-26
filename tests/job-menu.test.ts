@@ -104,26 +104,17 @@ describe('selectJob', () => {
       expect(lockHolder(repo, newer)).toBe(1000);
     });
 
-    it('ข้ามงานที่ process อื่นถือ lock อยู่', async () => {
+    it('มีงานอื่นกำลังรันอยู่ในโปรเจกต์ -> error ไม่เริ่มงานซ้อน และไม่ lock งานใด', async () => {
       const older = await seed('เก่า', d(24, 9));
       const newer = await seed('ใหม่', d(25, 9));
       alive.add(2000);
       await repoFor(2000).lock(newer);
-      const io = new ScriptedIO([]);
+      const repo = repoFor(1000);
 
-      const job = await selectJob(repoFor(1000), io, { resume: true });
-
-      expect(job.id).toBe(older);
-      expect(io.said).toContain(`ทำต่องาน "เก่า" (${older})`);
-    });
-
-    it('ทุกงานถูก lock -> error', async () => {
-      const only = await seed('งาน', d(24, 9));
-      alive.add(2000);
-      await repoFor(2000).lock(only);
-      await expect(selectJob(repoFor(1000), new ScriptedIO([]), { resume: true })).rejects.toThrow(
-        'งานค้างทั้งหมดกำลังรันอยู่ใน process อื่น',
+      await expect(selectJob(repo, new ScriptedIO([]), { resume: true })).rejects.toThrow(
+        'มีงาน "ใหม่" กำลังรันอยู่ในโปรเจกต์นี้ (pid 2000)',
       );
+      expect(existsSync(repo.lockPath(older))).toBe(false);
     });
   });
 
@@ -220,7 +211,7 @@ describe('selectJob', () => {
       alive.add(2000);
       await repoFor(2000).lock(b);
       const repo = repoFor(1000);
-      const io = new ScriptedIO(['r1', 'd1', 'r2']);
+      const io = new ScriptedIO(['r1', 'd1', 'r2', 'y']);
 
       const job = await selectJob(repo, io, { resume: false });
 
@@ -229,7 +220,7 @@ describe('selectJob', () => {
       const said = io.said.join('\n');
       expect(said).toContain('(กำลังรันอยู่ pid 2000 ตั้งแต่');
       expect(said).toContain(`ให้ลบไฟล์ ${repo.lockPath(b)} แล้วเลือกใหม่`);
-      expect(io.asked).toHaveLength(3);
+      expect(io.asked).toHaveLength(4);
     });
 
     it('งานถูก lock หลังแสดงเมนูแล้ว: d + y ถูกปฏิเสธและโฟลเดอร์ยังอยู่', async () => {
@@ -237,7 +228,7 @@ describe('selectJob', () => {
       const b = await seed('ใหม่', d(25, 9));
       alive.add(2000);
       const repo = repoFor(1000);
-      const io = new HookIO(['d1', 'y', 'r2'], async (index) => {
+      const io = new HookIO(['d1', 'y', 'r2', 'y'], async (index) => {
         if (index === 1) await repoFor(2000).lock(b); // อีก process เลือกงานนี้ระหว่างรอยืนยัน
       });
 
@@ -293,13 +284,54 @@ describe('selectJob', () => {
       clock = d(25, 9);
       const busy = (await repoFor(2000).create()).id;
       const repo = repoFor(1000);
-      const io = new ScriptedIO(['r1']);
+      const io = new ScriptedIO(['r1', 'y']);
 
       const job = await selectJob(repo, io, { resume: false });
 
       expect(job.id).toBe(real);
       expect(existsSync(repo.jobDir(busy))).toBe(true);
       expect(io.said.join('\n')).toContain('[PM] มีงานค้าง 1 งาน:');
+    });
+
+    it('มีงานอื่นกำลังรัน: r/n ถามยืนยันก่อน ตอบ n แล้วกลับมาเมนู ไม่ lock ไม่สร้างงาน', async () => {
+      const a = await seed('เก่า', d(24, 9));
+      const b = await seed('ใหม่', d(25, 9));
+      alive.add(2000);
+      await repoFor(2000).lock(b);
+      const repo = repoFor(1000);
+      const io = new ScriptedIO(['r2', 'n', 'n', 'no', 'r2', 'y']);
+
+      const job = await selectJob(repo, io, { resume: false });
+
+      expect(job.id).toBe(a);
+      expect((await repo.list()).map((j) => j.id).sort()).toEqual([a, b].sort());
+      const warnings = io.asked.filter((q) => q.includes('แก้ไฟล์ชนกันได้'));
+      expect(warnings).toHaveLength(3);
+      expect(warnings[0]).toContain('⚠ มีงาน "ใหม่" กำลังรันอยู่ในโปรเจกต์นี้ (pid 2000)');
+    });
+
+    it('ไม่มีงานค้างแต่มีงานใหม่ของอีก process กำลังรัน: ถามก่อนสร้าง ตอบ n แล้ว error', async () => {
+      alive.add(2000);
+      clock = d(25, 9);
+      await repoFor(2000).create(); // งานเปล่าที่อีก process เพิ่งสร้างและถือ lock
+      clock = d(26, 12);
+      const repo = repoFor(1000);
+
+      await expect(selectJob(repo, new ScriptedIO(['n']), { resume: false })).rejects.toThrow(
+        'ยกเลิก: มีงานอื่นกำลังรันอยู่ในโปรเจกต์นี้',
+      );
+      expect(await repo.list()).toHaveLength(1);
+    });
+
+    it('ไม่มีงานค้างแต่มีงานของอีก process กำลังรัน: ตอบ y แล้วสร้างงานใหม่', async () => {
+      alive.add(2000);
+      clock = d(25, 9);
+      const busy = (await repoFor(2000).create()).id;
+      clock = d(26, 12);
+
+      const job = await selectJob(repoFor(1000), new ScriptedIO(['y']), { resume: false });
+
+      expect(job.id).not.toBe(busy);
     });
 
     it('เตือนเมื่องานอื่นแก้โค้ดหลังจากงานนี้', async () => {

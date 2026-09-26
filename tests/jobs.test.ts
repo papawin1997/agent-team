@@ -98,6 +98,31 @@ describe('JobRepository', () => {
     expect(events).toEqual(expect.arrayContaining(['job.missing_state', 'job.unreadable']));
   });
 
+  it('list ลบโฟลเดอร์ที่ create ทำไม่เสร็จ (มีแค่ lock ค้าง ไม่มี state.json)', async () => {
+    const events: string[] = [];
+    const repo = make({ log: { log: (_level, event) => void events.push(event) } });
+    alive.add(2000);
+    const { id } = await make({ pid: 2000 }).create();
+    await fs.rm(path.join(repo.jobDir(id), 'state.json'));
+    alive.delete(2000); // process ที่สร้างตายไปก่อน save state
+
+    expect(await repo.list()).toEqual([]);
+    expect(existsSync(repo.jobDir(id))).toBe(false);
+    expect(events).toContain('job.orphan_removed');
+  });
+
+  it('list ไม่ลบโฟลเดอร์ที่ไม่มี state.json ถ้า lock ยังมีเจ้าของหรือยังไม่มี lock', async () => {
+    const repo = make();
+    alive.add(2000);
+    const busy = (await make({ pid: 2000 }).create()).id;
+    await fs.rm(path.join(repo.jobDir(busy), 'state.json'));
+    await fs.mkdir(path.join(repo.jobsDir, 'no-lock')); // อีก process เพิ่ง mkdir ยังไม่ได้ lock
+
+    expect(await repo.list()).toEqual([]);
+    expect(existsSync(repo.jobDir(busy))).toBe(true);
+    expect(existsSync(repo.jobDir('no-lock'))).toBe(true);
+  });
+
   it('list คืน [] เมื่อยังไม่มีโฟลเดอร์ jobs', async () => {
     expect(await make().list()).toEqual([]);
   });
@@ -151,25 +176,21 @@ describe('JobRepository', () => {
     expect(await make({ pid: 2000 }).lock(id)).toBe(true);
   });
 
-  it('สอง process lock พร้อมกันได้ lock แค่ตัวเดียว (ไม่อ่านเจอไฟล์ lock ที่ยังเขียนไม่เสร็จ)', async () => {
-    const a = make();
-    const b = make({ pid: 2000 });
-    alive.add(2000);
-    const { id } = await a.create();
-    for (let i = 0; i < 50; i++) {
-      await a.unlock(id);
-      await b.unlock(id);
-      const results = await Promise.all([a.lock(id), b.lock(id)]);
-      expect(results.filter(Boolean)).toHaveLength(1);
-    }
-  });
-
-  it('lock ไม่ทิ้งไฟล์ชั่วคราวไว้ในโฟลเดอร์งาน', async () => {
+  it('ไฟล์ lock ว่างที่เพิ่งสร้าง (อีก process ยังเขียนไม่เสร็จ) ไม่ถือว่าค้าง', async () => {
     const repo = make();
     const { id } = await repo.create();
-    alive.add(2000);
+    await fs.writeFile(repo.lockPath(id), '', 'utf8');
+    await fs.utimes(repo.lockPath(id), new Date(at.getTime() - 2000), new Date(at.getTime() - 2000));
     expect(await make({ pid: 2000 }).lock(id)).toBe(false);
-    expect((await fs.readdir(repo.jobDir(id))).sort()).toEqual(['run.lock', 'state.json']);
+    expect(await fs.readFile(repo.lockPath(id), 'utf8')).toBe('');
+  });
+
+  it('ไฟล์ lock ว่างที่เก่าเกินช่วงรอถือว่าค้าง', async () => {
+    const repo = make();
+    const { id } = await repo.create();
+    await fs.writeFile(repo.lockPath(id), '', 'utf8');
+    await fs.utimes(repo.lockPath(id), new Date(at.getTime() - 10_000), new Date(at.getTime() - 10_000));
+    expect(await make({ pid: 2000 }).lock(id)).toBe(true);
   });
 
   it('lock บนโฟลเดอร์งานที่ถูกลบไปแล้วคืน false ไม่ throw', async () => {
