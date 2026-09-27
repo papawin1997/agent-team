@@ -79,9 +79,10 @@ summary{cursor:pointer;overflow-wrap:anywhere}
 export const PAGE_JS = String.raw`
 (function () {
   'use strict';
+  var L = window.AgentTeamList;
   var data = JSON.parse(document.getElementById('data').textContent);
   var currentDefault = data.defaultRun;
-  var state = { run: currentDefault, open: {}, filter: 'all' };
+  var state = { run: currentDefault, open: {}, calls: freshCalls(), events: freshEvents() };
   var lastRuns = JSON.stringify(data.runs);
   var app = document.getElementById('app');
 
@@ -92,7 +93,19 @@ export const PAGE_JS = String.raw`
     interrupted: 'ถูกหยุด (Ctrl+C)',
     unfinished: 'ยังไม่จบ / process หายไป'
   };
-  var FILTERS = [['all', 'ทั้งหมด'], ['problem', 'WARN/ERROR'], ['agent', 'agent'], ['user', 'สิ่งที่คุณพิมพ์'], ['say', 'ข้อความในจอ']];
+  var EVENT_TYPES = [['all', 'ทั้งหมด'], ['problem', 'WARN/ERROR'], ['agent', 'agent'], ['user', 'สิ่งที่คุณพิมพ์'], ['say', 'ข้อความในจอ']];
+  var CALL_STATUSES = [['all', 'ทุกสถานะ'], ['ok', 'สำเร็จ'], ['failed', 'ไม่สำเร็จ'], ['unfinished', 'ยังไม่จบ']];
+  var CALL_SORTS = [['start-asc', 'เวลาเริ่ม เก่า→ใหม่'], ['start-desc', 'เวลาเริ่ม ใหม่→เก่า'], ['duration-desc', 'ใช้เวลานานสุด'], ['cost-desc', 'cost สูงสุด'], ['turns-desc', 'turns มากสุด']];
+  var EVENT_SORTS = [['asc', 'เก่า→ใหม่'], ['desc', 'ใหม่→เก่า']];
+
+  function freshCalls() { return { roles: [], status: 'all', sort: 'start-asc', page: 1, pageSize: L.DEFAULT_PAGE_SIZE }; }
+  function freshEvents() { return { type: 'all', query: '', sort: 'asc', page: 1, pageSize: L.DEFAULT_PAGE_SIZE }; }
+  function resetForRun() {
+    state.open = {};
+    state.calls.roles = [];
+    state.calls.page = 1;
+    state.events.page = 1;
+  }
 
   function el(tag, cls, text) {
     var e = document.createElement(tag);
@@ -122,8 +135,48 @@ export const PAGE_JS = String.raw`
     return text.length > n ? text.slice(0, n) + '…' : text;
   }
 
+  function selectBox(label, options, value, onChange) {
+    var s = el('select');
+    s.setAttribute('aria-label', label);
+    options.forEach(function (o) {
+      var opt = el('option', null, o[1]);
+      opt.value = String(o[0]);
+      if (String(o[0]) === String(value)) opt.selected = true;
+      s.appendChild(opt);
+    });
+    s.onchange = function () { onChange(s.value); };
+    return s;
+  }
+
+  function roleBadge(role) {
+    var st = L.roleStyle(role);
+    return el('span', 'role-badge ' + st.cls, st.icon + ' ' + role);
+  }
+
+  function pager(res, st) {
+    var bar = el('div', 'pager');
+    var prev = el('button', null, '« ก่อนหน้า');
+    prev.disabled = res.page <= 1;
+    prev.onclick = function () { st.page = res.page - 1; render(); };
+    var next = el('button', null, 'ถัดไป »');
+    next.disabled = res.page >= res.pages;
+    next.onclick = function () { st.page = res.page + 1; render(); };
+    bar.appendChild(prev);
+    bar.appendChild(el('span', 'pager-info', 'หน้า ' + res.page + '/' + res.pages + ' · แสดง ' + res.from + '–' + res.to + ' จาก ' + res.total));
+    bar.appendChild(next);
+    bar.appendChild(selectBox('จำนวนต่อหน้า', L.PAGE_SIZES.map(function (n) { return [n, n + ' ต่อหน้า']; }), res.pageSize, function (v) {
+      st.pageSize = Number(v);
+      st.page = 1;
+      render();
+    }));
+    return bar;
+  }
+
   function render() {
     var y = window.scrollY;
+    var active = document.activeElement;
+    var focusId = active && active.id ? active.id : null;
+    var caret = focusId && typeof active.selectionStart === 'number' ? active.selectionStart : null;
     var frag = document.createDocumentFragment();
     var run = data.runs[state.run];
     frag.appendChild(renderHeader());
@@ -137,6 +190,13 @@ export const PAGE_JS = String.raw`
     }
     app.textContent = '';
     app.appendChild(frag);
+    if (focusId) {
+      var again = document.getElementById(focusId);
+      if (again && again.focus) {
+        again.focus();
+        if (caret !== null && again.setSelectionRange) again.setSelectionRange(caret, caret);
+      }
+    }
     window.scrollTo(0, y);
   }
 
@@ -144,17 +204,15 @@ export const PAGE_JS = String.raw`
     var head = el('div', 'head');
     head.appendChild(el('h1', null, 'agent-team logs'));
     head.appendChild(el('div', 'muted', data.projectDir));
-    var sel = el('select');
-    sel.setAttribute('aria-label', 'เลือกรอบรัน');
-    data.runs.forEach(function (r, i) {
-      var label = 'รอบที่ ' + (i + 1) + ' · ' + fmtTime(r.start) + ' · ' + (RUN_STATUS[r.status] || r.status) + (r.jobId ? ' · ' + r.jobId : '') + (r.calls.length === 0 ? ' (ไม่ได้เรียก agent)' : '');
-      var o = el('option', null, label);
-      o.value = String(i);
-      if (i === state.run) o.selected = true;
-      sel.appendChild(o);
-    });
-    sel.onchange = function () { state.run = Number(sel.value); state.open = {}; render(); };
-    if (data.runs.length) head.appendChild(sel);
+    if (data.runs.length) {
+      head.appendChild(selectBox('เลือกรอบรัน', data.runs.map(function (r, i) {
+        return [i, 'รอบที่ ' + (i + 1) + ' · ' + fmtTime(r.start) + ' · ' + (RUN_STATUS[r.status] || r.status) + (r.jobId ? ' · ' + r.jobId : '') + (r.calls.length === 0 ? ' (ไม่ได้เรียก agent)' : '')];
+      }), state.run, function (v) {
+        state.run = Number(v);
+        resetForRun();
+        render();
+      }));
+    }
     head.appendChild(el('div', 'muted small', 'สร้างเมื่อ ' + fmtTime(data.generatedAt) + (window.__LIVE__ ? ' · live: อัปเดตอัตโนมัติทุก 3 วินาที' : '')));
     return head;
   }
@@ -175,7 +233,8 @@ export const PAGE_JS = String.raw`
         links.appendChild(el('span', 'muted', 'ดูครั้งที่เรียก agent: '));
         f.callIds.forEach(function (id) {
           var c = run.calls[id];
-          var b = el('button', null, '#' + (id + 1) + (c ? ' ' + c.role : ''));
+          var st = L.roleStyle(c ? c.role : '');
+          var b = el('button', 'role-badge ' + st.cls, '#' + (id + 1) + (c ? ' ' + st.icon + ' ' + c.role : ''));
           b.onclick = function () { openCall(id); };
           links.appendChild(b);
         });
@@ -187,6 +246,14 @@ export const PAGE_JS = String.raw`
   }
 
   function openCall(id) {
+    var run = data.runs[state.run];
+    if (!run) return;
+    var st = state.calls;
+    if (L.pageOfCall(run.calls, st, id) === 0) {
+      st.roles = [];
+      st.status = 'all';
+    }
+    st.page = L.pageOfCall(run.calls, st, id) || 1;
     state.open[id] = true;
     render();
     var target = document.getElementById('call-' + id);
@@ -219,33 +286,64 @@ export const PAGE_JS = String.raw`
 
   function renderCalls(run) {
     var sec = el('section');
+    var st = state.calls;
     sec.appendChild(el('h2', null, 'การเรียก agent (' + run.calls.length + ')'));
-    if (!run.calls.length) sec.appendChild(el('p', 'muted', 'รอบนี้ยังไม่ได้เรียก agent'));
-    run.calls.forEach(function (c) {
-      var card = el('div', 'card' + (c.status === 'ok' ? '' : ' failed'));
-      card.id = 'call-' + c.id;
-      var icon = c.status === 'ok' ? '✅' : c.status === 'failed' ? '❌' : '⏳';
-      var head = el('button');
-      head.setAttribute('aria-expanded', state.open[c.id] ? 'true' : 'false');
-      [
-        icon + ' #' + (c.id + 1) + ' ' + c.role,
-        c.model || '',
-        fmtClock(c.start),
-        fmtDur(c.durationMs),
-        (c.turns === undefined ? '-' : c.turns) + ' turns',
-        fmtCost(c.costUsd),
-        c.status === 'ok' ? '' : (c.subtype || 'ยังไม่จบ')
-      ].forEach(function (t) { if (t) head.appendChild(el('span', null, t)); });
-      head.onclick = function () { state.open[c.id] = !state.open[c.id]; render(); };
-      card.appendChild(head);
-      if (state.open[c.id]) card.appendChild(renderTranscript(run.transcripts[String(c.id)], c));
-      sec.appendChild(card);
+    if (!run.calls.length) {
+      sec.appendChild(el('p', 'muted', 'รอบนี้ยังไม่ได้เรียก agent'));
+      return sec;
+    }
+    var chips = el('div', 'filters');
+    L.roleCounts(run.calls).forEach(function (rc) {
+      var on = st.roles.indexOf(rc.role) >= 0;
+      var rs = L.roleStyle(rc.role);
+      var b = el('button', 'chip ' + rs.cls + (on ? ' on' : ''), rs.icon + ' ' + rc.role + ' (' + rc.count + ')');
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      b.onclick = function () {
+        st.roles = on ? st.roles.filter(function (r) { return r !== rc.role; }) : st.roles.concat([rc.role]);
+        st.page = 1;
+        render();
+      };
+      chips.appendChild(b);
     });
+    sec.appendChild(chips);
+    var controls = el('div', 'controls');
+    controls.appendChild(selectBox('กรองสถานะ', CALL_STATUSES, st.status, function (v) { st.status = v; st.page = 1; render(); }));
+    controls.appendChild(selectBox('เรียงการเรียก agent', CALL_SORTS, st.sort, function (v) { st.sort = v; st.page = 1; render(); }));
+    sec.appendChild(controls);
+    var res = L.listCalls(run.calls, st);
+    st.page = res.page;
+    if (!res.total) sec.appendChild(el('p', 'muted', 'ไม่มีการเรียก agent ที่ตรงกับตัวกรอง'));
+    res.items.forEach(function (c) { sec.appendChild(renderCallCard(run, c)); });
+    sec.appendChild(pager(res, st));
     return sec;
+  }
+
+  function renderCallCard(run, c) {
+    var rs = L.roleStyle(c.role);
+    var card = el('div', 'card ' + rs.cls + (c.status === 'ok' ? '' : ' failed'));
+    card.id = 'call-' + c.id;
+    var icon = c.status === 'ok' ? '✅' : c.status === 'failed' ? '❌' : '⏳';
+    var head = el('button');
+    head.setAttribute('aria-expanded', state.open[c.id] ? 'true' : 'false');
+    head.appendChild(el('span', null, icon + ' #' + (c.id + 1)));
+    head.appendChild(roleBadge(c.role));
+    [
+      c.model || '',
+      fmtClock(c.start),
+      fmtDur(c.durationMs),
+      (c.turns === undefined ? '-' : c.turns) + ' turns',
+      fmtCost(c.costUsd),
+      c.status === 'ok' ? '' : (c.subtype || 'ยังไม่จบ')
+    ].forEach(function (t) { if (t) head.appendChild(el('span', null, t)); });
+    head.onclick = function () { state.open[c.id] = !state.open[c.id]; render(); };
+    card.appendChild(head);
+    if (state.open[c.id]) card.appendChild(renderTranscript(run.transcripts[String(c.id)], c));
+    return card;
   }
 
   function renderTranscript(t, c) {
     var body = el('div', 'body');
+    body.appendChild(el('h3', null, 'Transcript'));
     if (c.sessionId) body.appendChild(el('div', 'muted small', 'session: ' + c.sessionId));
     if (!t) {
       body.appendChild(el('p', 'muted', 'ไม่มีข้อมูล transcript'));
@@ -274,44 +372,54 @@ export const PAGE_JS = String.raw`
     return body;
   }
 
-  function matches(ev) {
-    var f = state.filter;
-    var e = ev.event;
-    if (f === 'problem') return ev.level !== 'INFO';
-    if (f === 'agent') return e.indexOf('agent.') === 0 || e.indexOf('qa.') === 0 || e.indexOf('security.') === 0 || e === 'guard.deny' || e === 'escalate.decision';
-    if (f === 'user') return e.indexOf('user.') === 0;
-    if (f === 'say') return e === 'say';
-    return true;
-  }
-
-  function summaryOf(ev) {
-    var d = ev.data || {};
-    if (ev.event === 'say' || ev.event === 'raw') return d.text;
-    if (ev.event === 'user.input') return d.answer;
-    if (ev.event === 'user.question') return d.question;
-    if (ev.event === 'user.choice') return d.prompt + ' → ' + d.choice;
-    return JSON.stringify(d);
+  // ช่องค้นหา: รอ IME พิมพ์จบ (composition) และหน่วง 150ms ก่อน render ใหม่ทั้งหน้า
+  var composing = false;
+  var searchTimer = null;
+  function scheduleSearch(input) {
+    state.events.query = input.value;
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(function () {
+      searchTimer = null;
+      state.events.page = 1;
+      render();
+    }, 150);
   }
 
   function renderTimeline(run) {
     var sec = el('section');
+    var st = state.events;
     sec.appendChild(el('h2', null, 'Timeline (' + run.events.length + ' event)'));
     var bar = el('div', 'filters');
-    FILTERS.forEach(function (f) {
-      var b = el('button', state.filter === f[0] ? 'on' : null, f[1]);
-      b.onclick = function () { state.filter = f[0]; render(); };
+    EVENT_TYPES.forEach(function (f) {
+      var b = el('button', st.type === f[0] ? 'on' : null, f[1]);
+      b.onclick = function () { st.type = f[0]; st.page = 1; render(); };
       bar.appendChild(b);
     });
     sec.appendChild(bar);
-    var shown = run.events.filter(matches);
-    if (!shown.length) sec.appendChild(el('p', 'muted', 'ไม่มี event ที่ตรงกับตัวกรอง'));
-    shown.forEach(function (ev) {
+    var controls = el('div', 'controls');
+    var search = el('input');
+    search.id = 'ev-search';
+    search.type = 'search';
+    search.value = st.query;
+    search.setAttribute('placeholder', 'ค้นหาใน event…');
+    search.setAttribute('aria-label', 'ค้นหาใน timeline');
+    search.addEventListener('compositionstart', function () { composing = true; });
+    search.addEventListener('compositionend', function () { composing = false; scheduleSearch(search); });
+    search.oninput = function () { if (!composing) scheduleSearch(search); };
+    controls.appendChild(search);
+    controls.appendChild(selectBox('เรียง timeline', EVENT_SORTS, st.sort, function (v) { st.sort = v; st.page = 1; render(); }));
+    sec.appendChild(controls);
+    var res = L.listEvents(run.events, st);
+    st.page = res.page;
+    if (!res.total) sec.appendChild(el('p', 'muted', 'ไม่มี event ที่ตรงกับตัวกรอง'));
+    res.items.forEach(function (ev) {
       var d = el('details');
       var s = el('summary');
       s.appendChild(el('span', 't', fmtClock(ev.time)));
+      if (ev.data && typeof ev.data.role === 'string') s.appendChild(roleBadge(ev.data.role));
       s.appendChild(el('span', 'lv lv-' + ev.level, ev.level));
       s.appendChild(el('span', 'ev', ev.event));
-      s.appendChild(el('span', null, short(summaryOf(ev), 200)));
+      s.appendChild(el('span', null, short(L.summaryOf(ev), 200)));
       d.appendChild(s);
       var built = false;
       d.addEventListener('toggle', function () {
@@ -321,6 +429,7 @@ export const PAGE_JS = String.raw`
       });
       sec.appendChild(d);
     });
+    sec.appendChild(pager(res, st));
     return sec;
   }
 
@@ -334,6 +443,7 @@ export const PAGE_JS = String.raw`
           if (runs === lastRuns) return;
           var wasOnDefault = state.run === currentDefault;
           var newDefault = next.defaultRun;
+          var before = state.run;
           data = next;
           lastRuns = runs;
           if (state.run >= data.runs.length) {
@@ -341,8 +451,9 @@ export const PAGE_JS = String.raw`
           } else if (wasOnDefault && newDefault !== currentDefault) {
             state.run = newDefault;
           }
+          if (state.run !== before) resetForRun();
           currentDefault = newDefault;
-          render();
+          render(); // ตัวกรอง/การเรียง/หน้าเดิมคงไว้ หน้าที่เกินจำนวนหน้าใหม่ถูกบีบใน paginate
         })
         .catch(function () { /* server หยุดแล้ว: คงหน้าเดิมไว้ */ });
     }, 3000);
