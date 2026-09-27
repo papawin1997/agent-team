@@ -247,6 +247,9 @@ describe('หน้า logs (DOM จำลอง)', () => {
       clearBtn.onclick!();
       expect(cards(d)).toHaveLength(1);
       expect(d.document.getElementById('calls-size')!.value).toBe('10');
+      // ปุ่มล้างตัวกรองหายไปหลัง render (ไม่มี call ว่างอีกแล้ว) -> focus ต้องไม่หลุดไปที่ body
+      // แต่ไปที่ control แรกของ section นี้แทน (calls-status)
+      expect(d.document.activeElement!.id).toBe('calls-status');
     });
 
     it('timeline: ค้นหาไม่เจอ event ใด -> ปุ่มล้างตัวกรองคืนสถานะเริ่มต้น', () => {
@@ -260,6 +263,8 @@ describe('หน้า logs (DOM จำลอง)', () => {
       clearBtn.onclick!();
       expect(details(d).length).toBeGreaterThan(0);
       expect(d.document.getElementById('ev-search')!.value).toBe('');
+      // เช่นเดียวกัน: focus ต้องไปที่ ev-search ไม่ใช่หลุดไปที่ body
+      expect(d.document.activeElement!.id).toBe('ev-search');
     });
   });
 

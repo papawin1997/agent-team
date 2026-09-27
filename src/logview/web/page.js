@@ -120,6 +120,9 @@
   var app = /** @type {HTMLElement} */ (document.getElementById('app'));
   /** @type {string|null} */
   var pendingScrollId = null;
+  /** id ของ element ที่ต้องการให้ focus ไปหาใน render() รอบถัดไป (เอาชนะ id เดิมที่ active อยู่) */
+  /** @type {string|null} */
+  var pendingFocusId = null;
 
   /** เวลา (ms) นานสุดหลัง mousedown/keydown บน select ที่ยังถือว่า "น่าจะเปิด dropdown อยู่จริง" */
   var SELECT_GRACE_MS = 3000;
@@ -298,7 +301,9 @@
   function render() {
     var y = window.scrollY;
     var active = /** @type {HTMLInputElement|HTMLSelectElement|HTMLButtonElement|null} */ (document.activeElement);
-    var focusId = active && active.id ? active.id : null;
+    // pendingFocusId (ตั้งไว้ก่อนเรียก render() เช่นตอนกด "ล้างตัวกรอง") ชนะ id ของ element ที่ active อยู่เดิมเสมอ
+    var focusId = pendingFocusId || (active && active.id ? active.id : null);
+    pendingFocusId = null;
     var isSearch = focusId === 'ev-search';
     var caretStart = isSearch && active && typeof (/** @type {HTMLInputElement} */(active)).selectionStart === 'number' ? /** @type {HTMLInputElement} */(active).selectionStart : null;
     var caretEnd = isSearch && caretStart !== null && typeof (/** @type {HTMLInputElement} */(active)).selectionEnd === 'number' ? /** @type {HTMLInputElement} */(active).selectionEnd : caretStart;
@@ -480,6 +485,7 @@
       clearBtn.onclick = function () {
         state.calls = freshCalls();
         state.calls.pageSize = keepSize;
+        pendingFocusId = 'calls-status'; // ปุ่มนี้จะหายไปหลัง render (มี call กลับมาแล้ว) -> อย่าปล่อย focus หลุดไปที่ body
         render();
       };
       sec.appendChild(clearBtn);
@@ -613,6 +619,7 @@
       clearBtn.onclick = function () {
         state.events = freshEvents();
         state.events.pageSize = keepSize;
+        pendingFocusId = 'ev-search'; // ปุ่มนี้จะหายไปหลัง render (มี event กลับมาแล้ว) -> อย่าปล่อย focus หลุดไปที่ body
         render();
       };
       sec.appendChild(clearBtn);
