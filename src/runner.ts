@@ -172,11 +172,13 @@ export class SdkRoleRunner implements RoleRunner {
     resume?: string,
   ): Promise<{ output: unknown; sessionId: string }> {
     let sessionId = resume ?? '';
+    let sessionLogged = false;
     this.logger.log('INFO', 'agent.start', {
       role,
       model: this.deps.config.roles[role].model,
       resumed: resume !== undefined,
       promptChars: prompt.length,
+      sessionId: resume,
     });
     this.status.start(label);
     try {
@@ -196,7 +198,22 @@ export class SdkRoleRunner implements RoleRunner {
       });
 
       for await (const msg of stream) {
-        if ('session_id' in msg && typeof msg.session_id === 'string') sessionId = msg.session_id;
+        if ('session_id' in msg && typeof msg.session_id === 'string') {
+          if (!sessionLogged && msg.session_id !== resume) {
+            this.logger.log('INFO', 'agent.session', { role, sessionId: msg.session_id });
+            sessionLogged = true;
+          }
+          sessionId = msg.session_id;
+        }
+        if (msg.type === 'system' && msg.subtype === 'api_retry') {
+          this.logger.log('WARN', 'agent.api_retry', {
+            role,
+            attempt: msg.attempt,
+            maxRetries: msg.max_retries,
+            status: msg.error_status,
+            error: msg.error,
+          });
+        }
         if (msg.type === 'system' && msg.subtype === 'init' && this.deps.debug) {
           const init = msg as unknown as { skills?: unknown; plugins?: unknown; tools?: unknown };
           this.log(
@@ -220,7 +237,7 @@ export class SdkRoleRunner implements RoleRunner {
           });
           if (ok) return { output: msg.structured_output, sessionId };
           const reason =
-            msg.subtype === 'success' ? 'จบงานโดยไม่ได้ส่ง structured output (ดู guard.deny ใน log)' : msg.subtype;
+            msg.subtype === 'success' ? 'จบงานโดยไม่ได้ส่ง structured output (ดูสาเหตุด้วย agent-team logs)' : msg.subtype;
           throw new RoleRunError(
             `${role}: ${reason}`,
             !msg.subtype.startsWith('error_max_'),

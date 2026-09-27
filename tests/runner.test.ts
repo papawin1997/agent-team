@@ -22,6 +22,17 @@ const okResult = (output: unknown, sid = 's1'): Msg => ({
   total_cost_usd: 0.01,
 });
 const errResult = (subtype: string): Msg => ({ type: 'result', subtype, session_id: 's1' });
+const apiRetryMsg = (over: Partial<Msg> = {}): Msg => ({
+  type: 'system',
+  subtype: 'api_retry',
+  attempt: 1,
+  max_retries: 3,
+  retry_delay_ms: 1000,
+  error_status: 529,
+  error: 'overloaded',
+  session_id: 's1',
+  ...over,
+});
 
 const validTurn = { message: 'สวัสดี', status: 'asking' };
 
@@ -81,14 +92,15 @@ describe('SdkRoleRunner', () => {
     await runner.pmTurn({ prompt: 'hi' });
     await expect(runner.pmTurn({ prompt: 'again' })).rejects.toThrow('error_max_turns');
 
-    expect(events.map((e) => `${e.level} ${e.event}`)).toEqual([
+    const withoutSession = events.filter((e) => e.event !== 'agent.session');
+    expect(withoutSession.map((e) => `${e.level} ${e.event}`)).toEqual([
       'INFO agent.start',
       'INFO agent.result',
       'INFO agent.start',
       'WARN agent.result',
     ]);
-    expect(events[0]!.data).toMatchObject({ role: 'pm', model: 'claude-sonnet-5', resumed: false });
-    expect(events[1]!.data).toMatchObject({
+    expect(withoutSession[0]!.data).toMatchObject({ role: 'pm', model: 'claude-sonnet-5', resumed: false });
+    expect(withoutSession[1]!.data).toMatchObject({
       role: 'pm',
       subtype: 'success',
       durationMs: 1234,
@@ -96,13 +108,116 @@ describe('SdkRoleRunner', () => {
       costUsd: 0.01,
       sessionId: 's1',
     });
-    expect(events[3]!.data).toMatchObject({ role: 'pm', subtype: 'error_max_turns' });
+    expect(withoutSession[3]!.data).toMatchObject({ role: 'pm', subtype: 'error_max_turns' });
   });
 
   it('ส่ง sessionId เดิมเป็น resume ให้ PM', async () => {
     const { runner, calls } = makeRunner([[initMsg('s9'), okResult(validTurn, 's9')]]);
     await runner.pmTurn({ prompt: 'hi', sessionId: 's9' });
     expect(calls[0]!.options.resume).toBe('s9');
+  });
+
+  it('agent.start มี sessionId เมื่อ resume, ไม่มีเมื่อไม่ resume (ให้ logview ใช้ได้ทันทีไม่ต้องหาไฟล์ตามเวลา)', async () => {
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const runner = new SdkRoleRunner({
+      projectDir: 'proj',
+      config: DEFAULT_CONFIG,
+      queryFn: (() => {
+        return (async function* () {
+          yield initMsg('s9');
+          yield okResult(validTurn, 's9');
+        })();
+      }) as never,
+      sleep: async () => {},
+      logger: { log: (level, event, data) => void events.push({ event, data: data as never }) },
+    });
+    await runner.pmTurn({ prompt: 'hi', sessionId: 's9' });
+    expect(events[0]).toMatchObject({ event: 'agent.start', data: { sessionId: 's9' } });
+
+    const events2: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const runner2 = new SdkRoleRunner({
+      projectDir: 'proj',
+      config: DEFAULT_CONFIG,
+      queryFn: (() => {
+        return (async function* () {
+          yield initMsg();
+          yield okResult(validTurn);
+        })();
+      }) as never,
+      sleep: async () => {},
+      logger: { log: (level, event, data) => void events2.push({ event, data: data as never }) },
+    });
+    await runner2.pmTurn({ prompt: 'hi' });
+    expect(events2[0]!.event).toBe('agent.start');
+    expect(events2[0]!.data.sessionId).toBeUndefined();
+  });
+
+  it('บันทึก agent.api_retry เมื่อ SDK ส่ง system/api_retry และ agent.session ครั้งแรกที่เห็น session_id', async () => {
+    const events: Array<{ level: string; event: string; data: Record<string, unknown> }> = [];
+    const runner = new SdkRoleRunner({
+      projectDir: 'proj',
+      config: DEFAULT_CONFIG,
+      queryFn: (() => {
+        return (async function* () {
+          yield initMsg('s1');
+          yield apiRetryMsg();
+          yield okResult(validTurn, 's1');
+        })();
+      }) as never,
+      sleep: async () => {},
+      logger: { log: (level, event, data) => void events.push({ level, event, data: data as never }) },
+    });
+    await runner.pmTurn({ prompt: 'hi' });
+
+    expect(events.map((e) => `${e.level} ${e.event}`)).toEqual([
+      'INFO agent.start',
+      'INFO agent.session',
+      'WARN agent.api_retry',
+      'INFO agent.result',
+    ]);
+    expect(events[1]!.data).toEqual({ role: 'pm', sessionId: 's1' });
+    expect(events[2]!.data).toEqual({ role: 'pm', attempt: 1, maxRetries: 3, status: 529, error: 'overloaded' });
+  });
+
+  it('agent.api_retry หลายครั้งในการเรียกเดียว -> บันทึกทุกครั้ง แต่ agent.session แค่ครั้งแรก', async () => {
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const runner = new SdkRoleRunner({
+      projectDir: 'proj',
+      config: DEFAULT_CONFIG,
+      queryFn: (() => {
+        return (async function* () {
+          yield initMsg('s1');
+          yield apiRetryMsg({ attempt: 1, error_status: 429, error: 'rate_limit' });
+          yield apiRetryMsg({ attempt: 2, error_status: 429, error: 'rate_limit' });
+          yield okResult(validTurn, 's1');
+        })();
+      }) as never,
+      sleep: async () => {},
+      logger: { log: (level, event, data) => void events.push({ event, data: data as never }) },
+    });
+    await runner.pmTurn({ prompt: 'hi' });
+
+    expect(events.filter((e) => e.event === 'agent.session')).toHaveLength(1);
+    expect(events.filter((e) => e.event === 'agent.api_retry')).toHaveLength(2);
+  });
+
+  it('resume session เดิม (session_id เท่ากับ resume) -> ไม่บันทึก agent.session ซ้ำ', async () => {
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const runner = new SdkRoleRunner({
+      projectDir: 'proj',
+      config: DEFAULT_CONFIG,
+      queryFn: (() => {
+        return (async function* () {
+          yield initMsg('s9');
+          yield okResult(validTurn, 's9');
+        })();
+      }) as never,
+      sleep: async () => {},
+      logger: { log: (level, event, data) => void events.push({ event, data: data as never }) },
+    });
+    await runner.pmTurn({ prompt: 'hi', sessionId: 's9' });
+
+    expect(events.map((e) => e.event)).toEqual(['agent.start', 'agent.result']);
   });
 
   it('retry เมื่อ SDK โยน error แล้วสำเร็จ', async () => {
@@ -150,7 +265,7 @@ describe('SdkRoleRunner', () => {
     const noOutput = { type: 'result', subtype: 'success', session_id: 's1' };
     const { runner } = makeRunner([[initMsg(), noOutput], [initMsg(), noOutput], [initMsg(), noOutput]]);
     await expect(runner.pmTurn({ prompt: 'hi' })).rejects.toThrow(
-      'pm: จบงานโดยไม่ได้ส่ง structured output (ดู guard.deny ใน log)',
+      'pm: จบงานโดยไม่ได้ส่ง structured output (ดูสาเหตุด้วย agent-team logs)',
     );
   });
 

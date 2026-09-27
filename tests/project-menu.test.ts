@@ -156,6 +156,39 @@ describe('selectProject', () => {
   });
 });
 
+describe('selectProject allowNew: false (agent-team logs)', () => {
+  it('รายชื่อว่าง -> แจ้งให้รัน agent-team ก่อน แล้วคืน undefined ทันที ไม่ถามหา path', async () => {
+    const io = new ScriptedIO([]);
+    const result = await selectProject({ registry, io, teamRoot: teamRoot(), allowNew: false });
+    expect(result).toBeUndefined();
+    expect(io.said.join('\n')).toContain('ยังไม่มีโปรเจกต์ในรายชื่อ — รัน agent-team ก่อนเพื่อเพิ่มโปรเจกต์');
+    expect(io.asked).toEqual([]);
+  });
+
+  it('เมนูไม่มี n = โปรเจกต์ใหม่', async () => {
+    await addProject('shop', clock);
+    const io = new ScriptedIO(['1']);
+    await selectProject({ registry, io, teamRoot: teamRoot(), allowNew: false });
+    expect(io.said[0]).not.toContain('n = โปรเจกต์ใหม่');
+    expect(io.said[0]).toContain('d<เลข> = เอาออกจากเมนู');
+  });
+
+  it('ตอบ n -> ถือเป็น input ไม่ถูกต้อง (ไม่สร้างโปรเจกต์ใหม่)', async () => {
+    await addProject('shop', clock);
+    const io = new ScriptedIO(['n', '1']);
+    const result = await selectProject({ registry, io, teamRoot: teamRoot(), allowNew: false });
+    expect(result).toBe(path.join(dir, 'shop'));
+    expect(io.said.some((s) => s.includes('เลือกไม่ถูกต้อง'))).toBe(true);
+  });
+
+  it('เลือกโปรเจกต์ได้ปกติเหมือนเดิม', async () => {
+    const shop = await addProject('shop', clock);
+    const io = new ScriptedIO(['1']);
+    const result = await selectProject({ registry, io, teamRoot: teamRoot(), allowNew: false });
+    expect(result).toBe(shop);
+  });
+});
+
 describe('countPendingJobs', () => {
   it('นับเฉพาะงานค้างใน .agent-team/jobs และโปรเจกต์ที่ไม่มีงาน = 0', async () => {
     const app = path.join(dir, 'app');

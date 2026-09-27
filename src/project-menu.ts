@@ -10,6 +10,7 @@ import { JobRepository } from './jobs';
 import { teamRootError, type ProjectEntry, type ProjectRegistry } from './projects';
 
 const MENU_HELP = 'เลือก: <เลข> = เปิดโปรเจกต์   n = โปรเจกต์ใหม่   d<เลข> = เอาออกจากเมนู   q = ออก';
+const MENU_HELP_NO_NEW = 'เลือก: <เลข> = เปิดโปรเจกต์   d<เลข> = เอาออกจากเมนู   q = ออก';
 const ASK_PATH = 'ใส่ root path ของโปรเจกต์ (ว่าง = ยกเลิก)\n> ';
 
 export interface ProjectMenuDeps {
@@ -19,6 +20,11 @@ export interface ProjectMenuDeps {
   countPending?: (dir: string) => Promise<number>;
   /** repo agent-team ที่ห้ามใช้เป็นโปรเจกต์ (ค่าเริ่มต้น TEAM_ROOT) */
   teamRoot?: string;
+  /**
+   * false สำหรับ agent-team logs: ห้ามสร้างโปรเจกต์ใหม่จากเมนูนี้ (แค่ดู log จะได้ไม่สร้างโฟลเดอร์เปล่าแล้วหา log ไม่เจอ)
+   * ซ่อน "n" ออกจากเมนู, ตอบ n ถือเป็น input ผิด, รายชื่อว่าง -> แจ้งให้รัน agent-team ก่อนแล้วคืน undefined ทันที
+   */
+  allowNew?: boolean;
 }
 
 export async function countPendingJobs(dir: string): Promise<number> {
@@ -37,17 +43,22 @@ const expandHome = (raw: string): string => {
 /** เลือกโปรเจกต์ตอนรัน agent-team โดยไม่ระบุ path: คืน path เต็ม หรือ undefined เมื่อผู้ใช้ออก */
 export async function selectProject(deps: ProjectMenuDeps): Promise<string | undefined> {
   const { registry, io } = deps;
+  const allowNew = deps.allowNew ?? true;
   for (;;) {
     const projects = await registry.list();
     if (projects.length === 0) {
+      if (!allowNew) {
+        io.say('ยังไม่มีโปรเจกต์ในรายชื่อ — รัน agent-team ก่อนเพื่อเพิ่มโปรเจกต์');
+        return undefined;
+      }
       io.say('ยังไม่มีโปรเจกต์ในรายชื่อ');
       return askNewProject(deps);
     }
     const counts = await Promise.all(projects.map((p) => safeCount(deps, p.path)));
-    io.say(renderMenu(projects, counts));
+    io.say(renderMenu(projects, counts, allowNew));
     const answer = (await io.ask('> ')).trim().toLowerCase();
     if (answer === 'q' || answer === 'quit') return undefined;
-    if (answer === 'n' || answer === 'new') {
+    if (allowNew && (answer === 'n' || answer === 'new')) {
       const dir = await askNewProject(deps);
       if (dir) return dir;
       continue;
@@ -55,7 +66,7 @@ export async function selectProject(deps: ProjectMenuDeps): Promise<string | und
     const match = /^(d?)\s*(\d+)$/.exec(answer);
     const project = match ? projects[Number(match[2]) - 1] : undefined;
     if (!match || !project) {
-      io.say(`เลือกไม่ถูกต้อง — ${MENU_HELP}`);
+      io.say(`เลือกไม่ถูกต้อง — ${allowNew ? MENU_HELP : MENU_HELP_NO_NEW}`);
       continue;
     }
     if (match[1] === 'd') {
@@ -84,7 +95,11 @@ async function safeCount(deps: ProjectMenuDeps, dir: string): Promise<number | u
   }
 }
 
-function renderMenu(projects: readonly ProjectEntry[], counts: readonly (number | undefined)[]): string {
+function renderMenu(
+  projects: readonly ProjectEntry[],
+  counts: readonly (number | undefined)[],
+  allowNew: boolean,
+): string {
   const lines = projects.map((p, i) => {
     const name = path.basename(p.path) || p.path;
     const detail = isDir(p.path)
@@ -92,7 +107,7 @@ function renderMenu(projects: readonly ProjectEntry[], counts: readonly (number 
       : '⚠ ไม่พบโฟลเดอร์';
     return `  ${i + 1}) ${name} — ${p.path} · ${detail}`;
   });
-  return ['โปรเจกต์:', ...lines, MENU_HELP].join('\n');
+  return ['โปรเจกต์:', ...lines, allowNew ? MENU_HELP : MENU_HELP_NO_NEW].join('\n');
 }
 
 /** ถาม root path จนได้โฟลเดอร์ที่ใช้ได้ คืน undefined เมื่อตอบว่าง (ยกเลิก) */

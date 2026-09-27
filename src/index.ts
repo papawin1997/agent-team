@@ -8,6 +8,7 @@ import { makeInterruptHandler } from './interrupt';
 import { selectJob } from './job-menu';
 import { JobRepository } from './jobs';
 import { FileLogger, LoggingIO } from './logger';
+import { runLogsCommand } from './logview/command';
 import { runTeam } from './orchestrator';
 import { selectProject } from './project-menu';
 import { ProjectRegistry, teamRootError } from './projects';
@@ -22,8 +23,9 @@ async function main(): Promise<void> {
     process.exit(130);
   };
   process.on('SIGINT', quitBeforeStart);
+  const isLogs = args.command === 'logs';
   const registry = new ProjectRegistry(undefined, { warn: (m) => cli.say(m) });
-  const projectDir = args.projectDir ?? (await selectProject({ registry, io: cli }));
+  const projectDir = args.projectDir ?? (await selectProject({ registry, io: cli, allowNew: !isLogs }));
   if (!projectDir) {
     cli.close();
     return;
@@ -39,12 +41,25 @@ async function main(): Promise<void> {
     cli.close();
     process.exit(1);
   }
-  try {
-    await registry.touch(projectDir);
-  } catch (e) {
-    cli.say(`บันทึกรายชื่อโปรเจกต์ไม่สำเร็จ (${e instanceof Error ? e.message : String(e)}) — ทำงานต่อได้ตามปกติ`);
+  // agent-team logs แค่ดู log ไม่ควรทำให้โปรเจกต์นี้ขึ้นไปอยู่บนสุดของเมนู (เหมือนเปิดโปรเจกต์จริง)
+  if (!isLogs) {
+    try {
+      await registry.touch(projectDir);
+    } catch (e) {
+      cli.say(`บันทึกรายชื่อโปรเจกต์ไม่สำเร็จ (${e instanceof Error ? e.message : String(e)}) — ทำงานต่อได้ตามปกติ`);
+    }
   }
   process.off('SIGINT', quitBeforeStart);
+  if (args.command === 'logs') {
+    cli.close();
+    const server = await runLogsCommand(projectDir, args.live, { say: (text) => console.log(text) });
+    if (server) {
+      process.on('SIGINT', () => {
+        void server.close().then(() => process.exit(0));
+      });
+    }
+    return;
+  }
 
   const config = loadConfig();
   const abortController = new AbortController();
@@ -101,6 +116,7 @@ async function main(): Promise<void> {
   } catch (e) {
     console.error(`\nหยุดเพราะ error: ${e instanceof Error ? e.message : String(e)}`);
     if (jobId) console.error('รันใหม่แล้วเลือกงานนี้จากเมนู หรือใช้ --resume เพื่อทำต่องานล่าสุด');
+    console.error(`ดูสาเหตุ: agent-team logs "${projectDir}"`);
     logger.log('ERROR', 'run.error', {
       jobId,
       message: e instanceof Error ? e.message : String(e),

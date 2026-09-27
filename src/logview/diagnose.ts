@@ -1,0 +1,272 @@
+import type { AgentCall, LogEvent, Run } from './parse-log';
+import type { CallTranscript, TranscriptStep } from './transcripts';
+
+export type Severity = 'error' | 'warn' | 'info';
+
+export interface Finding {
+  severity: Severity;
+  title: string;
+  detail: string;
+  /** id ของ AgentCall ที่เกี่ยวข้อง */
+  callIds: number[];
+  /** จำนวนครั้งที่เจอ (เช่น API error กี่ครั้ง) */
+  count: number;
+}
+
+type Base = Pick<Finding, 'severity' | 'title' | 'detail'>;
+type ApiError = Extract<TranscriptStep, { kind: 'api_error' }>;
+
+const SEVERITY_ORDER: Record<Severity, number> = { error: 0, warn: 1, info: 2 };
+const RESUME_HINT = 'แล้วทำงานต่อด้วย agent-team <path> -r';
+
+const NETWORK: Base = {
+  severity: 'error',
+  title: 'เชื่อมต่อ API ไม่ได้ (อินเทอร์เน็ต/DNS)',
+  detail: `เครื่องต่ออินเทอร์เน็ตไม่ได้หรือหา api.anthropic.com ไม่เจอ — ตรวจเน็ต/VPN/proxy ${RESUME_HINT}`,
+};
+const OVERLOADED: Base = {
+  severity: 'error',
+  title: 'API ของ Anthropic รับโหลดไม่ไหว (529 Overloaded)',
+  detail: `ปัญหาชั่วคราวฝั่งเซิร์ฟเวอร์ ไม่ใช่ bug ของโปรเจกต์หรือ agent — รอสักพัก ${RESUME_HINT} (สถานะ: https://status.claude.com)`,
+};
+const RATE_LIMIT: Base = {
+  severity: 'error',
+  title: 'ชนลิมิตการใช้งาน (429 rate limit)',
+  detail: `โควตา subscription ช่วงนี้หมด — รอให้รีเซ็ต ${RESUME_HINT}`,
+};
+const AUTH: Base = {
+  severity: 'error',
+  title: 'login/สิทธิ์ใช้งานมีปัญหา (401/403)',
+  detail: 'login Claude ใหม่ (รัน claude แล้วใช้ /login) แล้วทำงานต่อด้วย -r',
+};
+
+const apiErrors = (t: CallTranscript | undefined): ApiError[] =>
+  (t?.steps ?? []).filter((s): s is ApiError => s.kind === 'api_error');
+
+const inWindow = (ev: LogEvent, call: AgentCall): boolean =>
+  ev.time >= call.start && (call.end === undefined || ev.time <= call.end);
+
+type RetryCategory = 'overloaded' | 'rate_limit' | 'auth' | 'other';
+
+/** SDKAssistantMessageError ที่ถือว่าเป็นปัญหา login/สิทธิ์ (sdk.d.ts: SDKAssistantMessageError) */
+const AUTH_RETRY_ERRORS = new Set([
+  'authentication_failed',
+  'oauth_org_not_allowed',
+  'account_on_hold',
+  'verification_required',
+  'billing_error',
+]);
+
+/** จัดหมวด agent.api_retry (จาก log ของ runner) ตาม error/status ของ SDKAPIRetryMessage */
+function categorizeRetry(data: Record<string, unknown>): RetryCategory {
+  const error = typeof data.error === 'string' ? data.error : undefined;
+  const status = typeof data.status === 'number' ? data.status : undefined;
+  if (error === 'overloaded' || status === 529) return 'overloaded';
+  if (error === 'rate_limit' || status === 429) return 'rate_limit';
+  if ((error && AUTH_RETRY_ERRORS.has(error)) || status === 401 || status === 403) return 'auth';
+  // status null ไม่มี error category ที่รู้จัก (รวม error 'unknown' + status null) ไม่สามารถเดาได้ว่าเป็นเน็ตหลุด -> other
+  return 'other';
+}
+
+export function diagnoseRun(run: Run, transcripts: ReadonlyMap<number, CallTranscript>): Finding[] {
+  const found = new Map<string, Finding>();
+  const add = (key: string, base: Base, callId: number, count = 1): void => {
+    const f = found.get(key) ?? { ...base, callIds: [], count: 0 };
+    f.count += count;
+    if (!f.callIds.includes(callId)) f.callIds.push(callId);
+    found.set(key, f);
+  };
+  const denials = run.events.filter((e) => e.event === 'guard.deny');
+
+  for (const call of run.calls) {
+    // agent.api_retry ที่ runner บันทึกลง log เอง (มี type ชัดเจนจาก SDK): ถ้ามีให้ใช้เป็นแหล่งเดียว ไม่นับซ้ำกับ transcript
+    const retryEvents = run.events.filter(
+      (e) => e.event === 'agent.api_retry' && e.data.role === call.role && inWindow(e, call),
+    );
+    const errs = retryEvents.length ? [] : apiErrors(transcripts.get(call.id));
+    const hasApiIssue = retryEvents.length > 0 || errs.length > 0;
+    let contributed = 0;
+
+    if (retryEvents.length) {
+      const buckets: Record<RetryCategory, number> = { overloaded: 0, rate_limit: 0, auth: 0, other: 0 };
+      for (const e of retryEvents) buckets[categorizeRetry(e.data)]++;
+      if (buckets.overloaded) {
+        add('overloaded', OVERLOADED, call.id, buckets.overloaded);
+        contributed++;
+      }
+      if (buckets.rate_limit) {
+        add('rate_limit', RATE_LIMIT, call.id, buckets.rate_limit);
+        contributed++;
+      }
+      if (buckets.auth) {
+        add('auth', AUTH, call.id, buckets.auth);
+        contributed++;
+      }
+      if (buckets.other) {
+        const first = retryEvents.find((e) => categorizeRetry(e.data) === 'other')!;
+        const status = typeof first.data.status === 'number' ? first.data.status : undefined;
+        const error = typeof first.data.error === 'string' ? first.data.error : 'unknown';
+        add(
+          'api_other',
+          { severity: 'warn', title: 'API error อื่น ๆ', detail: `${error}${status !== undefined ? ` (status ${status})` : ''}` },
+          call.id,
+          buckets.other,
+        );
+        contributed++;
+      }
+    } else {
+      const taken = new Set<ApiError>();
+      const pick = (test: (e: ApiError) => boolean): ApiError[] => {
+        const hits = errs.filter((e) => !taken.has(e) && test(e));
+        hits.forEach((e) => taken.add(e));
+        return hits;
+      };
+      const network = pick((e) => e.networkDown);
+      const overloaded = pick((e) => e.status === 529 || /overloaded/i.test(e.message));
+      const rate = pick((e) => e.status === 429);
+      const auth = pick((e) => e.status === 401 || e.status === 403);
+      const other = pick(() => true);
+      if (network.length) {
+        add('network', NETWORK, call.id, network.length);
+        contributed++;
+      }
+      if (overloaded.length) {
+        add('overloaded', OVERLOADED, call.id, overloaded.length);
+        contributed++;
+      }
+      if (rate.length) {
+        add('rate_limit', RATE_LIMIT, call.id, rate.length);
+        contributed++;
+      }
+      if (auth.length) {
+        add('auth', AUTH, call.id, auth.length);
+        contributed++;
+      }
+      if (other.length) {
+        add(
+          'api_other',
+          { severity: 'warn', title: 'API error อื่น ๆ', detail: other[0]!.message },
+          call.id,
+          other.length,
+        );
+        contributed++;
+      }
+    }
+
+    if (call.subtype === 'error_max_turns') {
+      add(
+        `max_turns:${call.role}`,
+        {
+          severity: 'error',
+          title: `agent ${call.role} ใช้ turn ครบ maxTurns`,
+          detail: 'task ใหญ่เกินจำนวน turn ที่ให้ — เพิ่ม maxTurns ของ role นี้ใน agent-team.config.json หรือแตก task ให้เล็กลง',
+        },
+        call.id,
+      );
+      contributed++;
+    }
+    if (call.subtype === 'error_max_budget_usd') {
+      add(
+        `max_budget:${call.role}`,
+        {
+          severity: 'error',
+          title: `agent ${call.role} ใช้งบเกิน maxBudgetUsd`,
+          detail: 'เพิ่ม maxBudgetUsd ของ role นี้ใน agent-team.config.json หรือแตก task ให้เล็กลง',
+        },
+        call.id,
+      );
+      contributed++;
+    }
+    const denied = denials.some((e) => e.data.role === call.role && inWindow(e, call));
+    if (call.status === 'failed' && call.subtype === 'success' && !hasApiIssue && !denied) {
+      add(
+        `no_output:${call.role}`,
+        {
+          severity: 'warn',
+          title: `agent ${call.role} จบโดยไม่ส่งผลลัพธ์ (structured output)`,
+          detail: 'agent หยุดตอบโดยไม่เรียก StructuredOutput — เปิด transcript ของครั้งนี้ดูข้อความสุดท้ายของ agent',
+        },
+        call.id,
+      );
+      contributed++;
+    }
+    const stopped =
+      call.subtype === 'no_result' ||
+      call.subtype === 'exception' ||
+      (call.status === 'unfinished' && run.status !== 'unfinished' && run.status !== 'interrupted');
+    if (stopped && !hasApiIssue) {
+      add(
+        `no_result:${call.role}`,
+        {
+          severity: run.status === 'done' ? 'warn' : 'error',
+          title: `agent ${call.role} หยุดกลางคันโดยไม่มีผลลัพธ์`,
+          detail: 'stream ของ SDK จบก่อนได้ result หรือเกิด exception — ดูข้อความ error ของรอบรันและ transcript ของครั้งนี้',
+        },
+        call.id,
+      );
+      contributed++;
+    }
+
+    if (call.status === 'failed' && contributed === 0 && !denied) {
+      const key = `failed:${call.role}:${call.subtype ?? '?'}`;
+      if (call.subtype === 'error_max_structured_output_retries') {
+        add(
+          key,
+          {
+            severity: 'warn',
+            title: `agent ${call.role} ส่งผลลัพธ์ผิดรูปแบบซ้ำจนเกินจำนวนครั้ง`,
+            detail:
+              'agent พยายามส่ง structured output แต่ JSON ไม่ผ่าน schema หลายครั้ง — เปิด transcript ของครั้งนี้ดูผลลัพธ์สุดท้าย แล้วลองรันใหม่ด้วย -r',
+          },
+          call.id,
+        );
+      } else {
+        add(
+          key,
+          {
+            severity: 'warn',
+            title: `agent ${call.role} ล้มเหลว (${call.subtype ?? 'ไม่ทราบ subtype'})`,
+            detail: 'SDK รายงานว่า agent จบแบบ error — เปิด transcript ของครั้งนี้ดูข้อความสุดท้ายของ agent',
+          },
+          call.id,
+        );
+      }
+    }
+  }
+
+  const byRole = new Map<string, LogEvent[]>();
+  for (const e of denials) {
+    const role = typeof e.data.role === 'string' ? e.data.role : '?';
+    byRole.set(role, [...(byRole.get(role) ?? []), e]);
+  }
+  for (const [role, list] of byRole) {
+    const lines = list
+      .slice(0, 5)
+      .map((e) => `${String(e.data.tool ?? '?')}${e.data.target ? ` ${String(e.data.target)}` : ''}: ${String(e.data.reason ?? '')}`);
+    const more = list.length > 5 ? `\n…และอีก ${list.length - 5} ครั้ง` : '';
+    const callIds = run.calls.filter((c) => c.role === role && list.some((e) => inWindow(e, c))).map((c) => c.id);
+    found.set(`guard:${role}`, {
+      severity: 'warn',
+      title: `guard ปฏิเสธคำสั่งของ ${role}`,
+      detail: `${lines.join('\n')}${more}`,
+      callIds,
+      count: list.length,
+    });
+  }
+
+  if (found.size === 0 && run.status === 'error') {
+    found.set('unknown', {
+      severity: 'info',
+      title: 'ไม่พบสาเหตุที่รู้จัก',
+      detail: run.errorMessage ?? 'ดูข้อความ error ของรอบรันใน timeline',
+      callIds: [],
+      count: 1,
+    });
+  }
+
+  return [...found.values()].sort(
+    (a, b) =>
+      SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] ||
+      (a.callIds[0] ?? Number.POSITIVE_INFINITY) - (b.callIds[0] ?? Number.POSITIVE_INFINITY),
+  );
+}
