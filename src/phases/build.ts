@@ -2,6 +2,7 @@ import type { Deps } from '../deps';
 import { decide } from '../io-util';
 import { isPass, isSecurityPass, orderTasks } from '../domain';
 import { RoleRunError } from '../errors';
+import { logLevelDecided } from '../level';
 import { nullLogger } from '../logger';
 import type { Design, QAReport, Requirements, Task } from '../schemas';
 import type { State, TaskProgress } from '../state';
@@ -204,12 +205,15 @@ async function buildTask(
       state.level = 'full';
       state.quickTask = undefined;
       state.phase = 'DESIGN';
-      (deps.log ?? nullLogger).log('INFO', 'level.decided', {
-        level: 'full',
-        by: 'user',
-        reason: `QA ไม่ผ่านครบ ${progress.rounds} รอบในโหมด quick`,
-        riskFlags: [],
-      });
+      // ล้าง design สังเคราะห์ของโหมด quick เพื่อไม่ให้ Planning เห็นมันเป็น previousDesign — โค้ดที่ worker
+      // ทำไปแล้วยังอยู่ในโปรเจกต์ ไม่ได้ถูกลบ แค่บอก Planning ผ่าน designFeedback แทนให้ออกแบบใหม่ตามสมควร
+      state.design = undefined;
+      state.progress = {};
+      state.designFeedback =
+        `ลองทำแบบ quick (task "${task.title}") แล้วไม่ผ่าน QA ครบ ${progress.rounds} รอบ ` +
+        `ปัญหาที่ค้าง: ${JSON.stringify(progress.lastReport?.issues ?? [])} — ` +
+        'โค้ดที่ worker ทำไปแล้วยังอยู่ในโปรเจกต์ ให้ออกแบบใหม่โดยใช้หรือแก้โค้ดนั้นตามสมควร';
+      logLevelDecided(deps, 'full', 'user', `QA ไม่ผ่านครบ ${progress.rounds} รอบในโหมด quick`, []);
       return 'escalated';
     }
     progress.maxRounds += config.extraRoundsOnContinue;

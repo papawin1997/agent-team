@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { WorkInput } from '../../src/deps';
+import type { PlanInput, WorkInput } from '../../src/deps';
 import { RoleOutputError, RoleRunError } from '../../src/errors';
 import { initProgress, quickDesign } from '../../src/domain';
 import { runBuild } from '../../src/phases/build';
+import { runDesign } from '../../src/phases/design';
 import {
   asking,
   buildState,
@@ -342,7 +343,7 @@ describe('runBuild', () => {
     expect(state.phase).toBe('DELIVER');
   });
 
-  it('งาน quick ไม่ผ่านครบรอบ: เลือก full -> ยกระดับไป DESIGN และ log', async () => {
+  it('งาน quick ไม่ผ่านครบรอบ: เลือก full -> ยกระดับไป DESIGN และ log, ล้าง design/progress พร้อม feedback ให้ Planning', async () => {
     const events: { event: string; data?: Record<string, unknown> }[] = [];
     const design = quickDesign(makeRequirements(), makeQuickTask());
     const state = buildState(design);
@@ -359,9 +360,21 @@ describe('runBuild', () => {
     expect(state.phase).toBe('DESIGN');
     expect(state.level).toBe('full');
     expect(state.quickTask).toBeUndefined();
+    expect(state.design).toBeUndefined();
+    expect(state.progress).toEqual({});
+    expect(state.designFeedback).toContain(`ลองทำแบบ quick (task "${makeQuickTask().title}")`);
+    expect(state.designFeedback).toContain('ผิด');
     expect(io.asked.at(-1)).toContain('full = ยกระดับเป็นแบบเต็ม');
     expect(events.find((e) => e.event === 'escalate.decision')?.data).toMatchObject({ decision: 'full' });
     expect(events.find((e) => e.event === 'level.decided')?.data).toMatchObject({ level: 'full', by: 'user' });
+
+    // ต่อ: ไป DESIGN แล้ว Planning ต้องไม่เห็น design สังเคราะห์เดิมเป็น previousDesign แต่เห็น feedback ที่บอกปัญหาที่ค้าง
+    const { deps: designDeps, runner: designRunner } = makeDeps({ plans: [makeDesign()] }, []);
+    await runDesign(designDeps, state);
+
+    const planInput = designRunner.calls[0]!.input as PlanInput;
+    expect(planInput.previousDesign).toBeUndefined();
+    expect(planInput.feedback).toContain('ลองทำแบบ quick');
   });
 
   it('งาน full: ตัวเลือก escalate ไม่มี full', async () => {

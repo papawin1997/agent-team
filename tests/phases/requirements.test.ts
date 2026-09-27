@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PmInput } from '../../src/deps';
+import { initProgress, quickDesign } from '../../src/domain';
 import { runRequirements } from '../../src/phases/requirements';
 import { newState } from '../../src/state';
 import { asking, makeQuickTask, makeRequirements, proposal, quickProposal } from '../helpers/builders';
@@ -249,6 +250,66 @@ describe('runRequirements', () => {
     deps.levelPreference = 'quick';
     await runRequirements(deps, newState());
     expect(pmInput(runner, 0).prompt).toBe('[ผู้ใช้ขอโหมด quick ถ้างานเข้าเกณฑ์]\nแก้คำผิด');
+  });
+
+  it('PM เปลี่ยนข้อเสนอเป็น full ระหว่างตัดสินใจ quick: ไม่รับ quick แบบเงียบ ๆ ถามยืนยันแบบ full แทน', async () => {
+    const events: { event: string; data?: Record<string, unknown> }[] = [];
+    const { deps, io } = makeDeps(
+      { pm: [quickProposal(), proposal()] },
+      ['แก้คำผิด', 'ทำไมถึงเสนอ quick', 'quick', 'confirm'],
+    );
+    deps.log = { log: (_level, event, data) => events.push({ event, data }) };
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(io.said.join('\n')).toContain('PM เปลี่ยนข้อเสนอเป็น full แล้ว');
+    expect(state.phase).toBe('DESIGN');
+    expect(state.level).toBe('full');
+    expect(state.quickTask).toBeUndefined();
+    expect(events.find((e) => e.event === 'level.decided')?.data).toMatchObject({ level: 'full', by: 'pm' });
+  });
+
+  it('risk flags เปลี่ยนระหว่างตัดสินใจ quick (ยังเสนอ quick อยู่): เตือนใหม่และ log flags ล่าสุด', async () => {
+    const events: { event: string; data?: Record<string, unknown> }[] = [];
+    const risky = { ...makeRequirements(), goal: 'เพิ่มปุ่ม login' };
+    const { deps, io } = makeDeps(
+      { pm: [quickProposal(), quickProposal(risky)] },
+      ['แก้คำผิด', 'ทำไมถึงเสนอ quick', 'full'],
+    );
+    deps.log = { log: (_level, event, data) => events.push({ event, data }) };
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(io.said.join('\n')).toContain('⚠ งานนี้แตะเรื่อง auth — แนะนำ full (มีขั้นออกแบบและตรวจ Security)');
+    expect(state.phase).toBe('DESIGN');
+    expect(state.level).toBe('full');
+    expect(events.find((e) => e.event === 'level.decided')?.data).toMatchObject({
+      level: 'full',
+      by: 'user',
+      riskFlags: ['auth'],
+    });
+  });
+
+  it('งานเดิมเคยเป็น quick แล้วขอแก้ตอน DELIVER จน PM เสนอ full: ล้าง design/progress ให้ Planning เริ่มใหม่', async () => {
+    const quickTask = makeQuickTask();
+    const design = quickDesign(makeRequirements(), quickTask);
+    const { deps } = makeDeps({ pm: [proposal()] }, ['confirm']);
+    const state = newState();
+    state.phase = 'REQUIREMENTS';
+    state.level = 'quick';
+    state.quickTask = quickTask;
+    state.requirements = makeRequirements();
+    state.design = design;
+    state.progress = initProgress(design, {}, 2);
+    state.pendingPrompt = 'ขอเพิ่มฟีเจอร์ค้นหา';
+    state.pmSessionId = 'pm-session';
+    await runRequirements(deps, state);
+
+    expect(state.phase).toBe('DESIGN');
+    expect(state.level).toBe('full');
+    expect(state.quickTask).toBeUndefined();
+    expect(state.design).toBeUndefined();
+    expect(state.progress).toEqual({});
   });
 
   describe('PM ตอบไม่สำเร็จ ไม่ทำให้ทั้ง run หยุด', () => {

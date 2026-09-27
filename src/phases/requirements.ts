@@ -1,8 +1,8 @@
 import type { Deps } from '../deps';
-import { initProgress, quickDesign } from '../domain';
+import { initProgress, quickDesign, QUICK_TASK_ID } from '../domain';
 import { formatQuickTask, formatRequirements } from '../format';
 import { askNonEmpty, decide } from '../io-util';
-import { nullLogger } from '../logger';
+import { logLevelDecided } from '../level';
 import { riskFlags, riskText, type RiskCategory } from '../risk';
 import type { Level, PmTurn } from '../schemas';
 import type { State } from '../state';
@@ -46,7 +46,7 @@ export async function runRequirements(deps: Deps, state: State): Promise<void> {
       if (retry !== '') prompt = retry;
       continue;
     }
-    let { turn } = response;
+    const { turn } = response;
     state.pmSessionId = response.sessionId;
     await store.save(state);
     io.say(`\n[PM] ${turn.message}\n`);
@@ -58,22 +58,7 @@ export async function runRequirements(deps: Deps, state: State): Promise<void> {
         prompt = await askNonEmpty(io, 'อยากปรับอะไร?\n> ');
         continue;
       }
-      const decision = await decide(deps, state, 'ยืนยัน requirements นี้ไหม?', ['confirm', 'revise'] as const, (newTurn) => {
-        if (newTurn.status === 'proposal' && newTurn.requirements) {
-          turn = newTurn;
-          io.say(formatRequirements(newTurn.requirements));
-        }
-      });
-      if (decision === 'confirm') {
-        state.requirements = turn.requirements!;
-        state.level = 'full';
-        state.quickTask = undefined;
-        state.phase = 'DESIGN';
-        await store.saveArtifact('requirements.json', turn.requirements!);
-        logLevel(deps, 'full', deps.levelPreference === 'full' ? 'user' : 'pm', turn.levelReason, []);
-        await store.save(state);
-        return;
-      }
+      if (await confirmAsFull(deps, state, turn)) return;
       prompt = await askNonEmpty(io, 'อยากปรับอะไร?\n> ');
       continue;
     }
@@ -85,8 +70,45 @@ function offersQuick(deps: Deps, turn: PmTurn): boolean {
   return deps.levelPreference !== 'full' && turn.level === 'quick' && turn.quickTask !== undefined;
 }
 
-function logLevel(deps: Deps, level: Level, by: 'pm' | 'user', reason: string | undefined, flags: RiskCategory[]): void {
-  (deps.log ?? nullLogger).log('INFO', 'level.decided', { level, by, reason, riskFlags: flags });
+/**
+ * ล้าง design สังเคราะห์ของโหมด quick (ถ้ามี) ก่อนตัดสินว่างานนี้เป็น full
+ * เพื่อให้ Planning เริ่มออกแบบใหม่จริง ๆ ไม่เห็น design 1 task ของโหมด quick เป็น previousDesign
+ */
+function clearStaleQuickDesign(state: State): void {
+  const hadQuickDesign =
+    state.level === 'quick' ||
+    (state.design !== undefined && state.design.tasks.length === 1 && state.design.tasks[0]?.id === QUICK_TASK_ID);
+  if (hadQuickDesign) {
+    state.design = undefined;
+    state.progress = {};
+  }
+}
+
+/** ยอมรับ turn นี้เป็นงาน full: confirm = ไป DESIGN, revise = คุยต่อ (false ให้ผู้เรียกไปถาม "อยากปรับอะไร?") */
+async function confirmAsFull(deps: Deps, state: State, turn: PmTurn): Promise<boolean> {
+  const { io } = deps;
+  let current = turn;
+  const decision = await decide(deps, state, 'ยืนยัน requirements นี้ไหม?', ['confirm', 'revise'] as const, (newTurn) => {
+    if (newTurn.status === 'proposal' && newTurn.requirements) {
+      current = newTurn;
+      io.say(formatRequirements(newTurn.requirements));
+    }
+  });
+  if (decision !== 'confirm') return false;
+  await acceptFull(deps, state, current);
+  return true;
+}
+
+async function acceptFull(deps: Deps, state: State, turn: PmTurn): Promise<void> {
+  const { store, levelPreference } = deps;
+  clearStaleQuickDesign(state);
+  state.requirements = turn.requirements!;
+  state.level = 'full';
+  state.quickTask = undefined;
+  state.phase = 'DESIGN';
+  await store.saveArtifact('requirements.json', turn.requirements!);
+  logLevelDecided(deps, 'full', levelPreference === 'full' ? 'user' : 'pm', turn.levelReason, []);
+  await store.save(state);
 }
 
 /** PM เสนอ quick: ให้ user เลือก quick/full/revise — true = ตัดสินแล้ว (ไป BUILD หรือ DESIGN), false = revise */
@@ -97,21 +119,34 @@ async function decideLevel(deps: Deps, state: State, first: PmTurn): Promise<boo
     if (t.quickTask) io.say(formatQuickTask(t.quickTask));
     if (t.levelReason) io.say(`ระดับที่ PM เสนอ: ${t.level ?? 'full'} — ${t.levelReason}`);
   };
+  const warn = (f: readonly RiskCategory[]): void => {
+    if (f.length) io.say(`⚠ งานนี้แตะเรื่อง ${f.join(', ')} — แนะนำ full (มีขั้นออกแบบและตรวจ Security)`);
+  };
   show(turn);
-  const flags = riskFlags(riskText(turn.requirements!, turn.quickTask));
-  if (flags.length) io.say(`⚠ งานนี้แตะเรื่อง ${flags.join(', ')} — แนะนำ full (มีขั้นออกแบบและตรวจ Security)`);
+  let flags = riskFlags(riskText(turn.requirements!, turn.quickTask));
+  warn(flags);
   const options: readonly ('quick' | 'full' | 'revise')[] = flags.length
     ? ['full', 'quick', 'revise']
     : ['quick', 'full', 'revise'];
 
   const decision = await decide(deps, state, LEVEL_PROMPT, options, (newTurn) => {
-    if (newTurn.status === 'proposal' && newTurn.requirements) {
-      turn = newTurn;
-      io.say(formatRequirements(newTurn.requirements));
-      show(newTurn);
-    }
+    if (newTurn.status !== 'proposal' || !newTurn.requirements) return;
+    turn = newTurn;
+    io.say(formatRequirements(newTurn.requirements));
+    show(newTurn);
+    const newFlags = riskFlags(riskText(newTurn.requirements, newTurn.quickTask));
+    const changed = newFlags.length !== flags.length || newFlags.some((f, i) => f !== flags[i]);
+    if (offersQuick(deps, newTurn) && changed) warn(newFlags);
+    flags = newFlags;
   });
   if (decision === 'revise') return false;
+
+  if (decision === 'quick' && !offersQuick(deps, turn)) {
+    // PM เปลี่ยนข้อเสนอระหว่างที่ user กำลังตัดสินใจ (ไม่เสนอ quick แล้ว): quick ที่เลือกไว้ใช้ไม่ได้กับ turn ล่าสุด
+    // ห้ามยอมรับ quick แบบเงียบ ๆ — บอก user แล้วถามยืนยันแบบ full ตามปกติ
+    io.say('PM เปลี่ยนข้อเสนอเป็น full แล้ว');
+    return confirmAsFull(deps, state, turn);
+  }
 
   const requirements = turn.requirements!;
   state.requirements = requirements;
@@ -125,11 +160,12 @@ async function decideLevel(deps: Deps, state: State, first: PmTurn): Promise<boo
     state.phase = 'BUILD';
     await store.saveArtifact('design.json', design);
   } else {
+    clearStaleQuickDesign(state);
     state.level = 'full';
     state.quickTask = undefined;
     state.phase = 'DESIGN';
   }
-  logLevel(deps, state.level, turn.level === state.level ? 'pm' : 'user', turn.levelReason, flags);
+  logLevelDecided(deps, state.level, turn.level === state.level ? 'pm' : 'user', turn.levelReason, flags);
   await store.save(state);
   return true;
 }
