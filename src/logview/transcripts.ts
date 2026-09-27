@@ -34,11 +34,27 @@ interface ParsedEntry {
   entry: Json;
 }
 
+/** หนึ่ง entry ของ transcript ที่แปลงเป็น step (ตัดความยาวแล้ว) พร้อมเวลาของมัน เก็บเฉพาะ entry ที่ให้ step จริง */
+interface ClippedEntry {
+  t: number;
+  steps: TranscriptStep[];
+}
+
+/** ผลของการพาร์ส+แปลงไฟล์ transcript หนึ่งไฟล์ ไม่เก็บ entry ดิบ (JSON เต็มของ prompt/ผล tool) ไว้เลย */
+interface ParsedFile {
+  /** เวลาของ entry แรกที่มี timestamp (ใช้กับ findByTime) */
+  firstTimestamp?: number;
+  /** entry แรกมี entrypoint 'sdk-ts' หรือไม่ (ไฟล์จาก Agent SDK จริง ไม่ใช่ session แบบโต้ตอบที่ผู้ใช้เปิด claude เอง) */
+  isSdk: boolean;
+  clipped: ClippedEntry[];
+}
+
 /**
- * cache ของไฟล์ transcript ที่พาร์สแล้ว คีย์ด้วย path ไฟล์ ตรวจว่ายังไม่เปลี่ยนด้วย size+mtimeMs
+ * cache ของไฟล์ transcript ที่พาร์ส+แปลงแล้ว คีย์ด้วย path ไฟล์ ตรวจว่ายังไม่เปลี่ยนด้วย size+mtimeMs
  * ใช้ตอน --live เพื่อไม่ต้องอ่าน/พาร์สไฟล์เดิมซ้ำทุกครั้งที่ /data ถูก poll (ทุก 3 วินาที)
+ * เก็บเฉพาะ step ที่ตัดความยาวแล้วต่อ timestamp ไม่เก็บ entry ดิบ (prompt/ผล tool เต็ม ๆ) ไว้ตลอดอายุ server
  */
-export type TranscriptCache = Map<string, { size: number; mtimeMs: number; entries: ParsedEntry[] }>;
+export type TranscriptCache = Map<string, ParsedFile & { size: number; mtimeMs: number }>;
 
 export function createTranscriptCache(): TranscriptCache {
   return new Map();
@@ -59,26 +75,43 @@ function parseJsonl(jsonl: string): ParsedEntry[] {
   return entries;
 }
 
-/** อ่าน+พาร์สไฟล์ (ใช้ cache ถ้ามีและไฟล์ไม่เปลี่ยน) */
-function loadEntries(file: string, cache?: TranscriptCache): ParsedEntry[] {
+/** พาร์ส jsonl แล้วแปลงเป็น step ทันที (ตัดความยาวแล้ว) เพื่อไม่ต้องเก็บ entry ดิบต่อ */
+function parseAndClip(jsonl: string): ParsedFile {
+  const entries = parseJsonl(jsonl);
+  let firstTimestamp: number | undefined;
+  let isSdk = false;
+  const clipped: ClippedEntry[] = [];
+  for (const { timestamp, entry } of entries) {
+    const t = Date.parse(timestamp);
+    if (firstTimestamp === undefined) {
+      firstTimestamp = t;
+      isSdk = entry.entrypoint === 'sdk-ts';
+    }
+    const steps = toSteps(entry, timestamp);
+    if (steps.length) clipped.push({ t, steps });
+  }
+  return { firstTimestamp, isSdk, clipped };
+}
+
+/** อ่าน+พาร์ส+แปลงไฟล์ (ใช้ cache ถ้ามีและไฟล์ไม่เปลี่ยน) */
+function loadFile(file: string, cache?: TranscriptCache): ParsedFile {
   if (cache) {
     const st = fs.statSync(file);
     const hit = cache.get(file);
-    if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.entries;
-    const entries = parseJsonl(fs.readFileSync(file, 'utf8'));
-    cache.set(file, { size: st.size, mtimeMs: st.mtimeMs, entries });
-    return entries;
+    if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit;
+    const parsed = parseAndClip(fs.readFileSync(file, 'utf8'));
+    const cached = { size: st.size, mtimeMs: st.mtimeMs, ...parsed };
+    cache.set(file, cached);
+    return cached;
   }
-  return parseJsonl(fs.readFileSync(file, 'utf8'));
+  return parseAndClip(fs.readFileSync(file, 'utf8'));
 }
 
-function sliceEntries(entries: ParsedEntry[], from: string, to?: string): TranscriptStep[] {
+function sliceClipped(clipped: ClippedEntry[], from: string, to?: string): TranscriptStep[] {
   const [lo, hi] = windowOf(from, to);
   const steps: TranscriptStep[] = [];
-  for (const { timestamp, entry } of entries) {
-    const t = Date.parse(timestamp);
-    if (!(t >= lo && t <= hi)) continue;
-    steps.push(...toSteps(entry, timestamp));
+  for (const { t, steps: s } of clipped) {
+    if (t >= lo && t <= hi) steps.push(...s);
   }
   return steps;
 }
@@ -100,7 +133,7 @@ const windowOf = (from: string, to?: string): [number, number] => [
 
 /** แปลง transcript (jsonl) เป็น step เฉพาะ entry ที่เวลาอยู่ในช่วง from..to */
 export function sliceTranscript(jsonl: string, from: string, to?: string): TranscriptStep[] {
-  return sliceEntries(parseJsonl(jsonl), from, to);
+  return sliceClipped(parseAndClip(jsonl).clipped, from, to);
 }
 
 function toSteps(entry: Json, time: string): TranscriptStep[] {
@@ -163,7 +196,7 @@ export function loadCallTranscript(dir: string, call: AgentCall, opts: LoadCallT
     };
   }
   try {
-    return { file, steps: sliceEntries(loadEntries(file, opts.cache), call.start, call.end) };
+    return { file, steps: sliceClipped(loadFile(file, opts.cache).clipped, call.start, call.end) };
   } catch (e) {
     return { file, steps: [], note: `อ่าน transcript ไม่ได้: ${e instanceof Error ? e.message : String(e)}` };
   }
@@ -189,9 +222,11 @@ function findByTime(dir: string, call: AgentCall, opts: LoadCallTranscriptOpts):
     const file = path.join(dir, name);
     try {
       if (fs.statSync(file).mtimeMs < lo) continue;
-      const entries = loadEntries(file, opts.cache);
-      const first = entries[0] ? Date.parse(entries[0].timestamp) : undefined;
+      const parsed = loadFile(file, opts.cache);
+      const first = parsed.firstTimestamp;
       if (first === undefined || !(first >= lo && first <= hi)) continue;
+      // กัน session Claude Code แบบโต้ตอบที่ผู้ใช้เปิดเองในโฟลเดอร์เดียวกัน (entrypoint ไม่ใช่ sdk-ts)
+      if (!parsed.isSdk) continue;
       const diff = Math.abs(first - startMs);
       if (!best || diff < best.diff) best = { file, diff };
     } catch {

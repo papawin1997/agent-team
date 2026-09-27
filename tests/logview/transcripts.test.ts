@@ -15,11 +15,19 @@ import {
 const at = (ms: string) => `2026-01-10T09:${ms}.000Z`;
 const jsonl = (...entries: unknown[]) => `${entries.map((e) => JSON.stringify(e)).join('\n')}\n`;
 
-// รูปแบบเลียนแบบ transcript จริงของ Claude Agent SDK
+// รูปแบบเลียนแบบ transcript จริงของ Claude Agent SDK (entrypoint: 'sdk-ts' = มาจาก Agent SDK จริง ไม่ใช่ session
+// แบบโต้ตอบที่ผู้ใช้เปิด `claude` เอง ซึ่งจะมี entrypoint เป็น 'cli')
 const userPrompt = (ms: string) => ({
   type: 'user',
   timestamp: at(ms),
+  entrypoint: 'sdk-ts',
   message: { role: 'user', content: [{ type: 'text', text: 'Task under review: ...' }] },
+});
+const interactivePrompt = (ms: string) => ({
+  type: 'user',
+  timestamp: at(ms),
+  entrypoint: 'cli',
+  message: { role: 'user', content: [{ type: 'text', text: 'สวัสดี' }] },
 });
 const toolUse = (ms: string) => ({
   type: 'assistant',
@@ -182,6 +190,20 @@ describe('loadCallTranscript', () => {
     const t = loadCallTranscript(dir, call(), { exclude: new Set(['claimed.jsonl']) });
     expect(t.file).toBe(path.join(dir, 'other.jsonl'));
   });
+
+  it('ไฟล์ session ส่วนตัวของผู้ใช้ (entry แรกไม่มี entrypoint sdk-ts) ในช่วงเวลาเดียวกัน -> ไม่ถูกเลือก', async () => {
+    await fs.writeFile(path.join(dir, 'interactive.jsonl'), jsonl(interactivePrompt('01:00'), overloaded('03:00')));
+    const t = loadCallTranscript(dir, call());
+    expect(t.file).toBeUndefined();
+    expect(t.note).toContain('ไม่พบ transcript');
+  });
+
+  it('ไฟล์ interactive อยู่ในโฟลเดอร์เดียวกับไฟล์ sdk-ts ตัวจริง -> เลือกไฟล์ sdk-ts เท่านั้น', async () => {
+    await fs.writeFile(path.join(dir, 'interactive.jsonl'), jsonl(interactivePrompt('01:00'), overloaded('03:00')));
+    await fs.writeFile(path.join(dir, 'match.jsonl'), jsonl(userPrompt('01:00'), overloaded('03:00')));
+    const t = loadCallTranscript(dir, call());
+    expect(t.file).toBe(path.join(dir, 'match.jsonl'));
+  });
 });
 
 describe('TranscriptCache', () => {
@@ -190,25 +212,52 @@ describe('TranscriptCache', () => {
     dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-team-tx-cache-'));
   });
 
-  it('ไฟล์เดิมไม่เปลี่ยน -> ใช้ entries ที่พาร์สไว้ซ้ำ (ไม่พาร์สใหม่), ไฟล์เปลี่ยนแล้ว -> พาร์สใหม่', async () => {
+  it('ไฟล์เดิมไม่เปลี่ยน -> ใช้ steps ที่แปลงไว้ซ้ำ (ไม่พาร์สใหม่), ไฟล์เปลี่ยนแล้ว -> พาร์สใหม่', async () => {
     const file = path.join(dir, 's-qa.jsonl');
     await fs.writeFile(file, jsonl(overloaded('03:00')));
     const cache = createTranscriptCache();
 
     const t1 = loadCallTranscript(dir, call({ sessionId: 's-qa' }), { cache });
-    const entries1 = cache.get(file)?.entries;
+    const clipped1 = cache.get(file)?.clipped;
     expect(t1.steps).toHaveLength(1);
-    expect(entries1).toBeDefined();
+    expect(clipped1).toBeDefined();
 
     const t2 = loadCallTranscript(dir, call({ sessionId: 's-qa' }), { cache });
-    const entries2 = cache.get(file)?.entries;
+    const clipped2 = cache.get(file)?.clipped;
     expect(t2.steps).toEqual(t1.steps);
-    expect(entries2).toBe(entries1); // อ้างอิงเดียวกัน = ไม่ได้พาร์สไฟล์ใหม่
+    expect(clipped2).toBe(clipped1); // อ้างอิงเดียวกัน = ไม่ได้พาร์สไฟล์ใหม่
 
     await fs.writeFile(file, jsonl(overloaded('03:00'), overloaded('04:00')));
     const t3 = loadCallTranscript(dir, call({ sessionId: 's-qa' }), { cache });
-    const entries3 = cache.get(file)?.entries;
+    const clipped3 = cache.get(file)?.clipped;
     expect(t3.steps).toHaveLength(2);
-    expect(entries3).not.toBe(entries1); // ไฟล์เปลี่ยน (size ต่าง) -> พาร์สใหม่
+    expect(clipped3).not.toBe(clipped1); // ไฟล์เปลี่ยน (size ต่าง) -> พาร์สใหม่
+  });
+
+  it('cache ไม่เก็บ entry ดิบของ transcript (เก็บแค่ steps ที่ตัด/แปลงแล้วต่อ timestamp)', async () => {
+    const file = path.join(dir, 's-qa.jsonl');
+    await fs.writeFile(file, jsonl(toolUse('02:00'), overloaded('03:00')));
+    const cache = createTranscriptCache();
+
+    loadCallTranscript(dir, call({ sessionId: 's-qa' }), { cache });
+    const cached = cache.get(file);
+    expect(cached).toBeDefined();
+    expect(cached).not.toHaveProperty('entries');
+    expect(Array.isArray(cached!.clipped)).toBe(true);
+    expect(cached!.clipped.length).toBeGreaterThan(0);
+    for (const c of cached!.clipped) {
+      expect(c).not.toHaveProperty('entry');
+      expect(typeof c.t).toBe('number');
+      expect(Array.isArray(c.steps)).toBe(true);
+    }
+  });
+
+  it('findByTime ใช้ cache เดียวกัน: เก็บ firstTimestamp ไว้พอสำหรับหาไฟล์ตามเวลา', async () => {
+    await fs.writeFile(path.join(dir, 'match.jsonl'), jsonl(userPrompt('01:00'), overloaded('03:00')));
+    const cache = createTranscriptCache();
+    const t = loadCallTranscript(dir, call(), { cache });
+    expect(t.file).toBe(path.join(dir, 'match.jsonl'));
+    const cached = cache.get(path.join(dir, 'match.jsonl'));
+    expect(cached?.firstTimestamp).toBe(Date.parse(at('01:00')));
   });
 });
