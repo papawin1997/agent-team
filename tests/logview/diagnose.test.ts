@@ -32,6 +32,13 @@ const apiError = (status: number | undefined, message: string, networkDown = fal
 });
 const tx = (entries: [number, TranscriptStep[]][]): Map<number, CallTranscript> =>
   new Map(entries.map(([id, steps]) => [id, { steps }]));
+const retryEvent = (ms: string, over: Partial<Record<string, unknown>> = {}, role = 'qa'): LogEvent => ({
+  line: 1,
+  time: at(ms),
+  level: 'WARN',
+  event: 'agent.api_retry',
+  data: { role, attempt: 1, maxRetries: 3, status: 529, error: 'overloaded', ...over },
+});
 const deny = (ms: string, role = 'qa'): LogEvent => ({
   line: 1,
   time: at(ms),
@@ -211,5 +218,65 @@ describe('diagnoseRun', () => {
     const f = diagnoseRun(run([call(0, { status: 'failed', subtype: 'error_max_turns' })]), new Map());
     expect(f).toHaveLength(1);
     expect(f[0]!.title).toBe('agent qa ใช้ turn ครบ maxTurns');
+  });
+
+  it('agent.api_retry ใน log (ไม่มี transcript เลย) -> ยังขึ้น finding 529 ได้', () => {
+    const f = diagnoseRun(
+      run([call(0, { status: 'failed' })], { events: [retryEvent('02:00', { status: 529, error: 'overloaded' })] }),
+      new Map(),
+    );
+    expect(f.map((x) => x.title)).toEqual(['API ของ Anthropic รับโหลดไม่ไหว (529 Overloaded)']);
+    expect(f[0]).toMatchObject({ count: 1, callIds: [0] });
+  });
+
+  it('มีทั้ง agent.api_retry ใน log และ api_error ใน transcript -> นับจาก log แหล่งเดียว ไม่นับซ้ำ', () => {
+    const f = diagnoseRun(
+      run([call(0, { status: 'failed' })], { events: [retryEvent('02:00', { status: 529, error: 'overloaded' })] }),
+      tx([[0, [apiError(529, '529 Overloaded'), apiError(529, '529 Overloaded')]]]),
+    );
+    expect(f).toHaveLength(1);
+    expect(f[0]).toMatchObject({
+      title: 'API ของ Anthropic รับโหลดไม่ไหว (529 Overloaded)',
+      count: 1,
+    });
+  });
+
+  it('agent.api_retry error billing_error -> finding auth (login/สิทธิ์)', () => {
+    const f = diagnoseRun(
+      run([call(0, { status: 'failed' })], {
+        events: [retryEvent('02:00', { status: null, error: 'billing_error' })],
+      }),
+      new Map(),
+    );
+    expect(f.map((x) => x.title)).toEqual(['login/สิทธิ์ใช้งานมีปัญหา (401/403)']);
+  });
+
+  it('agent.api_retry ของ role อื่น หรือเวลานอกช่วง call -> ไม่ถูกนับ', () => {
+    const f = diagnoseRun(
+      run([call(0, { status: 'failed' })], {
+        events: [retryEvent('02:00', {}, 'backend'), retryEvent('20:00', {})],
+      }),
+      new Map(),
+    );
+    // ไม่มี event ที่ match role qa ในช่วงเวลา call -> fallback ไปเป็น "ไม่ส่งผลลัพธ์"
+    expect(f.map((x) => x.title)).toEqual(['agent qa จบโดยไม่ส่งผลลัพธ์ (structured output)']);
+  });
+
+  it('agent.api_retry error rate_limit -> finding rate_limit, error อื่น ๆ ที่ไม่รู้จัก -> api_other', () => {
+    const f = diagnoseRun(
+      run([call(0, { status: 'failed' })], {
+        events: [retryEvent('02:00', { status: 429, error: 'rate_limit' })],
+      }),
+      new Map(),
+    );
+    expect(f.map((x) => x.title)).toEqual(['ชนลิมิตการใช้งาน (429 rate limit)']);
+
+    const f2 = diagnoseRun(
+      run([call(0, { status: 'failed' })], {
+        events: [retryEvent('02:00', { status: 500, error: 'server_error' })],
+      }),
+      new Map(),
+    );
+    expect(f2.map((x) => x.title)).toEqual(['API error อื่น ๆ']);
   });
 });

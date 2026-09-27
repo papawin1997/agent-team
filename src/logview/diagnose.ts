@@ -46,6 +46,28 @@ const apiErrors = (t: CallTranscript | undefined): ApiError[] =>
 const inWindow = (ev: LogEvent, call: AgentCall): boolean =>
   ev.time >= call.start && (call.end === undefined || ev.time <= call.end);
 
+type RetryCategory = 'overloaded' | 'rate_limit' | 'auth' | 'other';
+
+/** SDKAssistantMessageError ที่ถือว่าเป็นปัญหา login/สิทธิ์ (sdk.d.ts: SDKAssistantMessageError) */
+const AUTH_RETRY_ERRORS = new Set([
+  'authentication_failed',
+  'oauth_org_not_allowed',
+  'account_on_hold',
+  'verification_required',
+  'billing_error',
+]);
+
+/** จัดหมวด agent.api_retry (จาก log ของ runner) ตาม error/status ของ SDKAPIRetryMessage */
+function categorizeRetry(data: Record<string, unknown>): RetryCategory {
+  const error = typeof data.error === 'string' ? data.error : undefined;
+  const status = typeof data.status === 'number' ? data.status : undefined;
+  if (error === 'overloaded' || status === 529) return 'overloaded';
+  if (error === 'rate_limit' || status === 429) return 'rate_limit';
+  if ((error && AUTH_RETRY_ERRORS.has(error)) || status === 401 || status === 403) return 'auth';
+  // status null ไม่มี error category ที่รู้จัก (รวม error 'unknown' + status null) ไม่สามารถเดาได้ว่าเป็นเน็ตหลุด -> other
+  return 'other';
+}
+
 export function diagnoseRun(run: Run, transcripts: ReadonlyMap<number, CallTranscript>): Finding[] {
   const found = new Map<string, Finding>();
   const add = (key: string, base: Base, callId: number, count = 1): void => {
@@ -57,38 +79,78 @@ export function diagnoseRun(run: Run, transcripts: ReadonlyMap<number, CallTrans
   const denials = run.events.filter((e) => e.event === 'guard.deny');
 
   for (const call of run.calls) {
-    const errs = apiErrors(transcripts.get(call.id));
-    const taken = new Set<ApiError>();
-    const pick = (test: (e: ApiError) => boolean): ApiError[] => {
-      const hits = errs.filter((e) => !taken.has(e) && test(e));
-      hits.forEach((e) => taken.add(e));
-      return hits;
-    };
-    const network = pick((e) => e.networkDown);
-    const overloaded = pick((e) => e.status === 529 || /overloaded/i.test(e.message));
-    const rate = pick((e) => e.status === 429);
-    const auth = pick((e) => e.status === 401 || e.status === 403);
-    const other = pick(() => true);
+    // agent.api_retry ที่ runner บันทึกลง log เอง (มี type ชัดเจนจาก SDK): ถ้ามีให้ใช้เป็นแหล่งเดียว ไม่นับซ้ำกับ transcript
+    const retryEvents = run.events.filter(
+      (e) => e.event === 'agent.api_retry' && e.data.role === call.role && inWindow(e, call),
+    );
+    const errs = retryEvents.length ? [] : apiErrors(transcripts.get(call.id));
+    const hasApiIssue = retryEvents.length > 0 || errs.length > 0;
     let contributed = 0;
-    if (network.length) {
-      add('network', NETWORK, call.id, network.length);
-      contributed++;
-    }
-    if (overloaded.length) {
-      add('overloaded', OVERLOADED, call.id, overloaded.length);
-      contributed++;
-    }
-    if (rate.length) {
-      add('rate_limit', RATE_LIMIT, call.id, rate.length);
-      contributed++;
-    }
-    if (auth.length) {
-      add('auth', AUTH, call.id, auth.length);
-      contributed++;
-    }
-    if (other.length) {
-      add('api_other', { severity: 'warn', title: 'API error อื่น ๆ', detail: other[0]!.message }, call.id, other.length);
-      contributed++;
+
+    if (retryEvents.length) {
+      const buckets: Record<RetryCategory, number> = { overloaded: 0, rate_limit: 0, auth: 0, other: 0 };
+      for (const e of retryEvents) buckets[categorizeRetry(e.data)]++;
+      if (buckets.overloaded) {
+        add('overloaded', OVERLOADED, call.id, buckets.overloaded);
+        contributed++;
+      }
+      if (buckets.rate_limit) {
+        add('rate_limit', RATE_LIMIT, call.id, buckets.rate_limit);
+        contributed++;
+      }
+      if (buckets.auth) {
+        add('auth', AUTH, call.id, buckets.auth);
+        contributed++;
+      }
+      if (buckets.other) {
+        const first = retryEvents.find((e) => categorizeRetry(e.data) === 'other')!;
+        const status = typeof first.data.status === 'number' ? first.data.status : undefined;
+        const error = typeof first.data.error === 'string' ? first.data.error : 'unknown';
+        add(
+          'api_other',
+          { severity: 'warn', title: 'API error อื่น ๆ', detail: `${error}${status !== undefined ? ` (status ${status})` : ''}` },
+          call.id,
+          buckets.other,
+        );
+        contributed++;
+      }
+    } else {
+      const taken = new Set<ApiError>();
+      const pick = (test: (e: ApiError) => boolean): ApiError[] => {
+        const hits = errs.filter((e) => !taken.has(e) && test(e));
+        hits.forEach((e) => taken.add(e));
+        return hits;
+      };
+      const network = pick((e) => e.networkDown);
+      const overloaded = pick((e) => e.status === 529 || /overloaded/i.test(e.message));
+      const rate = pick((e) => e.status === 429);
+      const auth = pick((e) => e.status === 401 || e.status === 403);
+      const other = pick(() => true);
+      if (network.length) {
+        add('network', NETWORK, call.id, network.length);
+        contributed++;
+      }
+      if (overloaded.length) {
+        add('overloaded', OVERLOADED, call.id, overloaded.length);
+        contributed++;
+      }
+      if (rate.length) {
+        add('rate_limit', RATE_LIMIT, call.id, rate.length);
+        contributed++;
+      }
+      if (auth.length) {
+        add('auth', AUTH, call.id, auth.length);
+        contributed++;
+      }
+      if (other.length) {
+        add(
+          'api_other',
+          { severity: 'warn', title: 'API error อื่น ๆ', detail: other[0]!.message },
+          call.id,
+          other.length,
+        );
+        contributed++;
+      }
     }
 
     if (call.subtype === 'error_max_turns') {
@@ -116,7 +178,7 @@ export function diagnoseRun(run: Run, transcripts: ReadonlyMap<number, CallTrans
       contributed++;
     }
     const denied = denials.some((e) => e.data.role === call.role && inWindow(e, call));
-    if (call.status === 'failed' && call.subtype === 'success' && errs.length === 0 && !denied) {
+    if (call.status === 'failed' && call.subtype === 'success' && !hasApiIssue && !denied) {
       add(
         `no_output:${call.role}`,
         {
@@ -132,7 +194,7 @@ export function diagnoseRun(run: Run, transcripts: ReadonlyMap<number, CallTrans
       call.subtype === 'no_result' ||
       call.subtype === 'exception' ||
       (call.status === 'unfinished' && run.status !== 'unfinished' && run.status !== 'interrupted');
-    if (stopped && errs.length === 0) {
+    if (stopped && !hasApiIssue) {
       add(
         `no_result:${call.role}`,
         {

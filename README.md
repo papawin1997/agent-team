@@ -89,6 +89,7 @@ Ctrl+C หยุดได้ทุกเมื่อ: state ถูกบัน�
 
 - แบบปกติเขียนไฟล์ `<project>/.agent-team/logs.html` (ไฟล์เดียว เปิด offline ได้) แล้วเปิดเบราว์เซอร์ให้ ถ้าเบราว์เซอร์ไม่เปิดเอง ให้เปิดไฟล์ตาม path ที่พิมพ์ไว้
 - บนสุดคือกล่อง "สาเหตุที่น่าจะเป็น" ที่วิเคราะห์จาก log + transcript ของ agent: 529 Overloaded (เซิร์ฟเวอร์ Anthropic รับโหลดไม่ไหว), เชื่อมต่อ API ไม่ได้, 429 rate limit, 401/403, ใช้ turn/งบเกิน, guard ปฏิเสธคำสั่ง, agent จบโดยไม่ส่งผลลัพธ์, agent หยุดกลางคัน
+- ตั้งแต่รุ่นที่ runner บันทึก `agent.api_retry` เอง (SDK ส่ง `system/api_retry` มาให้ตรง ๆ) สาเหตุพวก 529/rate limit/401-403 จะมาจาก log โดยตรง ไม่ต้องพึ่ง transcript ของ `~/.claude` เลย จึงยังเห็นสาเหตุได้แม้ transcript จะถูกลบ เปิดจากคนละเครื่อง หรือ `CLAUDE_CONFIG_DIR` ต่างกัน (รอบรันเก่าก่อนมี event นี้ยังใช้ transcript เหมือนเดิม)
 - เลือกรอบรันได้จาก dropdown (ค่าเริ่มต้นคือรอบล่าสุดที่เรียก agent หรือมีปัญหา ไม่ใช่รอบสุดท้ายเสมอไป เพราะรอบสุดท้ายอาจเป็นแค่คุยต่อกับ PM โดยยังไม่เรียก agent ซึ่งจะบัง error ของรอบก่อนหน้า — รอบที่ไม่ได้เรียก agent จะมีคำว่า "(ไม่ได้เรียก agent)" ต่อท้ายใน dropdown) มีสรุปเวลา/ค่าใช้จ่าย, การ์ดของแต่ละครั้งที่เรียก agent (กดขยายดู transcript ย่อ: ข้อความ agent, tool ที่เรียกพร้อมผล, API error — ตัดแต่ละชิ้นที่ 2,000 ตัวอักษร ไม่แสดง prompt เต็ม) และ timeline ทุก event พร้อมตัวกรอง
 - transcript อ่านจาก `~/.claude/projects/<path โปรเจกต์ที่แปลงเป็นชื่อโฟลเดอร์>/<sessionId>.jsonl` ที่ Claude Agent SDK เขียนไว้ (ใช้ `CLAUDE_CONFIG_DIR` ถ้าตั้งไว้) ถ้าไฟล์ถูกลบหรือเปิดจากคนละเครื่องจะขึ้นว่าไม่พบ transcript
 - `logs.html` มีสิ่งที่คุณพิมพ์และข้อความของ agent อยู่ด้วย ระวังก่อนส่งต่อ และให้ `.agent-team/` อยู่ใน `.gitignore`
@@ -116,7 +117,9 @@ Ctrl+C หยุดได้ทุกเมื่อ: state ถูกบัน�
     grep -E " (WARN|ERROR) " .agent-team/agent-team.log
 
 event หลัก: `run.start/run.end/run.error/run.interrupted`, `team.start/team.end`, `phase.change`,
-`agent.start/agent.result/agent.no_result`, `qa.report`, `security.report`, `escalate.decision`, `guard.deny`,
+`agent.start/agent.result/agent.no_result`, `agent.api_retry` (SDK เจอ error ที่ retryable เช่น 529/rate limit/login แล้วจะลองใหม่),
+`agent.session` (sessionId จริงของ SDK ทันทีที่รู้ ไม่ต้องรอ agent.result — ใช้หาสาเหตุตอน `--live`),
+`qa.report`, `security.report`, `escalate.decision`, `guard.deny`,
 `say` (ทุกข้อความที่แสดงใน terminal), `user.input` / `user.choice` (สิ่งที่คุณพิมพ์/เลือก)
 event เกี่ยวกับ job (housekeeping ของหลายงานใน `jobs/`):
 `job.selected` (งานที่เลือกในแต่ละรอบรัน), `job.migrated` (ย้าย state แบบเก่าเข้า `jobs/` สำเร็จ),

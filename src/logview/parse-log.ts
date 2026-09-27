@@ -131,6 +131,12 @@ function apply(run: Run, ev: LogEvent, open: Map<string, AgentCall>): void {
       open.set(role, call);
       break;
     }
+    case 'agent.session': {
+      const role = str(d.role) ?? '?';
+      const call = open.get(role);
+      if (call) call.sessionId = str(d.sessionId);
+      break;
+    }
     case 'agent.result':
     case 'agent.no_result': {
       const role = str(d.role) ?? '?';

@@ -159,6 +159,34 @@ describe('parseLog', () => {
     expect(r!.calls[0]!.end).toBeUndefined();
   });
 
+  it('agent.session เซ็ต sessionId ของ call ที่ยังเปิดอยู่ของ role นั้น (ก่อนได้ agent.result เช่นตอน --live)', () => {
+    const log = [
+      `${T} INFO  run.start {}`,
+      '2026-01-10T09:00:01.000Z INFO  agent.start {"role":"pm"}',
+      '2026-01-10T09:00:02.000Z INFO  agent.session {"role":"pm","sessionId":"s-live"}',
+    ].join('\n');
+    const [r] = parseLog(log);
+    expect(r!.calls[0]).toMatchObject({ sessionId: 's-live', status: 'unfinished' });
+  });
+
+  it('agent.session ของ role ที่ไม่มี call เปิดอยู่ -> ไม่มีอะไรให้เซ็ต ไม่ throw', () => {
+    const log = [`${T} INFO  run.start {}`, '2026-01-10T09:00:01.000Z INFO  agent.session {"role":"pm","sessionId":"s-live"}'].join(
+      '\n',
+    );
+    expect(() => parseLog(log)).not.toThrow();
+  });
+
+  it('agent.api_retry ยังอยู่ใน run.events (แสดงใน timeline) โดยไม่ต้องทำอะไรพิเศษเพิ่ม', () => {
+    const log = [
+      `${T} INFO  run.start {}`,
+      '2026-01-10T09:00:01.000Z INFO  agent.start {"role":"pm"}',
+      '2026-01-10T09:00:02.000Z WARN  agent.api_retry {"role":"pm","attempt":1,"maxRetries":3,"status":529,"error":"overloaded"}',
+      '2026-01-10T09:00:20.000Z INFO  agent.result {"role":"pm","subtype":"success","sessionId":"s1"}',
+    ].join('\n');
+    const [r] = parseLog(log);
+    expect(r!.events.map((e) => e.event)).toContain('agent.api_retry');
+  });
+
   it('agent.start มี sessionId (resume) -> ใช้เป็น sessionId ของ call ทันที', () => {
     const log = [
       `${T} INFO  run.start {}`,
