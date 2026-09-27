@@ -40,6 +40,73 @@ describe('riskFlags', () => {
   });
 });
 
+describe('riskFlags - แก้ false negative/positive จาก review', () => {
+  it('auth: false negatives ภาษาอังกฤษที่ต้องจับ', () => {
+    expect(riskFlags('Please log in to continue')).toEqual(['auth']);
+    expect(riskFlags('Show this page to authenticated users only')).toEqual(['auth']);
+    expect(riskFlags('authorize the request before proceeding')).toEqual(['auth']);
+    expect(riskFlags('authorized users')).toEqual(['auth']);
+    expect(riskFlags('signed-in users')).toEqual(['auth']);
+  });
+
+  it('auth: false negatives ภาษาไทยที่ต้องจับ', () => {
+    expect(riskFlags('ต้องขอการอนุญาตจากแอดมิน')).toEqual(['auth']);
+    expect(riskFlags('กรอกพาสเวิร์ดเพื่อเข้าใช้งาน')).toEqual(['auth']);
+    expect(riskFlags('ล็อคอินด้วย Google')).toEqual(['auth']);
+  });
+
+  it('auth: session ที่มีบริบทเฉพาะยังต้องจับ (ไม่ใช่ session เดี่ยว ๆ)', () => {
+    expect(riskFlags('rotate the session id')).toEqual(['auth']);
+    expect(riskFlags('read the session cookie')).toEqual(['auth']);
+    expect(riskFlags('protect against session hijacking')).toEqual(['auth']);
+    expect(riskFlags('store the login session')).toEqual(['auth']);
+  });
+
+  it('sql: ตรวจจับคำสั่ง SQL จาก pattern ไม่ใช่แค่คำว่า sql', () => {
+    expect(riskFlags('run SELECT * FROM users WHERE id = 1')).toEqual(['sql']);
+    expect(riskFlags('INSERT INTO orders (id, total) VALUES (1, 100)')).toEqual(['sql']);
+    expect(riskFlags("UPDATE users SET role = 'admin'")).toEqual(['sql']);
+    expect(riskFlags('DELETE FROM sessions')).toEqual(['sql']);
+  });
+
+  it('delete: false negatives ภาษาอังกฤษที่ต้องจับ', () => {
+    expect(riskFlags('delete everything in the folder')).toEqual(['delete']);
+    expect(riskFlags('remove all customer data')).toEqual(['delete']);
+  });
+
+  it('delete: false negatives ภาษาไทยที่ต้องจับ (ลบ + ทั้งหมด/ทุก เป็น substring แยกกันได้)', () => {
+    expect(riskFlags('ลบผู้ใช้ทั้งหมด')).toEqual(['delete']);
+    expect(riskFlags('ลบข้อมูลลูกค้าทั้งหมด')).toEqual(['delete']);
+  });
+
+  it('delete: เทสต์เดิมต้องยังผ่าน (มี ลบ แต่ไม่มี ทั้งหมด/ทุก ไม่ควรเข้าเงื่อนไข)', () => {
+    expect(riskFlags('เพิ่ม/ลบ todo ในรายการ')).toEqual([]);
+  });
+
+  it('shell: false negatives ที่ต้องจับ', () => {
+    expect(riskFlags('use os.system to run a command')).toEqual(['shell']);
+    expect(riskFlags('subprocess.run(["ls"])')).toEqual(['shell']);
+    expect(riskFlags('Runtime.exec("ls")')).toEqual(['shell']);
+  });
+
+  it('false positives ที่ต้องตัดออก: token/session แบบคำเดี่ยวลอย ๆ', () => {
+    expect(riskFlags('Add CSS design tokens for spacing and colors')).toEqual([]);
+    expect(riskFlags('Schedule a planning session for next sprint')).toEqual([]);
+  });
+
+  it('secret: token ที่มีบริบทเฉพาะยังต้องจับ', () => {
+    expect(riskFlags('store the access token securely')).toEqual(['secret']);
+    expect(riskFlags('refresh token rotation')).toEqual(['secret']);
+    expect(riskFlags('use an api token for this call')).toEqual(['secret']);
+    expect(riskFlags('bearer token in the header')).toEqual(['secret']);
+    expect(riskFlags('generate a personal access token')).toEqual(['secret']);
+  });
+
+  it('secret+auth: "auth token" เข้าทั้งสองหมวดเพราะมีคำว่า auth เดี่ยว ๆ อยู่ด้วย', () => {
+    expect(riskFlags('send the auth token')).toEqual(['auth', 'secret']);
+  });
+});
+
 describe('riskText', () => {
   it('รวม goal/features/constraints/acceptanceCriteria และ quickTask แต่ไม่รวม outOfScope', () => {
     const req = { ...makeRequirements(), outOfScope: ['ระบบ login'] };
