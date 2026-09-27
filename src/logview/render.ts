@@ -1,3 +1,5 @@
+import { fontFaceCss } from './fonts';
+import { LIST_JS } from './list-assets';
 import { PAGE_CSS, PAGE_JS } from './page-assets';
 import type { ViewData } from './view-data';
 
@@ -25,12 +27,14 @@ export function renderHtml(data: ViewData, opts: { live?: boolean } = {}): strin
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>agent-team logs — ${escapeHtml(name)}</title>
-<style>${PAGE_CSS}</style>
+<style>${fontFaceCss()}
+${PAGE_CSS}</style>
 </head>
 <body>
 <div id="app"></div>
 <script id="data" type="application/json">${embedJson(data)}</script>
 <script>window.__LIVE__ = ${opts.live ? 'true' : 'false'};</script>
+<script>${LIST_JS}</script>
 <script>${PAGE_JS}</script>
 </body>
 </html>

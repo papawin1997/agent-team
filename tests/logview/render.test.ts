@@ -1,8 +1,11 @@
 import * as fs from 'node:fs/promises';
+import * as fsSync from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { PAGE_JS } from '../../src/logview/page-assets';
+import { fontFaceCss } from '../../src/logview/fonts';
+import { LIST_JS } from '../../src/logview/list-assets';
+import { PAGE_CSS, PAGE_JS } from '../../src/logview/page-assets';
 import { embedJson, renderHtml } from '../../src/logview/render';
 import { buildViewData, defaultRunIndex, type ViewData } from '../../src/logview/view-data';
 
@@ -59,7 +62,7 @@ describe('renderHtml', () => {
 
   it('ข้อความใน log ที่มี </script> ไม่หลุดออกจากแท็ก', () => {
     const html = renderHtml(data);
-    expect(html.match(/<\/script>/g)).toHaveLength(3);
+    expect(html.match(/<\/script>/g)).toHaveLength(4);
     expect(html).not.toContain('<script>alert(1)');
   });
 
@@ -91,7 +94,7 @@ describe('renderHtml', () => {
     expect(twoRuns.defaultRun).toBe(0);
     const html = renderHtml(twoRuns);
     expect(readData(html).defaultRun).toBe(0);
-    expect(html.match(/<\/script>/g)).toHaveLength(3);
+    expect(html.match(/<\/script>/g)).toHaveLength(4);
   });
 
   it('embedJson escape <, U+2028, U+2029', () => {
@@ -119,5 +122,58 @@ describe('renderHtml', () => {
 
   it('live: เลื่อนไปรอบล่าสุดอัตโนมัติเฉพาะตอนอยู่ที่ default เดิมและ default ใหม่เปลี่ยน (ใช้ next.defaultRun จาก server)', () => {
     expect(PAGE_JS).toContain('next.defaultRun');
+  });
+
+  it('ฝังฟอนต์ในไฟล์ ไม่มีลิงก์ภายนอก', () => {
+    const html = renderHtml(data);
+    expect(html).toContain(`<style>${fontFaceCss()}\n${PAGE_CSS}</style>`);
+    expect(html.match(/@font-face\{/g)).toHaveLength(3);
+    expect(html).not.toContain('<link');
+    expect(html).not.toContain('fonts.googleapis.com');
+  });
+
+  it('LIST_JS/PAGE_JS อ่านมาจากไฟล์ .js จริงใน web/ (มี // @ts-check ตรวจ type ได้ และไม่มี </script)', () => {
+    const listSrc = fsSync.readFileSync(path.join(__dirname, '../../src/logview/web/list.js'), 'utf8');
+    const pageSrc = fsSync.readFileSync(path.join(__dirname, '../../src/logview/web/page.js'), 'utf8');
+    expect(LIST_JS).toBe(listSrc);
+    expect(PAGE_JS).toBe(pageSrc);
+    expect(listSrc.startsWith('// @ts-check')).toBe(true);
+    expect(pageSrc.startsWith('// @ts-check')).toBe(true);
+    expect(LIST_JS).not.toContain('</script');
+    expect(PAGE_JS).not.toContain('</script');
+  });
+
+  it('ฝัง LIST_JS ก่อน PAGE_JS', () => {
+    const html = renderHtml(data);
+    expect(html.indexOf(LIST_JS)).toBeGreaterThan(0);
+    expect(html.indexOf(LIST_JS)).toBeLessThan(html.indexOf(PAGE_JS));
+  });
+
+  it('typography tokens สำหรับภาษาไทยและสีประจำ role (light + dark)', () => {
+    for (const token of [
+      '--font-sans:"Inter","Noto Sans Thai","Leelawadee UI"',
+      '--font-mono:"JetBrains Mono","Noto Sans Thai"',
+      '--fs-h1:clamp(',
+      '--fs-h2:clamp(',
+      '--fs-h3:clamp(',
+      '--fs-body:clamp(',
+      '--fs-small:',
+      '--fs-caption:',
+      '--lh-heading:1.35',
+      '--lh-body:1.7',
+      '--lh-mono:1.5',
+      '--ls-caption:.01em',
+      'input[type=search]{flex:1 1 220px;min-width:0;font-size:max(16px,var(--fs-body))}',
+      '@media (max-width:600px){select,input{font-size:max(16px,var(--fs-body))}}',
+    ]) {
+      expect(PAGE_CSS).toContain(token);
+    }
+    expect(PAGE_CSS).not.toContain('text-rendering:optimizeLegibility');
+    for (const role of ['pm', 'planning', 'frontend', 'backend', 'qa', 'security', 'other']) {
+      expect(PAGE_CSS.split(`--r-${role}:`)).toHaveLength(3); // light + dark
+      expect(PAGE_CSS).toContain(`.role-${role}{--role:var(--r-${role})}`);
+    }
+    expect(PAGE_CSS.split('--role-fg:')).toHaveLength(3);
+    expect(PAGE_CSS).not.toContain('font-size:11px');
   });
 });

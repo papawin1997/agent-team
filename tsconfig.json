@@ -7,7 +7,10 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["node"]
+    "types": ["node"],
+    "lib": ["ES2022", "DOM"],
+    "allowJs": true,
+    "checkJs": false
   },
   "include": ["src", "tests", "scripts", "vitest.config.ts"]
 }
