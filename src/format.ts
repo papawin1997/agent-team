@@ -1,5 +1,5 @@
 import type { JobInfo } from './jobs';
-import type { Design, Requirements } from './schemas';
+import type { Design, QuickTask, Requirements } from './schemas';
 import type { Phase, State } from './state';
 
 const list = (items: string[]): string =>
@@ -39,6 +39,17 @@ export function formatDesign(d: Design): string {
     'ข้อควรระวังด้านความปลอดภัย (Security):',
     d.securityNotes === undefined ? '  (Security ตรวจไม่สำเร็จ — ยังไม่มีผลตรวจ)' : list(d.securityNotes),
     '',
+  ].join('\n');
+}
+
+export function formatQuickTask(task: QuickTask): string {
+  return [
+    '--- งานแบบ quick (1 task) ---',
+    `ชื่องาน: ${task.title}`,
+    `ผู้ทำ: ${task.owner}`,
+    `รายละเอียด: ${task.description}`,
+    'เกณฑ์ตรวจรับ:',
+    ...task.acceptanceCriteria.map((c) => `  - ${c}`),
   ].join('\n');
 }
 

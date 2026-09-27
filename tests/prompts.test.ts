@@ -64,6 +64,17 @@ describe('SYSTEM_PROMPTS', () => {
   });
 });
 
+describe('PM: จัดระดับงาน', () => {
+  it('prompt ของ PM อธิบาย level/quickTask และเกณฑ์งานเสี่ยง', () => {
+    const pm = SYSTEM_PROMPTS.pm;
+    expect(pm).toContain('"level"');
+    expect(pm).toContain('"quickTask"');
+    expect(pm).toContain('levelReason');
+    expect(pm).toContain('at most ONE clarifying question');
+    expect(pm).toContain('authentication');
+  });
+});
+
 describe('prompt builders', () => {
   it('buildPlanPrompt ใส่ requirements และ feedback', () => {
     const prompt = buildPlanPrompt({ requirements, feedback: 'แก้ dependency วน' });

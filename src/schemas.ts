@@ -11,6 +11,18 @@ export type Requirements = z.infer<typeof RequirementsSchema>;
 
 export const OwnerSchema = z.enum(['frontend', 'backend']);
 
+export const LevelSchema = z.enum(['quick', 'full']);
+export type Level = z.infer<typeof LevelSchema>;
+
+/** งานเดียวที่ PM เสนอเมื่อจัดระดับเป็น quick (ไม่มี Planning) */
+export const QuickTaskSchema = z.object({
+  title: z.string().min(1),
+  owner: OwnerSchema,
+  description: z.string().min(1),
+  acceptanceCriteria: z.array(z.string().min(1)).min(1),
+});
+export type QuickTask = z.infer<typeof QuickTaskSchema>;
+
 export const TaskSchema = z.object({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
   title: z.string().min(1),
@@ -85,6 +97,9 @@ export const PmTurnSchema = z.object({
   message: z.string().min(1),
   status: z.enum(['asking', 'proposal']),
   requirements: RequirementsSchema.optional(),
+  level: LevelSchema.optional(),
+  levelReason: z.string().optional(),
+  quickTask: QuickTaskSchema.optional(),
 });
 export type PmTurn = z.infer<typeof PmTurnSchema>;
 

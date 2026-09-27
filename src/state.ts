@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { StateStore } from './deps';
-import type { Design, QAReport, Requirements } from './schemas';
+import type { Design, Level, QAReport, QuickTask, Requirements } from './schemas';
 
 export type Phase =
   | 'REQUIREMENTS'
@@ -35,6 +35,10 @@ export interface State {
   designFeedback?: string;
   requirements?: Requirements;
   design?: Design;
+  /** ระดับงานที่เลือก — ไม่มี = full (งานเก่าก่อนมีโหมด quick) */
+  level?: Level;
+  /** งานเดียวของโหมด quick (มีเฉพาะตอน level = quick) */
+  quickTask?: QuickTask;
   progress: Record<string, TaskProgress>;
 }
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { DesignError, initProgress, isPass, isSecurityPass, orderTasks } from '../src/domain';
-import { failReport, makeDesign, makeTask, passReport } from './helpers/builders';
+import { DesignError, initProgress, isPass, isSecurityPass, orderTasks, quickDesign, QUICK_TASK_ID } from '../src/domain';
+import { DesignSchema } from '../src/schemas';
+import { failReport, makeDesign, makeRequirements, makeTask, passReport } from './helpers/builders';
 
 describe('orderTasks', () => {
   it('เรียง task ที่ถูกพึ่งพาไว้ก่อน', () => {
@@ -118,5 +119,30 @@ describe('isSecurityPass', () => {
       issues: [{ severity: 'minor' as const, file: 'x', description: 'd', suggestedFix: 'f' }],
     };
     expect(isSecurityPass(report)).toBe(true);
+  });
+});
+
+describe('quickDesign', () => {
+  it('สร้าง design 1 task id quick จาก requirements และ quickTask', () => {
+    const d = quickDesign(makeRequirements(), {
+      title: 'แก้คำผิด',
+      owner: 'frontend',
+      description: 'แก้คำว่า Hellp',
+      acceptanceCriteria: ['แสดง Hello'],
+    });
+    expect(QUICK_TASK_ID).toBe('quick');
+    expect(d.overview).toBe('todo list');
+    expect(d.tasks).toEqual([
+      {
+        id: 'quick',
+        title: 'แก้คำผิด',
+        owner: 'frontend',
+        dependsOn: [],
+        description: 'แก้คำว่า Hellp',
+        acceptanceCriteria: ['แสดง Hello'],
+        changed: true,
+      },
+    ]);
+    expect(DesignSchema.parse(d)).toEqual(d);
   });
 });

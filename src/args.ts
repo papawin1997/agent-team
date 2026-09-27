@@ -1,4 +1,5 @@
 import * as path from 'node:path';
+import type { Level } from './schemas';
 
 export type Command = 'run' | 'logs';
 
@@ -10,6 +11,8 @@ export interface CliArgs {
   resume: boolean;
   /** agent-team logs --live */
   live: boolean;
+  /** --quick / --full */
+  level: Level | undefined;
 }
 
 export function parseArgs(argv: string[]): CliArgs {
@@ -19,6 +22,7 @@ export function parseArgs(argv: string[]): CliArgs {
   let projectDir: string | undefined;
   let resume = false;
   let live = false;
+  let level: Level | undefined;
   const setProject = (value: string): void => {
     if (projectDir !== undefined) throw new Error('ระบุโปรเจกต์ได้ครั้งเดียว');
     projectDir = value;
@@ -27,7 +31,11 @@ export function parseArgs(argv: string[]): CliArgs {
     const arg = rest[i] ?? '';
     if (arg === '--resume' || arg === '-r') resume = true;
     else if (arg === '--live') live = true;
-    else if (arg === '--project') {
+    else if (arg === '--quick' || arg === '--full') {
+      const value = arg === '--quick' ? 'quick' : 'full';
+      if (level !== undefined && level !== value) throw new Error('ใช้ --quick กับ --full พร้อมกันไม่ได้');
+      level = value;
+    } else if (arg === '--project') {
       const value = rest[++i];
       if (value === undefined || value === '' || value.startsWith('-')) throw new Error('ต้องระบุพาธหลัง --project');
       setProject(value);
@@ -40,5 +48,6 @@ export function parseArgs(argv: string[]): CliArgs {
   }
   if (live && command !== 'logs') throw new Error('--live ใช้ได้กับ agent-team logs เท่านั้น');
   if (resume && command === 'logs') throw new Error('-r/--resume ใช้กับ agent-team logs ไม่ได้');
-  return { command, projectDir: projectDir === undefined ? undefined : path.resolve(projectDir), resume, live };
+  if (level && command === 'logs') throw new Error('--quick/--full ใช้กับ agent-team logs ไม่ได้');
+  return { command, projectDir: projectDir === undefined ? undefined : path.resolve(projectDir), resume, live, level };
 }

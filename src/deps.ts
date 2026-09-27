@@ -1,6 +1,6 @@
 import type { TeamConfig } from './config';
 import type { Logger } from './logger';
-import type { Design, PmTurn, QAReport, Requirements, SecurityReport, Task, WorkerResult } from './schemas';
+import type { Design, Level, PmTurn, QAReport, Requirements, SecurityReport, Task, WorkerResult } from './schemas';
 import type { State } from './state';
 
 export interface PmInput {
@@ -61,4 +61,6 @@ export interface Deps {
   store: StateStore;
   config: TeamConfig;
   log?: Logger;
+  /** จาก --quick / --full: บอก PM ว่าผู้ใช้อยากได้ระดับไหน (full = ไม่เสนอ quick) */
+  levelPreference?: Level;
 }
