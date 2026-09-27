@@ -124,6 +124,13 @@
   /** @type {string|null} */
   var pendingFocusId = null;
 
+  // aria-live region ตัวเดียว สร้างครั้งเดียวตอนเริ่ม อยู่นอก #app (ไม่ถูกลบ/สร้างใหม่ทุก render เหมือน .pager-info
+  // เดิม) screen reader จึงประกาศข้อความที่เขียนเข้ามาใหม่ได้จริง ดู announcePage()
+  var srLiveRegion = el('div', 'sr-only');
+  srLiveRegion.id = 'sr-live';
+  srLiveRegion.setAttribute('aria-live', 'polite');
+  document.body.appendChild(srLiveRegion);
+
   /** เวลา (ms) นานสุดหลัง mousedown/keydown บน select ที่ยังถือว่า "น่าจะเปิด dropdown อยู่จริง" */
   var SELECT_GRACE_MS = 3000;
   /** เวลาล่าสุดที่ผู้ใช้เพิ่งโต้ตอบกับ select ตัวใดตัวหนึ่ง (mousedown/keydown) — ดูใน selectBox() */
@@ -269,22 +276,33 @@
     var prev = el('button', null, '« ก่อนหน้า');
     prev.id = idPrefix + '-prev';
     prev.disabled = res.page <= 1;
-    prev.onclick = function () { st.page = res.page - 1; pendingScrollId = titleId; render(); };
+    prev.onclick = function () { st.page = res.page - 1; pendingScrollId = titleId; render(); announcePage(idPrefix); };
     var next = el('button', null, 'ถัดไป »');
     next.id = idPrefix + '-next';
     next.disabled = res.page >= res.pages;
-    next.onclick = function () { st.page = res.page + 1; pendingScrollId = titleId; render(); };
+    next.onclick = function () { st.page = res.page + 1; pendingScrollId = titleId; render(); announcePage(idPrefix); };
     bar.appendChild(prev);
     var info = el('span', 'pager-info', 'หน้า ' + res.page + '/' + res.pages + ' · แสดง ' + res.from + '–' + res.to + ' จาก ' + res.total);
-    info.setAttribute('aria-live', 'polite');
+    info.id = idPrefix + '-info';
     bar.appendChild(info);
     bar.appendChild(next);
     bar.appendChild(selectBox('จำนวนต่อหน้า', L.PAGE_SIZES.map(function (n) { return /** @type {[number, string]} */ ([n, n + ' ต่อหน้า']); }), res.pageSize, function (v) {
       st.pageSize = Number(v);
       st.page = 1;
       render();
+      announcePage(idPrefix);
     }, idPrefix + '-size'));
     return bar;
+  }
+
+  /**
+   * เขียนข้อความ pager-info ของ section ที่เพิ่งเปลี่ยนหน้า/จำนวนต่อหน้าลงใน live region ที่มีตัวเดียว
+   * (ดู srLiveRegion) เรียกหลัง render() เสร็จเสมอ เพื่อให้ screen reader อ่านข้อความใหม่
+   * @param {string} idPrefix
+   */
+  function announcePage(idPrefix) {
+    var info = document.getElementById(idPrefix + '-info');
+    if (info) srLiveRegion.textContent = info.textContent || '';
   }
 
   // สลับ id ปุ่มเปลี่ยนหน้า prev<->next (ใช้ตอนปุ่มเดิมหายไปเพราะกลาย disabled)

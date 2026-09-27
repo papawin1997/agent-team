@@ -280,14 +280,14 @@ describe('หน้า logs (DOM จำลอง)', () => {
     expect(again.children.some((c) => c.tagName === 'pre')).toBe(true);
   });
 
-  it('aria: ปุ่มประเภท timeline มี aria-pressed, pager-info มี aria-live, เลื่อนไปหัวข้อ section เมื่อเปลี่ยนหน้าด้วย prev/next', () => {
+  it('aria: ปุ่มประเภท timeline มี aria-pressed, pager-info ไม่มี aria-live (ย้ายไป live region ตัวเดียวนอก #app), เลื่อนไปหัวข้อ section เมื่อเปลี่ยนหน้าด้วย prev/next', () => {
     const d = load();
     const allBtn = d.document.getElementById('ev-type-all')!;
     expect(allBtn.attrs['aria-pressed']).toBe('true');
     const problemBtn = d.document.getElementById('ev-type-problem')!;
     expect(problemBtn.attrs['aria-pressed']).toBe('false');
     const pagerInfo = find(d.app, (n) => n.className === 'pager-info')[0]!;
-    expect(pagerInfo.attrs['aria-live']).toBe('polite');
+    expect(pagerInfo.attrs['aria-live']).toBeUndefined();
 
     const evTitle = d.document.getElementById('ev-title')!;
     const callsTitle = d.document.getElementById('calls-title')!;
@@ -296,6 +296,27 @@ describe('หน้า logs (DOM จำลอง)', () => {
     expect(d.document.getElementById('ev-title')!.scrolledIntoView).toBe(true);
     expect(d.document.getElementById('calls-title')!.scrolledIntoView).toBe(false);
     void callsTitle;
+  });
+
+  it('aria-live region: สร้างครั้งเดียวนอก #app (ไม่ใช่สร้างใหม่ทุก render) แล้วอัปเดตข้อความเมื่อเปลี่ยนหน้า/จำนวนต่อหน้า', () => {
+    const d = load();
+    const regionsBeforeAny = find(d.body, (n) => n.attrs['aria-live'] === 'polite');
+    expect(regionsBeforeAny).toHaveLength(1);
+    const region = regionsBeforeAny[0]!;
+    expect(region.className).toContain('sr-only');
+    // ไม่ได้อยู่ใน #app
+    expect(find(d.app, (n) => n === region)).toHaveLength(0);
+
+    d.document.getElementById('calls-next')!.onclick!();
+    expect(region.textContent).toBe('หน้า 2/2 · แสดง 21–25 จาก 25');
+
+    // re-render จากปุ่มอื่น (toggle การ์ด) ไม่ควรสร้าง live region ตัวใหม่ซ้อนขึ้นมาอีก
+    d.document.getElementById('call-24-toggle')!.onclick!();
+    expect(find(d.body, (n) => n.attrs['aria-live'] === 'polite')).toHaveLength(1);
+    expect(find(d.body, (n) => n.attrs['aria-live'] === 'polite')[0]).toBe(region);
+
+    choose(d.document.getElementById('ev-size')!, '10');
+    expect(region.textContent).toBe('หน้า 1/5 · แสดง 1–10 จาก 45');
   });
 
   describe('live poll', () => {

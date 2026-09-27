@@ -79,6 +79,8 @@ export function fire(node: FakeNode, event: string): void {
 export interface FakeDocument {
   activeElement: FakeNode | null;
   hidden: boolean;
+  /** โหนด &lt;body&gt; เพียงตัวเดียว มีไว้สำหรับ element ที่อยู่นอก #app เช่น aria-live region ที่สร้างครั้งเดียวตอนเริ่ม */
+  body: FakeNode;
   createElement(tag: string): FakeNode;
   createDocumentFragment(): FakeNode;
   getElementById(id: string): FakeNode | null;
@@ -96,24 +98,30 @@ export function find(root: FakeNode, pred: (n: FakeNode) => boolean): FakeNode[]
 
 export function createDom(dataJson: string): {
   app: FakeNode;
+  body: FakeNode;
   document: FakeDocument;
   window: { scrollY: number; scrollTo: () => void; __LIVE__: boolean; __NOW__?: number; AgentTeamList?: unknown };
 } {
   const app = new FakeNode('div');
   app.id = 'app';
+  const body = new FakeNode('body');
   const dataEl = new FakeNode('script');
   dataEl.id = 'data';
   dataEl.textContent = dataJson;
   const document: FakeDocument = {
     activeElement: null,
     hidden: false,
+    body,
     createElement: (tag) => {
       const n = new FakeNode(tag);
       n.ownerDocument = document;
       return n;
     },
     createDocumentFragment: () => new FakeNode('#fragment'),
-    getElementById: (id) => (id === 'data' ? dataEl : (find(app, (n) => n.id === id)[0] ?? null)),
+    getElementById: (id) =>
+      id === 'data' ? dataEl : (find(app, (n) => n.id === id)[0] ?? find(body, (n) => n.id === id)[0] ?? null),
   };
-  return { app, document, window: { scrollY: 0, scrollTo: () => {}, __LIVE__: false } };
+  app.ownerDocument = document;
+  body.ownerDocument = document;
+  return { app, body, document, window: { scrollY: 0, scrollTo: () => {}, __LIVE__: false } };
 }

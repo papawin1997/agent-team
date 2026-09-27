@@ -79,6 +79,7 @@ summary{cursor:pointer;overflow-wrap:anywhere}
 .ok{color:var(--ok)}
 .bad{color:var(--err)}
 @media (max-width:600px){select,input{font-size:max(16px,var(--fs-body))}}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 `;
 
 export const PAGE_JS = fs.readFileSync(fileURLToPath(new URL('./web/page.js', import.meta.url)), 'utf8');
