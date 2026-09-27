@@ -5,23 +5,36 @@ export class FakeNode {
   children: FakeNode[] = [];
   className = '';
   id = '';
-  value = '';
   type = '';
   disabled = false;
   selected = false;
   open = false;
   selectionStart: number | null = null;
+  selectionEnd: number | null = null;
   attrs: Record<string, string> = {};
-  listeners: Record<string, () => void> = {};
+  listeners: Record<string, Array<() => void>> = {};
   onclick?: () => void;
   onchange?: () => void;
   oninput?: () => void;
   ownerDocument?: FakeDocument;
   scrolledIntoView = false;
   private ownText = '';
+  private _value = '';
+  private valueSet = false;
 
   constructor(tag: string) {
     this.tagName = tag.toLowerCase();
+  }
+  get value(): string {
+    if (!this.valueSet && this.tagName === 'select') {
+      const sel = this.children.find((c) => c.selected);
+      if (sel) return sel.value;
+    }
+    return this._value;
+  }
+  set value(v: string) {
+    this._value = v;
+    this.valueSet = true;
   }
   appendChild(child: FakeNode): FakeNode {
     if (child.tagName === '#fragment') {
@@ -44,7 +57,7 @@ export class FakeNode {
     this.attrs[k] = String(v);
   }
   addEventListener(event: string, fn: () => void): void {
-    this.listeners[event] = fn;
+    (this.listeners[event] ?? (this.listeners[event] = [])).push(fn);
   }
   scrollIntoView(): void {
     this.scrolledIntoView = true;
@@ -52,9 +65,15 @@ export class FakeNode {
   focus(): void {
     if (this.ownerDocument) this.ownerDocument.activeElement = this;
   }
-  setSelectionRange(start: number): void {
+  setSelectionRange(start: number, end?: number): void {
     this.selectionStart = start;
+    this.selectionEnd = end === undefined ? start : end;
   }
+}
+
+/** ยิง event ที่ผูกด้วย addEventListener ทั้งหมดของ event name นั้น (ตามลำดับที่ผูก) */
+export function fire(node: FakeNode, event: string): void {
+  (node.listeners[event] ?? []).forEach((fn) => fn());
 }
 
 export interface FakeDocument {

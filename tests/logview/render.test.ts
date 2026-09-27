@@ -152,9 +152,11 @@ describe('renderHtml', () => {
       '--lh-mono:1.5',
       '--ls-caption:.01em',
       'input[type=search]{flex:1 1 220px;min-width:0;font-size:max(16px,var(--fs-body))}',
+      '@media (max-width:600px){select,input{font-size:max(16px,var(--fs-body))}}',
     ]) {
       expect(PAGE_CSS).toContain(token);
     }
+    expect(PAGE_CSS).not.toContain('text-rendering:optimizeLegibility');
     for (const role of ['pm', 'planning', 'frontend', 'backend', 'qa', 'security', 'other']) {
       expect(PAGE_CSS.split(`--r-${role}:`)).toHaveLength(3); // light + dark
       expect(PAGE_CSS).toContain(`.role-${role}{--role:var(--r-${role})}`);

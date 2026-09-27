@@ -27,7 +27,10 @@ var AgentTeamList = (function () {
     return order.map(function (r) { return { role: r, count: counts[r] }; });
   }
 
-  function sizeOf(pageSize) { return PAGE_SIZES.indexOf(pageSize) >= 0 ? pageSize : DEFAULT_PAGE_SIZE; }
+  function sizeOf(pageSize) {
+    var n = Number(pageSize);
+    return PAGE_SIZES.indexOf(n) >= 0 ? n : DEFAULT_PAGE_SIZE;
+  }
 
   function paginate(items, page, pageSize) {
     var size = sizeOf(pageSize);

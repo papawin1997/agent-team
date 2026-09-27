@@ -3,7 +3,7 @@ import { LIST_JS } from '../../src/logview/list-assets';
 import { PAGE_JS } from '../../src/logview/page-assets';
 import { embedJson } from '../../src/logview/render';
 import type { ViewData } from '../../src/logview/view-data';
-import { createDom, find, type FakeNode } from '../helpers/dom-shim';
+import { createDom, fire, find, type FakeNode } from '../helpers/dom-shim';
 
 const at = (i: number) => `2026-01-10T09:${String(i).padStart(2, '0')}:00.000Z`;
 const calls = Array.from({ length: 25 }, (_, i) => ({
@@ -41,6 +41,31 @@ const DATA = {
       findings: [{ severity: 'error', title: 'agent backend พัง', detail: 'd', callIds: [23], count: 1 }],
       transcripts: {},
     },
+    {
+      // รอบที่ 2: ไม่มี call ที่ failed เลย -> ใช้ทดสอบตัวกรองค้างข้ามรอบรัน
+      index: 1,
+      start: '2026-01-10T11:00:00.000Z',
+      end: '2026-01-10T11:01:00.000Z',
+      status: 'done',
+      events: [{ line: 1, time: '2026-01-10T11:00:00.000Z', level: 'INFO', event: 'say', data: { text: 'สวัสดี' } }],
+      calls: [
+        {
+          id: 0,
+          role: 'pm',
+          resumed: false,
+          start: '2026-01-10T11:00:00.000Z',
+          end: '2026-01-10T11:00:30.000Z',
+          status: 'ok',
+          subtype: 'success',
+          durationMs: 30000,
+          turns: 2,
+          costUsd: 0.02,
+        },
+      ],
+      totalCostUsd: 0.02,
+      findings: [],
+      transcripts: {},
+    },
   ],
 } as unknown as ViewData;
 
@@ -62,7 +87,31 @@ function load() {
   return dom;
 }
 type Dom = ReturnType<typeof load>;
-const cards = (d: Dom) => find(d.app, (n) => n.id.startsWith('call-'));
+
+/** เหมือน load() แต่เป็นโหมด live: __LIVE__=true, setInterval ถูกดักไว้เรียกเองผ่าน tick(), fetch ฉีดเข้ามาได้ */
+function loadLive(fetchImpl: () => Promise<{ json(): Promise<unknown> }>) {
+  const dom = createDom(embedJson(DATA));
+  dom.window.AgentTeamList = new Function(`${LIST_JS}\nreturn AgentTeamList;`)();
+  dom.window.__LIVE__ = true;
+  let pollFn: (() => void) | null = null;
+  new Function('window', 'document', 'fetch', 'setInterval', 'setTimeout', 'clearTimeout', PAGE_JS)(
+    dom.window,
+    dom.document,
+    fetchImpl,
+    (fn: () => void) => {
+      pollFn = fn;
+      return 0;
+    },
+    (fn: () => void) => {
+      fn();
+      return 0;
+    },
+    () => {},
+  );
+  return { ...dom, tick: () => pollFn!() };
+}
+
+const cards = (d: Dom) => find(d.app, (n) => n.id.startsWith('call-') && !n.id.endsWith('-toggle'));
 const infos = (d: Dom) => find(d.app, (n) => n.className === 'pager-info').map((n) => n.textContent);
 const buttons = (d: Dom, text: string) => find(d.app, (n) => n.tagName === 'button' && n.textContent === text);
 const selects = (d: Dom, label: string) => find(d.app, (n) => n.tagName === 'select' && n.attrs['aria-label'] === label);
@@ -70,6 +119,9 @@ const details = (d: Dom) => find(d.app, (n) => n.tagName === 'details');
 const choose = (sel: FakeNode, value: string) => {
   sel.value = value;
   sel.onchange!();
+};
+const flush = async () => {
+  for (let i = 0; i < 4; i++) await Promise.resolve();
 };
 
 describe('หน้า logs (DOM จำลอง)', () => {
@@ -101,6 +153,7 @@ describe('หน้า logs (DOM จำลอง)', () => {
     expect(cards(d)).toHaveLength(13);
     expect(cards(d).every((c) => c.className.includes('role-qa'))).toBe(true);
     expect(buttons(d, '🔍 qa (13)')[0]!.className).toContain('on');
+    expect(chip.id).toBe('chip-qa');
   });
 
   it('ปุ่มในกล่องสาเหตุ: ล้างตัวกรองที่ซ่อน call, ไปหน้าที่มี call, เปิดการ์ด และเลื่อนไปหา', () => {
@@ -136,11 +189,11 @@ describe('หน้า logs (DOM จำลอง)', () => {
     expect(again.value).toBe('BOOM');
 
     // ระหว่าง IME composition ไม่ render จนกว่าจะพิมพ์จบ
-    again.listeners['compositionstart']!();
+    fire(again, 'compositionstart');
     again.value = 'ข้อความที่ 4';
     again.oninput!();
     expect(details(d)).toHaveLength(1);
-    again.listeners['compositionend']!();
+    fire(again, 'compositionend');
     expect(details(d).length).toBeGreaterThan(1);
 
     const fresh = load();
@@ -148,5 +201,142 @@ describe('หน้า logs (DOM จำลอง)', () => {
     expect(badges.map((b) => b.textContent)).toEqual(['🔍 qa']);
     choose(selects(fresh, 'เรียง timeline')[0]!, 'desc');
     expect(details(fresh)[0]!.textContent).toContain('ข้อความที่ 45');
+  });
+
+  it('IME: ระหว่าง composing การพิมพ์ไม่ trigger render แม้แต่ debounce, compositionend ค่อย render ครั้งเดียว', () => {
+    const d = load();
+    const input = d.document.getElementById('ev-search')!;
+    fire(input, 'compositionstart');
+    input.value = 'boom';
+    input.oninput!(); // composing อยู่ -> ไม่ควรมีอะไรเกิดขึ้น (ไม่ schedule แม้แต่ debounce)
+    expect(details(d)).toHaveLength(45 > 20 ? 20 : 45); // ยังเป็นค่าเริ่มต้น (หน้า 1 ของ 45 event, page size 20)
+    fire(input, 'compositionend');
+    expect(details(d)).toHaveLength(1); // 'boom' match เฉพาะ run.error
+  });
+
+  describe('คงโฟกัสไว้หลัง re-render', () => {
+    it('ปุ่มเปลี่ยนหน้า calls: สลับ prev/next โฟกัสถ้าปุ่มเดิมกลาย disabled', () => {
+      const d = load();
+      const next = d.document.getElementById('calls-next')!;
+      d.document.activeElement = next;
+      next.onclick!(); // ไปหน้า 2/2 -> next กลาย disabled
+      expect(d.document.activeElement!.id).toBe('calls-prev');
+      const prevNow = d.document.activeElement!;
+      prevNow.onclick!(); // กลับหน้า 1/2 -> prev กลาย disabled
+      expect(d.document.activeElement!.id).toBe('calls-next');
+    });
+
+    it('select (calls-sort) คงโฟกัสไว้หลัง re-render', () => {
+      const d = load();
+      const sortSel = selects(d, 'เรียงการเรียก agent')[0]!;
+      d.document.activeElement = sortSel;
+      choose(sortSel, 'cost-desc');
+      expect(d.document.activeElement!.id).toBe('calls-sort');
+    });
+  });
+
+  describe('ตัวกรองค้าง -> ว่างเปล่ามีปุ่มล้างตัวกรอง', () => {
+    it('สลับรอบรันขณะกรองสถานะ failed ค้างอยู่ (รอบใหม่ไม่มี failed เลย) -> ปุ่มล้างตัวกรองคืนค่าเดิม (คง pageSize)', () => {
+      const d = load();
+      choose(d.document.getElementById('calls-size')!, '10');
+      choose(selects(d, 'กรองสถานะ')[0]!, 'failed');
+      choose(d.document.getElementById('sel-run')!, '1');
+      expect(cards(d)).toHaveLength(0);
+      const clearBtn = d.document.getElementById('calls-clear')!;
+      expect(clearBtn.textContent).toBe('ล้างตัวกรอง');
+      clearBtn.onclick!();
+      expect(cards(d)).toHaveLength(1);
+      expect(d.document.getElementById('calls-size')!.value).toBe('10');
+    });
+
+    it('timeline: ค้นหาไม่เจอ event ใด -> ปุ่มล้างตัวกรองคืนสถานะเริ่มต้น', () => {
+      const d = load();
+      const input = d.document.getElementById('ev-search')!;
+      input.value = 'ไม่มีทางเจอแน่นอน xyz';
+      input.oninput!();
+      expect(details(d)).toHaveLength(0);
+      const clearBtn = d.document.getElementById('ev-clear')!;
+      expect(clearBtn.textContent).toBe('ล้างตัวกรอง');
+      clearBtn.onclick!();
+      expect(details(d).length).toBeGreaterThan(0);
+      expect(d.document.getElementById('ev-search')!.value).toBe('');
+    });
+  });
+
+  it('timeline details ที่เปิดไว้ ไม่หายหลัง re-render จากปุ่มของ section อื่น', () => {
+    const d = load();
+    const target = details(d).find((dt) => dt.textContent.includes('agent.start'))!;
+    target.open = true;
+    fire(target, 'toggle');
+    expect(target.children.some((c) => c.tagName === 'pre')).toBe(true);
+    d.document.getElementById('calls-next')!.onclick!(); // ทำ re-render ทั้งหน้าแต่ไม่แตะ timeline
+    const again = details(d).find((dt) => dt.textContent.includes('agent.start'))!;
+    expect(again.open).toBe(true);
+    expect(again.children.some((c) => c.tagName === 'pre')).toBe(true);
+  });
+
+  it('aria: ปุ่มประเภท timeline มี aria-pressed, pager-info มี aria-live, เลื่อนไปหัวข้อ section เมื่อเปลี่ยนหน้าด้วย prev/next', () => {
+    const d = load();
+    const allBtn = d.document.getElementById('ev-type-all')!;
+    expect(allBtn.attrs['aria-pressed']).toBe('true');
+    const problemBtn = d.document.getElementById('ev-type-problem')!;
+    expect(problemBtn.attrs['aria-pressed']).toBe('false');
+    const pagerInfo = find(d.app, (n) => n.className === 'pager-info')[0]!;
+    expect(pagerInfo.attrs['aria-live']).toBe('polite');
+
+    const evTitle = d.document.getElementById('ev-title')!;
+    const callsTitle = d.document.getElementById('calls-title')!;
+    expect(evTitle.scrolledIntoView).toBe(false);
+    d.document.getElementById('ev-next')!.onclick!();
+    expect(d.document.getElementById('ev-title')!.scrolledIntoView).toBe(true);
+    expect(d.document.getElementById('calls-title')!.scrolledIntoView).toBe(false);
+    void callsTitle;
+  });
+
+  describe('live poll', () => {
+    it('เลื่อน poll ออกไปก่อนถ้ากำลังพิมพ์ IME หรือมี select ถูกโฟกัสอยู่ ไม่งั้นอัปเดตข้อมูลโดยตัวกรอง/หน้าเดิมไม่หาย', async () => {
+      const nextData = JSON.parse(JSON.stringify(DATA)) as ViewData;
+      (nextData.runs as unknown[]).push({
+        index: 2,
+        start: '2026-01-10T12:00:00.000Z',
+        end: '2026-01-10T12:00:01.000Z',
+        status: 'done',
+        events: [],
+        calls: [],
+        totalCostUsd: 0,
+        findings: [],
+        transcripts: {},
+      });
+      let fetchCalls = 0;
+      const dom = loadLive(() => {
+        fetchCalls++;
+        return Promise.resolve({ json: () => Promise.resolve(nextData) });
+      });
+      choose(selects(dom, 'กรองสถานะ')[0]!, 'failed');
+      expect(cards(dom).map((c) => c.id)).toEqual(['call-23']);
+
+      // 1) กำลังพิมพ์ IME -> เลื่อน poll ออกไป ไม่ fetch เลย
+      const search = dom.document.getElementById('ev-search')!;
+      fire(search, 'compositionstart');
+      dom.tick();
+      await flush();
+      expect(fetchCalls).toBe(0);
+      fire(search, 'compositionend');
+
+      // 2) โฟกัสค้างอยู่ที่ select -> เลื่อน poll ออกไปเช่นกัน (ไม่ทำ dropdown ที่เปิดอยู่หาย)
+      dom.document.activeElement = dom.document.getElementById('calls-sort')!;
+      dom.tick();
+      await flush();
+      expect(fetchCalls).toBe(0);
+
+      // 3) ไม่ติดเงื่อนไขข้างต้น -> poll ทำงานจริง รอบใหม่ขึ้น dropdown ตัวกรอง/รอบที่เลือกยังอยู่
+      dom.document.activeElement = null;
+      dom.tick();
+      await flush();
+      expect(fetchCalls).toBe(1);
+      const runSelect = dom.document.getElementById('sel-run')!;
+      expect(runSelect.children).toHaveLength(3);
+      expect(cards(dom).map((c) => c.id)).toEqual(['call-23']);
+    });
   });
 });

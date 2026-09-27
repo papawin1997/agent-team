@@ -21,7 +21,7 @@ export const PAGE_CSS = String.raw`
 --r-pm:#c4b5fd;--r-planning:#93c5fd;--r-frontend:#f9a8d4;--r-backend:#5eead4;--r-qa:#fdba74;--r-security:#f0abfc;--r-other:#cbd5e1;--role-fg:#12161c
 }}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font-sans);font-size:var(--fs-body);line-height:var(--lh-body);letter-spacing:var(--ls-body);-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font-sans);font-size:var(--fs-body);line-height:var(--lh-body);letter-spacing:var(--ls-body);-webkit-font-smoothing:antialiased}
 #app{max-width:1100px;margin:0 auto;padding:16px}
 h1,h2,h3{font-weight:600;line-height:var(--lh-heading);letter-spacing:var(--ls-heading)}
 h1{font-size:var(--fs-h1);margin:0 0 4px}
@@ -74,6 +74,7 @@ summary{cursor:pointer;overflow-wrap:anywhere}
 .ev{font-family:var(--font-mono);font-size:var(--fs-mono);margin-right:6px}
 .ok{color:var(--ok)}
 .bad{color:var(--err)}
+@media (max-width:600px){select,input{font-size:max(16px,var(--fs-body))}}
 `;
 
 export const PAGE_JS = String.raw`
@@ -82,9 +83,10 @@ export const PAGE_JS = String.raw`
   var L = window.AgentTeamList;
   var data = JSON.parse(document.getElementById('data').textContent);
   var currentDefault = data.defaultRun;
-  var state = { run: currentDefault, open: {}, calls: freshCalls(), events: freshEvents() };
+  var state = { run: currentDefault, open: {}, openEvents: {}, calls: freshCalls(), events: freshEvents() };
   var lastRuns = JSON.stringify(data.runs);
   var app = document.getElementById('app');
+  var pendingScrollId = null;
 
   var RUN_STATUS = {
     done: 'เสร็จสมบูรณ์',
@@ -134,9 +136,12 @@ export const PAGE_JS = String.raw`
     text = String(text === undefined || text === null ? '' : text);
     return text.length > n ? text.slice(0, n) + '…' : text;
   }
+  // เอาไปทำ id: เหลือแต่ [a-z0-9-] ตัวอื่นแทนด้วย '-'
+  function sanitizeId(s) { return String(s).toLowerCase().replace(/[^a-z0-9-]/g, '-'); }
 
-  function selectBox(label, options, value, onChange) {
+  function selectBox(label, options, value, onChange, id) {
     var s = el('select');
+    if (id) s.id = id;
     s.setAttribute('aria-label', label);
     options.forEach(function (o) {
       var opt = el('option', null, o[1]);
@@ -153,30 +158,45 @@ export const PAGE_JS = String.raw`
     return el('span', 'role-badge ' + st.cls, st.icon + ' ' + role);
   }
 
-  function pager(res, st) {
+  // idPrefix: 'calls' -> calls-prev/calls-next/calls-size, 'ev' -> ev-prev/ev-next/ev-size
+  // titleId: id ของหัวข้อ section นี้ (เลื่อนเข้าจอเมื่อกด prev/next)
+  function pager(res, st, idPrefix, titleId) {
     var bar = el('div', 'pager');
     var prev = el('button', null, '« ก่อนหน้า');
+    prev.id = idPrefix + '-prev';
     prev.disabled = res.page <= 1;
-    prev.onclick = function () { st.page = res.page - 1; render(); };
+    prev.onclick = function () { st.page = res.page - 1; pendingScrollId = titleId; render(); };
     var next = el('button', null, 'ถัดไป »');
+    next.id = idPrefix + '-next';
     next.disabled = res.page >= res.pages;
-    next.onclick = function () { st.page = res.page + 1; render(); };
+    next.onclick = function () { st.page = res.page + 1; pendingScrollId = titleId; render(); };
     bar.appendChild(prev);
-    bar.appendChild(el('span', 'pager-info', 'หน้า ' + res.page + '/' + res.pages + ' · แสดง ' + res.from + '–' + res.to + ' จาก ' + res.total));
+    var info = el('span', 'pager-info', 'หน้า ' + res.page + '/' + res.pages + ' · แสดง ' + res.from + '–' + res.to + ' จาก ' + res.total);
+    info.setAttribute('aria-live', 'polite');
+    bar.appendChild(info);
     bar.appendChild(next);
     bar.appendChild(selectBox('จำนวนต่อหน้า', L.PAGE_SIZES.map(function (n) { return [n, n + ' ต่อหน้า']; }), res.pageSize, function (v) {
       st.pageSize = Number(v);
       st.page = 1;
       render();
-    }));
+    }, idPrefix + '-size'));
     return bar;
+  }
+
+  // สลับ id ปุ่มเปลี่ยนหน้า prev<->next (ใช้ตอนปุ่มเดิมหายไปเพราะกลาย disabled)
+  function siblingPagerId(id) {
+    if (/-prev$/.test(id)) return id.replace(/-prev$/, '-next');
+    if (/-next$/.test(id)) return id.replace(/-next$/, '-prev');
+    return null;
   }
 
   function render() {
     var y = window.scrollY;
     var active = document.activeElement;
     var focusId = active && active.id ? active.id : null;
-    var caret = focusId && typeof active.selectionStart === 'number' ? active.selectionStart : null;
+    var isSearch = focusId === 'ev-search';
+    var caretStart = isSearch && typeof active.selectionStart === 'number' ? active.selectionStart : null;
+    var caretEnd = isSearch && typeof active.selectionEnd === 'number' ? active.selectionEnd : caretStart;
     var frag = document.createDocumentFragment();
     var run = data.runs[state.run];
     frag.appendChild(renderHeader());
@@ -192,12 +212,22 @@ export const PAGE_JS = String.raw`
     app.appendChild(frag);
     if (focusId) {
       var again = document.getElementById(focusId);
+      if (again && again.disabled) {
+        var altId = siblingPagerId(focusId);
+        var alt = altId && document.getElementById(altId);
+        if (alt && !alt.disabled) again = alt;
+      }
       if (again && again.focus) {
         again.focus();
-        if (caret !== null && again.setSelectionRange) again.setSelectionRange(caret, caret);
+        if (isSearch && caretStart !== null && again.setSelectionRange) again.setSelectionRange(caretStart, caretEnd);
       }
     }
     window.scrollTo(0, y);
+    if (pendingScrollId) {
+      var titleEl = document.getElementById(pendingScrollId);
+      pendingScrollId = null;
+      if (titleEl && titleEl.scrollIntoView) titleEl.scrollIntoView({ block: 'start' });
+    }
   }
 
   function renderHeader() {
@@ -211,7 +241,7 @@ export const PAGE_JS = String.raw`
         state.run = Number(v);
         resetForRun();
         render();
-      }));
+      }, 'sel-run'));
     }
     head.appendChild(el('div', 'muted small', 'สร้างเมื่อ ' + fmtTime(data.generatedAt) + (window.__LIVE__ ? ' · live: อัปเดตอัตโนมัติทุก 3 วินาที' : '')));
     return head;
@@ -287,7 +317,9 @@ export const PAGE_JS = String.raw`
   function renderCalls(run) {
     var sec = el('section');
     var st = state.calls;
-    sec.appendChild(el('h2', null, 'การเรียก agent (' + run.calls.length + ')'));
+    var title = el('h2', null, 'การเรียก agent (' + run.calls.length + ')');
+    title.id = 'calls-title';
+    sec.appendChild(title);
     if (!run.calls.length) {
       sec.appendChild(el('p', 'muted', 'รอบนี้ยังไม่ได้เรียก agent'));
       return sec;
@@ -297,6 +329,7 @@ export const PAGE_JS = String.raw`
       var on = st.roles.indexOf(rc.role) >= 0;
       var rs = L.roleStyle(rc.role);
       var b = el('button', 'chip ' + rs.cls + (on ? ' on' : ''), rs.icon + ' ' + rc.role + ' (' + rc.count + ')');
+      b.id = 'chip-' + sanitizeId(rc.role);
       b.setAttribute('aria-pressed', on ? 'true' : 'false');
       b.onclick = function () {
         st.roles = on ? st.roles.filter(function (r) { return r !== rc.role; }) : st.roles.concat([rc.role]);
@@ -307,14 +340,25 @@ export const PAGE_JS = String.raw`
     });
     sec.appendChild(chips);
     var controls = el('div', 'controls');
-    controls.appendChild(selectBox('กรองสถานะ', CALL_STATUSES, st.status, function (v) { st.status = v; st.page = 1; render(); }));
-    controls.appendChild(selectBox('เรียงการเรียก agent', CALL_SORTS, st.sort, function (v) { st.sort = v; st.page = 1; render(); }));
+    controls.appendChild(selectBox('กรองสถานะ', CALL_STATUSES, st.status, function (v) { st.status = v; st.page = 1; render(); }, 'calls-status'));
+    controls.appendChild(selectBox('เรียงการเรียก agent', CALL_SORTS, st.sort, function (v) { st.sort = v; st.page = 1; render(); }, 'calls-sort'));
     sec.appendChild(controls);
     var res = L.listCalls(run.calls, st);
     st.page = res.page;
-    if (!res.total) sec.appendChild(el('p', 'muted', 'ไม่มีการเรียก agent ที่ตรงกับตัวกรอง'));
+    if (!res.total) {
+      var keepSize = st.pageSize;
+      sec.appendChild(el('p', 'muted', 'ไม่มีการเรียก agent ที่ตรงกับตัวกรอง'));
+      var clearBtn = el('button', null, 'ล้างตัวกรอง');
+      clearBtn.id = 'calls-clear';
+      clearBtn.onclick = function () {
+        state.calls = freshCalls();
+        state.calls.pageSize = keepSize;
+        render();
+      };
+      sec.appendChild(clearBtn);
+    }
     res.items.forEach(function (c) { sec.appendChild(renderCallCard(run, c)); });
-    sec.appendChild(pager(res, st));
+    sec.appendChild(pager(res, st, 'calls', 'calls-title'));
     return sec;
   }
 
@@ -324,6 +368,7 @@ export const PAGE_JS = String.raw`
     card.id = 'call-' + c.id;
     var icon = c.status === 'ok' ? '✅' : c.status === 'failed' ? '❌' : '⏳';
     var head = el('button');
+    head.id = 'call-' + c.id + '-toggle';
     head.setAttribute('aria-expanded', state.open[c.id] ? 'true' : 'false');
     head.appendChild(el('span', null, icon + ' #' + (c.id + 1)));
     head.appendChild(roleBadge(c.role));
@@ -380,6 +425,7 @@ export const PAGE_JS = String.raw`
     if (searchTimer) clearTimeout(searchTimer);
     searchTimer = setTimeout(function () {
       searchTimer = null;
+      if (composing) return; // ยังพิมพ์ไม่จบ (IME) - compositionend จะ render ให้เอง
       state.events.page = 1;
       render();
     }, 150);
@@ -388,16 +434,21 @@ export const PAGE_JS = String.raw`
   function renderTimeline(run) {
     var sec = el('section');
     var st = state.events;
-    sec.appendChild(el('h2', null, 'Timeline (' + run.events.length + ' event)'));
+    var title = el('h2', null, 'Timeline (' + run.events.length + ' event)');
+    title.id = 'ev-title';
+    sec.appendChild(title);
     var bar = el('div', 'filters');
     EVENT_TYPES.forEach(function (f) {
       var b = el('button', st.type === f[0] ? 'on' : null, f[1]);
+      b.id = 'ev-type-' + f[0];
+      b.setAttribute('aria-pressed', st.type === f[0] ? 'true' : 'false');
       b.onclick = function () { st.type = f[0]; st.page = 1; render(); };
       bar.appendChild(b);
     });
     sec.appendChild(bar);
     var controls = el('div', 'controls');
     var search = el('input');
+    composing = false; // สร้างช่องค้นหาใหม่ทุกครั้งที่ re-render: ล้าง flag ค้างไว้กันเจอ IME ค้าง
     search.id = 'ev-search';
     search.type = 'search';
     search.value = st.query;
@@ -407,13 +458,25 @@ export const PAGE_JS = String.raw`
     search.addEventListener('compositionend', function () { composing = false; scheduleSearch(search); });
     search.oninput = function () { if (!composing) scheduleSearch(search); };
     controls.appendChild(search);
-    controls.appendChild(selectBox('เรียง timeline', EVENT_SORTS, st.sort, function (v) { st.sort = v; st.page = 1; render(); }));
+    controls.appendChild(selectBox('เรียง timeline', EVENT_SORTS, st.sort, function (v) { st.sort = v; st.page = 1; render(); }, 'ev-sort'));
     sec.appendChild(controls);
     var res = L.listEvents(run.events, st);
     st.page = res.page;
-    if (!res.total) sec.appendChild(el('p', 'muted', 'ไม่มี event ที่ตรงกับตัวกรอง'));
+    if (!res.total) {
+      var keepSize = st.pageSize;
+      sec.appendChild(el('p', 'muted', 'ไม่มี event ที่ตรงกับตัวกรอง'));
+      var clearBtn = el('button', null, 'ล้างตัวกรอง');
+      clearBtn.id = 'ev-clear';
+      clearBtn.onclick = function () {
+        state.events = freshEvents();
+        state.events.pageSize = keepSize;
+        render();
+      };
+      sec.appendChild(clearBtn);
+    }
     res.items.forEach(function (ev) {
       var d = el('details');
+      var key = state.run + ':' + ev.line;
       var s = el('summary');
       s.appendChild(el('span', 't', fmtClock(ev.time)));
       if (ev.data && typeof ev.data.role === 'string') s.appendChild(roleBadge(ev.data.role));
@@ -422,20 +485,35 @@ export const PAGE_JS = String.raw`
       s.appendChild(el('span', null, short(L.summaryOf(ev), 200)));
       d.appendChild(s);
       var built = false;
-      d.addEventListener('toggle', function () {
-        if (built || !d.open) return;
+      function buildPre() {
+        if (built) return;
         built = true;
         d.appendChild(el('pre', null, 'บรรทัด ' + ev.line + '\n' + JSON.stringify(ev.data, null, 2)));
+      }
+      d.addEventListener('toggle', function () {
+        if (d.open) {
+          state.openEvents[key] = true;
+          buildPre();
+        } else {
+          delete state.openEvents[key];
+        }
       });
+      if (state.openEvents[key]) {
+        d.open = true;
+        buildPre();
+      }
       sec.appendChild(d);
     });
-    sec.appendChild(pager(res, st));
+    sec.appendChild(pager(res, st, 'ev', 'ev-title'));
     return sec;
   }
 
   if (window.__LIVE__) {
     setInterval(function () {
       if (document.hidden) return; // แท็บถูกซ่อนอยู่: ไม่ต้อง poll ให้เปลืองทั้งฝั่ง server และ browser
+      if (composing) return; // กำลังพิมพ์ด้วย IME อยู่: เลื่อน poll ออกไปก่อน อย่าตัดคำที่พิมพ์ค้าง
+      var activeTag = document.activeElement && document.activeElement.tagName ? String(document.activeElement.tagName).toLowerCase() : '';
+      if (activeTag === 'select') return; // เผื่อ dropdown ที่กำลังเปิดอยู่ ไม่ให้หายไปกลางคัน
       fetch('/data', { cache: 'no-store' })
         .then(function (r) { return r.json(); })
         .then(function (next) {

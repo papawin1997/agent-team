@@ -72,6 +72,10 @@ describe('paginate', () => {
     expect(L.paginate(range(120), 1, 50)).toMatchObject({ pageSize: 50, pages: 3, to: 50 });
   });
 
+  it('pageSize เป็น string ตัวเลข (เช่นจาก select.value) -> ใช้ขนาดนั้นจริง', () => {
+    expect(L.paginate(range(25), 1, '10' as unknown as number)).toMatchObject({ pageSize: 10, pages: 3, to: 10 });
+  });
+
   it('รายการว่าง -> 1 หน้า แสดง 0–0', () => {
     expect(L.paginate([], 1, 20)).toEqual({ items: [], page: 1, pages: 1, pageSize: 20, total: 0, from: 0, to: 0 });
   });
