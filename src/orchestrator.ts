@@ -12,7 +12,7 @@ export async function runTeam(deps: Deps): Promise<State> {
   if (!existing) await deps.store.save(state);
 
   const log = deps.log ?? nullLogger;
-  log.log('INFO', 'team.start', { phase: state.phase });
+  log.log('INFO', 'team.start', { phase: state.phase, level: state.level });
 
   while (state.phase !== 'DONE' && state.phase !== 'ABORTED') {
     const from = state.phase;

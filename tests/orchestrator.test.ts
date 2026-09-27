@@ -276,4 +276,18 @@ describe('runTeam', () => {
     expect(final.phase).toBe('DONE');
     expect(roles(runner.calls)).toEqual(['pm', 'frontend', 'qa', 'pm']);
   });
+
+  it('team.start log มี level ของ state ตอนเริ่มรัน (ใช้เป็น fallback ใน parse-log ตอน resume)', async () => {
+    const events: Array<{ event: string; data?: Record<string, unknown> }> = [];
+    const { deps, store } = makeDeps({}, []);
+    const saved = buildState();
+    saved.phase = 'DONE';
+    saved.level = 'quick';
+    store.state = saved;
+    deps.log = { log: (_level, event, data) => void events.push({ event, data: data as never }) };
+
+    await runTeam(deps);
+
+    expect(events.find((e) => e.event === 'team.start')?.data).toMatchObject({ level: 'quick' });
+  });
 });

@@ -19,17 +19,17 @@ type Rule = {
 const RULES: readonly Rule[] = [
   {
     category: 'auth',
-    en: /\b(auth|authn|authz|authentication|authorization|authenticat(?:e|ed|ing)|authoriz(?:e|ed|ing)|log[- ]?in|logged[- ]?in|log[- ]?out|sign[- ]?in|signed[- ]?in|sign[- ]?up|password|passwd|pwd|oauth|sso|jwt|permission|permissions|rbac|acl|session[- ]?id|session[- ]?cookie|session[- ]?token|session hijack(?:ing)?|login session)\b/i,
+    en: /\b(auth|authn|authz|authentication|authorization|authenticat\w*|authoriz(?:e|ed|ing)|log[- ]?ins?|logged[- ]?in|log[- ]?out|sign[- ]?in|signed[- ]?in|sign[- ]?up|passwords?|passwd|pwd|oauth\d*|sso|jwt|permission|permissions|rbac|acl|session[- ]?id|session[- ]?cookie|session[- ]?token|session hijack(?:ing)?|login session)\b/i,
     th: ['เข้าสู่ระบบ', 'ล็อกอิน', 'ล็อคอิน', 'รหัสผ่าน', 'สิทธิ์', 'ยืนยันตัวตน', 'สมัครสมาชิก', 'การอนุญาต', 'พาสเวิร์ด'],
   },
   {
     category: 'secret',
-    en: /\b(secret|secrets|api[- _]?key|credential|credentials|private key|access[- ]?tokens?|refresh[- ]?tokens?|api[- ]?tokens?|bearer[- ]?tokens?|auth[- ]?tokens?|personal access tokens?)\b|(^|\s)\.env\b/i,
+    en: /\b(secret|secrets|api[- _]?keys?|credential|credentials|private key|access[- ]?tokens?|refresh[- ]?tokens?|api[- ]?tokens?|bearer[- ]?tokens?|auth[- ]?tokens?|personal access tokens?)\b|(^|\s)\.env\b/i,
     th: ['คีย์ลับ', 'รหัสลับ', 'โทเคน'],
   },
   {
     category: 'payment',
-    en: /\b(payment|payments|billing|invoice|checkout|credit card|stripe|refund|pay)\b/i,
+    en: /\b(payment|payments|billing|invoices?|checkout|credit card|stripe|refund|pay)\b/i,
     th: ['ชำระเงิน', 'จ่ายเงิน', 'บัตรเครดิต', 'คืนเงิน', 'ใบแจ้งหนี้'],
   },
   {
@@ -43,18 +43,20 @@ const RULES: readonly Rule[] = [
   },
   {
     category: 'migration',
-    en: /\b(migration|migrations|migrate|alter table|schema change)\b/i,
+    en: /\b(migrat\w*|alter table|schema change)\b/i,
     th: ['ย้ายข้อมูล', 'เปลี่ยนโครงสร้างฐานข้อมูล'],
   },
   {
     category: 'sql',
-    en: /\b(sql|raw query)\b|\bselect\b[\s\S]*?\bfrom\b|\binsert\s+into\b|\bupdate\b[\s\S]*?\bset\b|\bdelete\s+from\b/i,
+    // gap ระหว่าง select/update กับ from/set ต้องอยู่บรรทัดเดียวกันและสั้น (<=8 ตัวอักษร) กันไม่ให้จับประโยคภาษาอังกฤษ
+    // ทั่วไปที่บังเอิญมีทั้งสองคำ (เช่น "select a color from the palette") ผิดเป็น SQL จริง
+    en: /\b(sql|raw query)\b|\bselect\b[^\n]{0,8}?\bfrom\b|\binsert\s+into\b|\bupdate\b[^\n]{0,8}?\bset\b|\bdelete\s+from\b/i,
     th: [],
   },
-  { category: 'upload', en: /\b(upload|uploads|multipart)\b/i, th: ['อัปโหลด', 'อัพโหลด'] },
+  { category: 'upload', en: /\b(upload\w*|multipart)\b/i, th: ['อัปโหลด', 'อัพโหลด'] },
   {
     category: 'shell',
-    en: /\b(exec|execsync|spawn|shell|subprocess|child_process|eval|popen)\b|os\.system/i,
+    en: /\b(exec|execsync|spawn|shell|subprocess|child_process|eval|popen|execut\w*)\b|os\.system/i,
     th: ['รันคำสั่ง', 'สั่งคำสั่ง'],
   },
   { category: 'network', en: /\b(cors|webhook|webhooks|ssrf|proxy)\b/i, th: [] },
@@ -65,6 +67,15 @@ export function riskFlags(text: string): RiskCategory[] {
   return RULES.filter(
     (r) => r.en.test(text) || (r.thMatch ? r.thMatch(text) : r.th.some((w) => text.includes(w))),
   ).map((r) => r.category);
+}
+
+const CATEGORY_ORDER: readonly RiskCategory[] = RULES.map((r) => r.category);
+
+/** รวมหมวดเสี่ยงจากหลายแหล่ง (เช่น requirements ของ PM และข้อความดิบของ user) ไม่ซ้ำ เรียงตามลำดับหมวดเดิม */
+export function mergeRiskFlags(...groups: readonly (readonly RiskCategory[])[]): RiskCategory[] {
+  const found = new Set<RiskCategory>();
+  for (const group of groups) for (const category of group) found.add(category);
+  return CATEGORY_ORDER.filter((c) => found.has(c));
 }
 
 /** ข้อความที่ต้องตรวจความเสี่ยง: ไม่รวม outOfScope เพราะเป็นสิ่งที่ตกลงว่าจะไม่ทำ */

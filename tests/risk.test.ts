@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { riskFlags, riskText } from '../src/risk';
+import { mergeRiskFlags, riskFlags, riskText } from '../src/risk';
 import { makeRequirements } from './helpers/builders';
 
 describe('riskFlags', () => {
@@ -104,6 +104,58 @@ describe('riskFlags - แก้ false negative/positive จาก review', () =>
 
   it('secret+auth: "auth token" เข้าทั้งสองหมวดเพราะมีคำว่า auth เดี่ยว ๆ อยู่ด้วย', () => {
     expect(riskFlags('send the auth token')).toEqual(['auth', 'secret']);
+  });
+});
+
+describe('riskFlags - inflections เพิ่มเติมจาก final review', () => {
+  it('auth: พหูพจน์/รูปแปลงของ password, login, authenticate, oauth', () => {
+    expect(riskFlags('hash user passwords')).toEqual(['auth']);
+    expect(riskFlags('show recent logins')).toEqual(['auth']);
+    expect(riskFlags('authenticates users')).toEqual(['auth']);
+    expect(riskFlags('OAuth2')).toEqual(['auth']);
+  });
+
+  it('secret: API keys (พหูพจน์)', () => {
+    expect(riskFlags('store API keys')).toEqual(['secret']);
+  });
+
+  it('payment: invoices (พหูพจน์)', () => {
+    expect(riskFlags('paid invoices')).toEqual(['payment']);
+  });
+
+  it('upload: uploaded/uploading', () => {
+    expect(riskFlags('uploaded files list')).toEqual(['upload']);
+    expect(riskFlags('uploading avatar')).toEqual(['upload']);
+  });
+
+  it('migration: migrated', () => {
+    expect(riskFlags('migrated data')).toEqual(['migration']);
+  });
+
+  it('shell: execute/executes/executed/executing', () => {
+    expect(riskFlags('execute a command on server')).toEqual(['shell']);
+  });
+});
+
+describe('riskFlags - sql: ต้องไม่ข้าม field/บรรทัด', () => {
+  it('ไม่จับประโยคภาษาอังกฤษทั่วไปที่บังเอิญมีคำว่า select/from หรือ update/set', () => {
+    expect(riskFlags('update the header text and set color')).toEqual([]);
+    expect(riskFlags('select a color from the palette')).toEqual([]);
+  });
+
+  it('ตัวอย่าง SQL จริงยังถูกจับเหมือนเดิม', () => {
+    expect(riskFlags('run SELECT * FROM users WHERE id = 1')).toEqual(['sql']);
+    expect(riskFlags("UPDATE users SET role = 'admin'")).toEqual(['sql']);
+    expect(riskFlags('DELETE FROM sessions')).toEqual(['sql']);
+    expect(riskFlags('build the report with raw SQL')).toEqual(['sql']);
+  });
+});
+
+describe('mergeRiskFlags', () => {
+  it('รวมหมวดจากหลายแหล่ง ไม่ซ้ำ เรียงตามลำดับหมวดเดิม', () => {
+    expect(mergeRiskFlags(['payment'], ['auth'], ['auth', 'payment'])).toEqual(['auth', 'payment']);
+    expect(mergeRiskFlags([], [])).toEqual([]);
+    expect(mergeRiskFlags(['upload'], ['secret'])).toEqual(['secret', 'upload']);
   });
 });
 

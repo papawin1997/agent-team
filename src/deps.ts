@@ -63,4 +63,9 @@ export interface Deps {
   log?: Logger;
   /** จาก --quick / --full: บอก PM ว่าผู้ใช้อยากได้ระดับไหน (full = ไม่เสนอ quick) */
   levelPreference?: Level;
+  /**
+   * true หลังบอก PM เรื่อง levelPreference ไปแล้วครั้งแรกของการรันนี้ (mutable ระหว่างรัน — กันไม่ให้บอกซ้ำ
+   * ทุกครั้งที่กลับเข้า REQUIREMENTS ในรอบรันเดียวกัน เช่น ขอแก้ requirements หรือ change ตอน DELIVER)
+   */
+  levelHintSent?: boolean;
 }

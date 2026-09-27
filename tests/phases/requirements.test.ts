@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { PmInput } from '../../src/deps';
+import type { PlanInput, PmInput } from '../../src/deps';
 import { initProgress, quickDesign } from '../../src/domain';
+import { runDesign } from '../../src/phases/design';
 import { runRequirements } from '../../src/phases/requirements';
 import { newState } from '../../src/state';
-import { asking, makeQuickTask, makeRequirements, proposal, quickProposal } from '../helpers/builders';
+import { asking, makeDesign, makeQuickTask, makeRequirements, proposal, quickProposal } from '../helpers/builders';
 import { makeDeps } from '../helpers/fakes';
 
 const pmInput = (runner: { calls: { input: unknown }[] }, i: number) => runner.calls[i]!.input as PmInput;
@@ -356,6 +357,110 @@ describe('runRequirements', () => {
     expect(state.quickTask).toBeUndefined();
     expect(state.design).toBeUndefined();
     expect(state.progress).toEqual({});
+  });
+
+  it('งาน full มี design จริง [api, ui] แล้วขอแก้ตอน DELIVER จน PM เสนอ quick: เก็บ baseDesign/baseProgress ไว้ design ของ quick ใช้ architecture ของ base', async () => {
+    const fullDesign = makeDesign(); // tasks [api(backend), ui(frontend, depends on api)]
+    const basePrev = initProgress(fullDesign, {}, 5);
+    basePrev.api = { ...basePrev.api!, done: true };
+    basePrev.ui = { ...basePrev.ui!, done: true };
+    const { deps } = makeDeps({ pm: [quickProposal()] }, ['quick']);
+    const state = newState();
+    state.phase = 'REQUIREMENTS';
+    state.level = 'full';
+    state.requirements = makeRequirements();
+    state.design = fullDesign;
+    state.progress = basePrev;
+    state.pendingPrompt = 'ขอแก้เล็กน้อย';
+    state.pmSessionId = 'pm-session';
+    await runRequirements(deps, state);
+
+    expect(state.phase).toBe('BUILD');
+    expect(state.level).toBe('quick');
+    expect(state.baseDesign).toEqual(fullDesign);
+    expect(state.baseProgress).toEqual(basePrev);
+    expect(state.design?.tasks.map((t) => t.id)).toEqual(['quick']);
+    expect(state.design?.architecture).toBe(fullDesign.architecture);
+    expect(state.design?.apiContract).toBe(fullDesign.apiContract);
+    expect(state.design?.dataModel).toBe(fullDesign.dataModel);
+    expect(state.design?.overview).toBe(fullDesign.overview);
+  });
+
+  it('งาน quick ที่มี baseDesign แล้วขอแก้จน PM เสนอ full: คืน design/progress เดิมให้ Planning เห็นเป็น previousDesign (ไม่เสีย design เดิม)', async () => {
+    const fullDesign = makeDesign();
+    const baseProgress = initProgress(fullDesign, {}, 5);
+    baseProgress.api = { ...baseProgress.api!, done: true };
+    baseProgress.ui = { ...baseProgress.ui!, done: true };
+    const quickTask = makeQuickTask();
+    const quickDsn = quickDesign(makeRequirements(), quickTask, fullDesign);
+    const { deps } = makeDeps({ pm: [proposal()] }, ['confirm']);
+    const state = newState();
+    state.phase = 'REQUIREMENTS';
+    state.level = 'quick';
+    state.quickTask = quickTask;
+    state.requirements = makeRequirements();
+    state.design = quickDsn;
+    state.progress = initProgress(quickDsn, {}, 2);
+    state.baseDesign = fullDesign;
+    state.baseProgress = baseProgress;
+    state.pendingPrompt = 'ขอเพิ่มฟีเจอร์ค้นหา';
+    state.pmSessionId = 'pm-session';
+    await runRequirements(deps, state);
+
+    expect(state.phase).toBe('DESIGN');
+    expect(state.level).toBe('full');
+    expect(state.design).toEqual(fullDesign);
+    expect(state.progress).toEqual(baseProgress);
+    expect(state.baseDesign).toBeUndefined();
+    expect(state.baseProgress).toBeUndefined();
+
+    const { deps: designDeps, runner: designRunner } = makeDeps({ plans: [makeDesign()] }, []);
+    await runDesign(designDeps, state);
+    const planInput = designRunner.calls[0]!.input as PlanInput;
+    expect(planInput.previousDesign?.tasks.map((t) => t.id)).toEqual(['api', 'ui']);
+  });
+
+  it('ยอมรับ quick: ลบ designFeedback เก่าทิ้ง (ไม่ให้ตกค้างไปถึง runDesign รอบถัดไป)', async () => {
+    const { deps } = makeDeps({ pm: [quickProposal()] }, ['แก้คำผิด', 'quick']);
+    const state = newState();
+    state.designFeedback = 'feedback เก่าที่ค้างมาจาก revise รอบก่อน';
+    await runRequirements(deps, state);
+
+    expect(state.level).toBe('quick');
+    expect(state.designFeedback).toBeUndefined();
+  });
+
+  it('--quick: บอก PM ในข้อความแรกของการรันนี้ แม้เป็นงานค้างที่มี pmSessionId อยู่แล้ว', async () => {
+    const { deps, runner } = makeDeps({ pm: [quickProposal()] }, ['ต่อเลย', 'quick']);
+    deps.levelPreference = 'quick';
+    const state = newState();
+    state.pmSessionId = 'pm-session';
+    await runRequirements(deps, state);
+
+    expect(pmInput(runner, 0).prompt).toBe('[ผู้ใช้ขอโหมด quick ถ้างานเข้าเกณฑ์]\nต่อเลย');
+  });
+
+  it('ผู้ใช้พิมพ์คำเสี่ยงเอง แม้ requirements/quickTask ของ PM ดูไม่เสี่ยง: เตือนความเสี่ยงอยู่ดี', async () => {
+    const { deps, io } = makeDeps({ pm: [quickProposal()] }, ['เพิ่มหน้า login', 'quick']);
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(io.said.join('\n')).toContain('⚠ งานนี้แตะเรื่อง auth — แนะนำ full (มีขั้นออกแบบและตรวจ Security)');
+    expect(state.level).toBe('quick');
+  });
+
+  it('risk flags ปรากฏแล้วหายไปก่อนตัดสินใจ: riskAppearedMidDecision reset แล้วไม่ต้องถามซ้ำตอนเลือก quick', async () => {
+    const risky = { ...makeRequirements(), goal: 'เพิ่มปุ่ม login' };
+    const { deps } = makeDeps(
+      { pm: [quickProposal(), quickProposal(risky), quickProposal()] },
+      ['แก้คำผิด', 'ทำไมถึงเสนอ quick', 'ทำไมหายไปแล้ว', 'quick'],
+    );
+    const state = newState();
+    // ScriptedIO จะ throw ถ้าโค้ดพยายามถามซ้ำ (ไม่มีคำตอบที่ 5 เหลือ) — ผ่านแปลว่าไม่ได้ถามซ้ำจริง
+    await runRequirements(deps, state);
+
+    expect(state.phase).toBe('BUILD');
+    expect(state.level).toBe('quick');
   });
 
   describe('PM ตอบไม่สำเร็จ ไม่ทำให้ทั้ง run หยุด', () => {

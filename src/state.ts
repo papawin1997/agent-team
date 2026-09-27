@@ -40,6 +40,13 @@ export interface State {
   /** งานเดียวของโหมด quick (มีเฉพาะตอน level = quick) */
   quickTask?: QuickTask;
   progress: Record<string, TaskProgress>;
+  /**
+   * design จริงของงาน full ที่เก็บไว้ตอนถูก triage เป็น quick (เฉพาะตอนมี design จริงอยู่ก่อนแล้ว ไม่ใช่
+   * design สังเคราะห์ของ quick เอง) — ใช้คืนกลับตอนงานถูกยกระดับเป็น full อีกครั้ง จะได้ไม่เสีย design เดิม
+   */
+  baseDesign?: Design;
+  /** progress ของ baseDesign ณ ตอนที่ถูกเก็บไว้ (คู่กับ baseDesign) */
+  baseProgress?: Record<string, TaskProgress>;
 }
 
 export function newState(): State {

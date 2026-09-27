@@ -29,6 +29,7 @@ const PM_PROMPT = [
   '- For "quick", also fill "quickTask": ONE task a single worker can finish - title, owner "frontend" or "backend", a description detailed enough for someone who never saw this conversation, and acceptanceCriteria that QA can check by running code or tests. For "full", omit quickTask.',
   '- When the request already looks like quick, ask at most ONE clarifying question before proposing.',
   '- If the conversation says the user requires full, always use "full". If it says the user prefers quick, use "quick" when the rules above allow it; otherwise use "full" and explain why in levelReason.',
+  '- For a change request to already-confirmed requirements, quickTask must describe only the change itself, not re-implement the whole goal from scratch.',
   '',
   'Rules:',
   '- Never write or modify code. You may read the project (Read/Glob/Grep) to understand existing code.',

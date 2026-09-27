@@ -1,6 +1,6 @@
 import type { Deps } from '../deps';
 import { decide } from '../io-util';
-import { isPass, isSecurityPass, orderTasks } from '../domain';
+import { isPass, isSecurityPass, orderTasks, restoreBaseDesign } from '../domain';
 import { RoleRunError } from '../errors';
 import { logLevelDecided } from '../level';
 import { nullLogger } from '../logger';
@@ -205,10 +205,11 @@ async function buildTask(
       state.level = 'full';
       state.quickTask = undefined;
       state.phase = 'DESIGN';
-      // ล้าง design สังเคราะห์ของโหมด quick เพื่อไม่ให้ Planning เห็นมันเป็น previousDesign — โค้ดที่ worker
-      // ทำไปแล้วยังอยู่ในโปรเจกต์ ไม่ได้ถูกลบ แค่บอก Planning ผ่าน designFeedback แทนให้ออกแบบใหม่ตามสมควร
-      state.design = undefined;
-      state.progress = {};
+      // คืน design/progress ของงาน full เดิมถ้าเคยเก็บไว้ใน baseDesign (ก่อนถูก triage เป็น quick) แทนการล้างทิ้ง
+      // เฉย ๆ — ไม่มี baseDesign (เริ่มจาก quick มาแต่แรก) ยังล้างเหมือนเดิมเพื่อไม่ให้ Planning เห็น design
+      // สังเคราะห์ของ quick เป็น previousDesign โค้ดที่ worker ทำไปแล้วยังอยู่ในโปรเจกต์ ไม่ได้ถูกลบ แค่บอก
+      // Planning ผ่าน designFeedback แทนให้ออกแบบใหม่ตามสมควร
+      restoreBaseDesign(state);
       state.designFeedback =
         `ลองทำแบบ quick (task "${task.title}") แล้วไม่ผ่าน QA ครบ ${progress.rounds} รอบ ` +
         `ปัญหาที่ค้าง: ${JSON.stringify(progress.lastReport?.issues ?? [])} — ` +
@@ -216,7 +217,7 @@ async function buildTask(
       logLevelDecided(deps, 'full', 'user', `QA ไม่ผ่านครบ ${progress.rounds} รอบในโหมด quick`, []);
       return 'escalated';
     }
-    progress.maxRounds += config.extraRoundsOnContinue;
+    progress.maxRounds += quick ? config.quickMaxQaRounds : config.extraRoundsOnContinue;
     await store.save(state);
   }
 }
@@ -241,8 +242,9 @@ async function escalate(
   state.pmSessionId = sessionId;
   await deps.store.save(state);
   io.say(`\n[PM] ${turn.message}\n`);
+  const extraRounds = quick ? config.quickMaxQaRounds : config.extraRoundsOnContinue;
   const question =
-    `task ${task.id} ไม่ผ่านครบ ${progress.rounds} รอบ (continue = ทำต่ออีก ${config.extraRoundsOnContinue} รอบ, accept = รับตามสภาพ, abort = ยกเลิก` +
+    `task ${task.id} ไม่ผ่านครบ ${progress.rounds} รอบ (continue = ทำต่ออีก ${extraRounds} รอบ, accept = รับตามสภาพ, abort = ยกเลิก` +
     (quick ? ', full = ยกระดับเป็นแบบเต็ม)' : ')');
   const options: readonly Decision[] = quick ? ['continue', 'accept', 'abort', 'full'] : ['continue', 'accept', 'abort'];
   return decide(deps, state, question, options);

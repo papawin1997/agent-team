@@ -92,9 +92,10 @@ export function formatJobSummary(job: JobInfo, n: number, warning?: string): str
   const lock = job.lock
     ? ` (กำลังรันอยู่ pid ${job.lock.pid} ตั้งแต่ ${hhmm(new Date(job.lock.startedAt))})`
     : '';
+  const quickTag = state.level === 'quick' ? ' · quick' : '';
   const line =
     `  ${n}) "${jobTitle(state)}" — เฟส ${state.phase} (${PHASE_LABELS[state.phase]})` +
-    `${progress ? `, ${progress}` : ''} · รันล่าสุด ${localDateTime(job.updatedAt)}${lock}`;
+    `${progress ? `, ${progress}` : ''}${quickTag} · รันล่าสุด ${localDateTime(job.updatedAt)}${lock}`;
   return warning ? `${line}\n     ${warning}` : line;
 }
 

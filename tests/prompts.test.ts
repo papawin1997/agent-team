@@ -73,6 +73,12 @@ describe('PM: จัดระดับงาน', () => {
     expect(pm).toContain('at most ONE clarifying question');
     expect(pm).toContain('authentication');
   });
+
+  it('prompt ของ PM บอกว่า quickTask ของคำขอแก้ไข requirements เดิม ต้องอธิบายเฉพาะส่วนที่เปลี่ยน ไม่ทำใหม่ทั้งหมด', () => {
+    const pm = SYSTEM_PROMPTS.pm;
+    expect(pm).toContain('change request to already-confirmed requirements');
+    expect(pm).toContain('only the change itself, not re-implement the whole goal');
+  });
 });
 
 describe('prompt builders', () => {

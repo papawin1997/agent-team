@@ -115,6 +115,17 @@ describe('formatJobSummary', () => {
     expect(formatJobSummary(jobOf('a', s), 1)).toContain('เฟส REVIEW (รอยืนยัน design), เสร็จ 0/2 task · รันล่าสุด');
   });
 
+  it('งาน quick: ต่อท้าย · quick', () => {
+    const s = buildState();
+    s.level = 'quick';
+    expect(formatJobSummary(jobOf('a', s), 1)).toContain(', เสร็จ 0/2 task · quick · รันล่าสุด');
+  });
+
+  it('งาน full (level ไม่ใช่ quick หรือไม่มี level): ไม่ต่อท้าย · quick', () => {
+    const s = buildState();
+    expect(formatJobSummary(jobOf('a', s), 1)).not.toContain('· quick');
+  });
+
   it('แสดงสถานะ lock และคำเตือนบรรทัดถัดไป', () => {
     const lock = { pid: 4120, startedAt: new Date(2026, 8, 25, 9, 12).toISOString() };
     const text = formatJobSummary(jobOf('a', buildState(), lastRun, lock), 1, '⚠ เตือน');

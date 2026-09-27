@@ -377,6 +377,60 @@ describe('runBuild', () => {
     expect(planInput.feedback).toContain('ลองทำแบบ quick');
   });
 
+  it('งาน quick มี baseDesign (เคยเป็น full มาก่อน) ไม่ผ่านครบรอบ เลือก full: คืน design/progress จาก base แทนล้างทิ้ง', async () => {
+    const fullDesign = makeDesign(); // tasks [api(backend), ui(frontend, depends on api)]
+    const baseProgress = initProgress(fullDesign, {}, 5);
+    baseProgress.api = { ...baseProgress.api!, done: true };
+    baseProgress.ui = { ...baseProgress.ui!, done: true };
+    const quickTask = makeQuickTask();
+    const quickDsn = quickDesign(makeRequirements(), quickTask, fullDesign);
+    const state = buildState(quickDsn);
+    state.level = 'quick';
+    state.quickTask = quickTask;
+    state.progress = initProgress(quickDsn, {}, 2);
+    state.baseDesign = fullDesign;
+    state.baseProgress = baseProgress;
+    const { deps, io } = makeDeps(
+      { qa: [failReport('quick'), failReport('quick')], pm: [asking('ค้างเรื่อง X')] },
+      ['full'],
+    );
+    await runBuild(deps, state);
+
+    expect(state.phase).toBe('DESIGN');
+    expect(state.level).toBe('full');
+    expect(state.design).toEqual(fullDesign);
+    expect(state.progress).toEqual(baseProgress);
+    expect(state.baseDesign).toBeUndefined();
+    expect(state.baseProgress).toBeUndefined();
+    expect(state.designFeedback).toContain('ลองทำแบบ quick');
+    expect(io.asked.at(-1)).toContain('full = ยกระดับเป็นแบบเต็ม');
+
+    // ต่อ: Planning ต้องเห็น design เดิม [api, ui] เป็น previousDesign ไม่ใช่ design สังเคราะห์ของ quick
+    const { deps: designDeps, runner: designRunner } = makeDeps({ plans: [makeDesign()] }, []);
+    await runDesign(designDeps, state);
+
+    const planInput = designRunner.calls[0]!.input as PlanInput;
+    expect(planInput.previousDesign?.tasks.map((t) => t.id)).toEqual(['api', 'ui']);
+  });
+
+  it('งาน quick: continue ที่ escalate เพิ่มรอบตาม quickMaxQaRounds ไม่ใช่ extraRoundsOnContinue', async () => {
+    const design = quickDesign(makeRequirements(), makeQuickTask());
+    const state = buildState(design);
+    state.level = 'quick';
+    state.progress = initProgress(design, {}, 2);
+    const { deps, io } = makeDeps(
+      { qa: [failReport('quick'), failReport('quick'), passReport('quick')], pm: [asking('ค้าง')] },
+      ['continue'],
+    );
+    deps.config = { ...deps.config, extraRoundsOnContinue: 5, quickMaxQaRounds: 3 };
+    await runBuild(deps, state);
+
+    expect(io.asked.at(-1)).toContain('ทำต่ออีก 3 รอบ');
+    expect(state.progress.quick?.maxRounds).toBe(5);
+    expect(state.progress.quick?.done).toBe(true);
+    expect(state.phase).toBe('DELIVER');
+  });
+
   it('งาน full: ตัวเลือก escalate ไม่มี full', async () => {
     const state = buildState();
     state.progress = initProgress(state.design!, {}, 1);
