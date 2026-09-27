@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { PmInput, UserIO } from '../../src/deps';
+import { quickDesign } from '../../src/domain';
 import { runDeliver } from '../../src/phases/deliver';
-import { asking, buildState } from '../helpers/builders';
+import { asking, buildState, makeQuickTask, makeRequirements } from '../helpers/builders';
 import { makeDeps } from '../helpers/fakes';
 
 const deliverState = () => {
@@ -119,5 +120,16 @@ describe('runDeliver', () => {
     }>;
     expect(summary.find((t) => t.id === 'api')?.securityReviewed).toBe(true);
     expect(summary.find((t) => t.id === 'ui')?.securityReviewed).toBe(false);
+  });
+
+  it('งาน quick: บอก PM ว่าเป็นโหมด quick ที่ไม่มีขั้นออกแบบและ Security โดยตั้งใจ', async () => {
+    const design = quickDesign(makeRequirements(), makeQuickTask());
+    const state = buildState(design);
+    state.phase = 'DELIVER';
+    state.level = 'quick';
+    const { deps, runner } = makeDeps({ pm: [asking('สรุปส่งมอบ')] }, ['accept']);
+    await runDeliver(deps, state);
+    expect((runner.calls[0]!.input as { prompt: string }).prompt).toContain('โหมด quick');
+    expect(state.phase).toBe('DONE');
   });
 });

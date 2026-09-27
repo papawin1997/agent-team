@@ -6,8 +6,8 @@ import { nullLogger } from '../logger';
 import type { Design, QAReport, Requirements, Task } from '../schemas';
 import type { State, TaskProgress } from '../state';
 
-type Outcome = 'done' | 'aborted';
-type Decision = 'continue' | 'accept' | 'abort';
+type Outcome = 'done' | 'aborted' | 'escalated';
+type Decision = 'continue' | 'accept' | 'abort' | 'full';
 interface BuildContext {
   design: Design;
   requirements: Requirements;
@@ -52,6 +52,7 @@ async function runRound(
   ctx: BuildContext,
   task: Task,
   progress: TaskProgress,
+  skipSecurity: boolean,
 ): Promise<{ report: QAReport; limitHit: boolean; securityReviewed: boolean }> {
   const { runner, io } = deps;
   let step: Step = 'work';
@@ -61,6 +62,9 @@ async function runRound(
     step = 'qa';
     qaReport = await runner.qa({ task, result, ...ctx });
     if (!isPass(qaReport)) return { report: qaReport, limitHit: false, securityReviewed: false };
+
+    // โหมด quick ไม่มี Security โดยตั้งใจ (งานเสี่ยงถูกกันไม่ให้เข้า quick ตั้งแต่ตอนจัดระดับ)
+    if (skipSecurity) return { report: qaReport, limitHit: false, securityReviewed: false };
 
     step = 'security';
     const securityReport = await runner.security({ task, result, ...ctx });
@@ -117,13 +121,19 @@ export async function runBuild(deps: Deps, state: State): Promise<void> {
   const { design, requirements } = state;
   if (!design || !requirements) throw new Error('BUILD ต้องมี requirements และ design');
   const ctx: BuildContext = { design, requirements };
+  const quick = state.level === 'quick';
 
   for (const task of orderTasks(design.tasks)) {
     const progress = state.progress[task.id];
     if (!progress) throw new Error(`ไม่พบ progress ของ task ${task.id}`);
     if (progress.done) continue;
-    if ((await buildTask(deps, state, ctx, task, progress)) === 'aborted') {
+    const outcome = await buildTask(deps, state, ctx, task, progress, quick);
+    if (outcome === 'aborted') {
       state.phase = 'ABORTED';
+      await deps.store.save(state);
+      return;
+    }
+    if (outcome === 'escalated') {
       await deps.store.save(state);
       return;
     }
@@ -138,6 +148,7 @@ async function buildTask(
   ctx: BuildContext,
   task: Task,
   progress: TaskProgress,
+  quick: boolean,
 ): Promise<Outcome> {
   const { io, store, config } = deps;
   for (;;) {
@@ -145,7 +156,7 @@ async function buildTask(
       io.say(
         `[${task.owner}] ทำ task ${task.id}: ${task.title} (รอบที่ ${progress.rounds + 1}/${progress.maxRounds})`,
       );
-      const { report, limitHit, securityReviewed } = await runRound(deps, ctx, task, progress);
+      const { report, limitHit, securityReviewed } = await runRound(deps, ctx, task, progress, quick);
       progress.rounds += 1;
       progress.lastReport = report;
       progress.securityReviewed = securityReviewed;
@@ -176,7 +187,7 @@ async function buildTask(
       await store.save(state);
     }
 
-    const decision = await escalate(deps, state, task, progress);
+    const decision = await escalate(deps, state, task, progress, quick);
     (deps.log ?? nullLogger).log('INFO', 'escalate.decision', {
       taskId: task.id,
       rounds: progress.rounds,
@@ -189,6 +200,18 @@ async function buildTask(
       await store.save(state);
       return 'done';
     }
+    if (decision === 'full') {
+      state.level = 'full';
+      state.quickTask = undefined;
+      state.phase = 'DESIGN';
+      (deps.log ?? nullLogger).log('INFO', 'level.decided', {
+        level: 'full',
+        by: 'user',
+        reason: `QA ไม่ผ่านครบ ${progress.rounds} รอบในโหมด quick`,
+        riskFlags: [],
+      });
+      return 'escalated';
+    }
     progress.maxRounds += config.extraRoundsOnContinue;
     await store.save(state);
   }
@@ -199,6 +222,7 @@ async function escalate(
   state: State,
   task: Task,
   progress: TaskProgress,
+  quick: boolean,
 ): Promise<Decision> {
   const { runner, io, config } = deps;
   const { turn, sessionId } = await runner.pmTurn({
@@ -206,15 +230,16 @@ async function escalate(
     prompt:
       `task ${task.id} (${task.title}) ไม่ผ่าน QA ครบ ${progress.rounds} รอบแล้ว ` +
       `ปัญหาที่ค้าง:\n${JSON.stringify(progress.lastReport?.issues ?? [])}\n` +
-      'สรุปให้ user ฟังเป็นภาษาไทยว่าค้างอะไร และอธิบายตัวเลือก: continue / accept / abort',
+      (quick
+        ? 'สรุปให้ user ฟังเป็นภาษาไทยว่าค้างอะไร และอธิบายตัวเลือก: continue / accept / abort / full (ยกระดับเป็นแบบเต็ม: Planning ออกแบบใหม่ + ตรวจ Security)'
+        : 'สรุปให้ user ฟังเป็นภาษาไทยว่าค้างอะไร และอธิบายตัวเลือก: continue / accept / abort'),
   });
   state.pmSessionId = sessionId;
   await deps.store.save(state);
   io.say(`\n[PM] ${turn.message}\n`);
-  return decide(
-    deps,
-    state,
-    `task ${task.id} ไม่ผ่านครบ ${progress.rounds} รอบ (continue = ทำต่ออีก ${config.extraRoundsOnContinue} รอบ, accept = รับตามสภาพ, abort = ยกเลิก)`,
-    ['continue', 'accept', 'abort'] as const,
-  );
+  const question =
+    `task ${task.id} ไม่ผ่านครบ ${progress.rounds} รอบ (continue = ทำต่ออีก ${config.extraRoundsOnContinue} รอบ, accept = รับตามสภาพ, abort = ยกเลิก` +
+    (quick ? ', full = ยกระดับเป็นแบบเต็ม)' : ')');
+  const options: readonly Decision[] = quick ? ['continue', 'accept', 'abort', 'full'] : ['continue', 'accept', 'abort'];
+  return decide(deps, state, question, options);
 }

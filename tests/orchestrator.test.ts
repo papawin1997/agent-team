@@ -8,6 +8,7 @@ import {
   makeTask,
   passReport,
   proposal,
+  quickProposal,
 } from './helpers/builders';
 import { makeDeps, ScriptedIO } from './helpers/fakes';
 
@@ -264,5 +265,15 @@ describe('runTeam', () => {
     const pmCalls = runner.calls.filter((c) => c.role === 'pm');
     const firstReqPrompt = (pmCalls[0]?.input as any)?.prompt ?? '';
     expect(firstReqPrompt).toContain('แก้ให้มี login');
+  });
+
+  it('flow quick: requirements -> build (ไม่มี planning/security) -> deliver -> DONE', async () => {
+    const { deps, runner } = makeDeps(
+      { pm: [quickProposal(), asking('สรุปส่งมอบ')], qa: [passReport('quick')] },
+      ['แก้คำผิด', 'quick', 'accept'],
+    );
+    const final = await runTeam(deps);
+    expect(final.phase).toBe('DONE');
+    expect(roles(runner.calls)).toEqual(['pm', 'frontend', 'qa', 'pm']);
   });
 });

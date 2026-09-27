@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { PmInput } from '../../src/deps';
 import { runRequirements } from '../../src/phases/requirements';
 import { newState } from '../../src/state';
-import { asking, makeRequirements, proposal } from '../helpers/builders';
+import { asking, makeQuickTask, makeRequirements, proposal, quickProposal } from '../helpers/builders';
 import { makeDeps } from '../helpers/fakes';
 
 const pmInput = (runner: { calls: { input: unknown }[] }, i: number) => runner.calls[i]!.input as PmInput;
@@ -172,6 +172,83 @@ describe('runRequirements', () => {
     state.pmSessionId = 'pm-session';
     await runRequirements(deps, state);
     expect(state.title).toBeUndefined();
+  });
+
+  it('PM เสนอ quick แล้วเลือก quick -> BUILD ด้วย design 1 task, รอบ QA = quickMaxQaRounds, log level.decided', async () => {
+    const events: { event: string; data?: Record<string, unknown> }[] = [];
+    const { deps, store, io } = makeDeps({ pm: [quickProposal()] }, ['แก้คำผิด', 'quick']);
+    deps.log = { log: (_level, event, data) => events.push({ event, data }) };
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(state.phase).toBe('BUILD');
+    expect(state.level).toBe('quick');
+    expect(state.quickTask).toEqual(makeQuickTask());
+    expect(state.design?.tasks.map((t) => t.id)).toEqual(['quick']);
+    expect(state.progress.quick).toMatchObject({ rounds: 0, maxRounds: 2, done: false });
+    expect(store.artifacts.get('design.json')).toEqual(state.design);
+    expect(store.artifacts.get('requirements.json')).toEqual(makeRequirements());
+    expect(io.said.join('\n')).toContain('--- งานแบบ quick (1 task) ---');
+    expect(io.said.join('\n')).toContain('ระดับที่ PM เสนอ: quick — แก้ไฟล์เดียว');
+    expect(events.find((e) => e.event === 'level.decided')?.data).toEqual({
+      level: 'quick',
+      by: 'pm',
+      reason: 'แก้ไฟล์เดียว',
+      riskFlags: [],
+    });
+  });
+
+  it('PM เสนอ quick แต่เลือก full -> DESIGN, log by user', async () => {
+    const events: { event: string; data?: Record<string, unknown> }[] = [];
+    const { deps } = makeDeps({ pm: [quickProposal()] }, ['แก้คำผิด', 'full']);
+    deps.log = { log: (_level, event, data) => events.push({ event, data }) };
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(state.phase).toBe('DESIGN');
+    expect(state.level).toBe('full');
+    expect(state.quickTask).toBeUndefined();
+    expect(events.find((e) => e.event === 'level.decided')?.data).toMatchObject({ level: 'full', by: 'user' });
+  });
+
+  it('เจอคำเสี่ยง: เตือนและเรียง full ก่อน แต่ยังเลือก quick ได้', async () => {
+    const risky = { ...makeRequirements(), goal: 'เพิ่มปุ่ม login' };
+    const { deps, io } = makeDeps({ pm: [quickProposal(risky)] }, ['x', 'quick']);
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(io.said.join('\n')).toContain('⚠ งานนี้แตะเรื่อง auth — แนะนำ full (มีขั้นออกแบบและตรวจ Security)');
+    expect(state.level).toBe('quick');
+  });
+
+  it('revise จากตัวเลือกระดับ -> ถามว่าอยากปรับอะไรแล้วคุยต่อ', async () => {
+    const { deps, runner } = makeDeps({ pm: [quickProposal(), proposal()] }, ['x', 'revise', 'ขอแบบเต็ม', 'confirm']);
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(pmInput(runner, 1).prompt).toBe('ขอแบบเต็ม');
+    expect(state.phase).toBe('DESIGN');
+    expect(state.level).toBe('full');
+  });
+
+  it('--full: ไม่เสนอ quick แม้ PM ส่ง quick มา และบอก PM ในข้อความแรก', async () => {
+    const { deps, runner, io } = makeDeps({ pm: [quickProposal()] }, ['แก้คำผิด', 'confirm']);
+    deps.levelPreference = 'full';
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(pmInput(runner, 0).prompt).toBe('[ผู้ใช้สั่ง --full: ต้องเป็น full เท่านั้น]\nแก้คำผิด');
+    expect(io.said.join('\n')).not.toContain('งานแบบ quick');
+    expect(state.phase).toBe('DESIGN');
+    expect(state.level).toBe('full');
+    expect(state.title).toBe('แก้คำผิด');
+  });
+
+  it('--quick: บอก PM ในข้อความแรก', async () => {
+    const { deps, runner } = makeDeps({ pm: [quickProposal()] }, ['แก้คำผิด', 'quick']);
+    deps.levelPreference = 'quick';
+    await runRequirements(deps, newState());
+    expect(pmInput(runner, 0).prompt).toBe('[ผู้ใช้ขอโหมด quick ถ้างานเข้าเกณฑ์]\nแก้คำผิด');
   });
 
   describe('PM ตอบไม่สำเร็จ ไม่ทำให้ทั้ง run หยุด', () => {

@@ -1,5 +1,5 @@
 import { initProgress } from '../../src/domain';
-import type { Design, PmTurn, QAReport, Requirements, SecurityReport, Task } from '../../src/schemas';
+import type { Design, PmTurn, QAReport, QuickTask, Requirements, SecurityReport, Task } from '../../src/schemas';
 import { newState, type State } from '../../src/state';
 
 export function makeRequirements(): Requirements {
@@ -85,6 +85,25 @@ export const proposal = (
   requirements: Requirements = makeRequirements(),
   message = 'สรุป requirements',
 ): PmTurn => ({ message, status: 'proposal', requirements });
+
+export const makeQuickTask = (): QuickTask => ({
+  title: 'แก้คำผิดหน้าแรก',
+  owner: 'frontend',
+  description: 'แก้คำว่า Hellp เป็น Hello ในหน้าแรก',
+  acceptanceCriteria: ['หน้าแรกแสดง Hello'],
+});
+
+export const quickProposal = (
+  requirements: Requirements = makeRequirements(),
+  quickTask: QuickTask = makeQuickTask(),
+): PmTurn => ({
+  message: 'งานนี้เล็ก',
+  status: 'proposal',
+  requirements,
+  level: 'quick',
+  levelReason: 'แก้ไฟล์เดียว',
+  quickTask,
+});
 
 export function buildState(design: Design = makeDesign()): State {
   const state = newState();

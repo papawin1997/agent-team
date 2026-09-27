@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { WorkInput } from '../../src/deps';
 import { RoleOutputError, RoleRunError } from '../../src/errors';
+import { initProgress, quickDesign } from '../../src/domain';
 import { runBuild } from '../../src/phases/build';
 import {
   asking,
@@ -8,6 +9,8 @@ import {
   failReport,
   failSecurityReport,
   makeDesign,
+  makeQuickTask,
+  makeRequirements,
   makeTask,
   passReport,
   passSecurityReport,
@@ -324,6 +327,50 @@ describe('runBuild', () => {
       level: 'WARN',
       data: { taskId: 'api', round: 1, reason: 'error_max_turns' },
     });
+  });
+
+  it('งาน quick: ไม่เรียก Security และ securityReviewed = false', async () => {
+    const design = quickDesign(makeRequirements(), makeQuickTask());
+    const state = buildState(design);
+    state.level = 'quick';
+    state.progress = initProgress(design, {}, 2);
+    const { deps, runner } = makeDeps({ qa: [passReport('quick')] }, []);
+    await runBuild(deps, state);
+
+    expect(runner.calls.map((c) => c.role)).toEqual(['frontend', 'qa']);
+    expect(state.progress.quick).toMatchObject({ done: true, securityReviewed: false });
+    expect(state.phase).toBe('DELIVER');
+  });
+
+  it('งาน quick ไม่ผ่านครบรอบ: เลือก full -> ยกระดับไป DESIGN และ log', async () => {
+    const events: { event: string; data?: Record<string, unknown> }[] = [];
+    const design = quickDesign(makeRequirements(), makeQuickTask());
+    const state = buildState(design);
+    state.level = 'quick';
+    state.quickTask = makeQuickTask();
+    state.progress = initProgress(design, {}, 2);
+    const { deps, io } = makeDeps(
+      { qa: [failReport('quick'), failReport('quick')], pm: [asking('ค้างเรื่อง X')] },
+      ['full'],
+    );
+    deps.log = { log: (_level, event, data) => events.push({ event, data }) };
+    await runBuild(deps, state);
+
+    expect(state.phase).toBe('DESIGN');
+    expect(state.level).toBe('full');
+    expect(state.quickTask).toBeUndefined();
+    expect(io.asked.at(-1)).toContain('full = ยกระดับเป็นแบบเต็ม');
+    expect(events.find((e) => e.event === 'escalate.decision')?.data).toMatchObject({ decision: 'full' });
+    expect(events.find((e) => e.event === 'level.decided')?.data).toMatchObject({ level: 'full', by: 'user' });
+  });
+
+  it('งาน full: ตัวเลือก escalate ไม่มี full', async () => {
+    const state = buildState();
+    state.progress = initProgress(state.design!, {}, 1);
+    const { deps, io } = makeDeps({ qa: [failReport('api')], pm: [asking('ค้าง')] }, ['abort']);
+    await runBuild(deps, state);
+    expect(io.asked.at(-1)).not.toContain('full =');
+    expect(state.phase).toBe('ABORTED');
   });
 });
 
