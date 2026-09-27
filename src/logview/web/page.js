@@ -121,6 +121,13 @@
   /** @type {string|null} */
   var pendingScrollId = null;
 
+  /** เวลา (ms) นานสุดหลัง mousedown/keydown บน select ที่ยังถือว่า "น่าจะเปิด dropdown อยู่จริง" */
+  var SELECT_GRACE_MS = 3000;
+  /** เวลาล่าสุดที่ผู้ใช้เพิ่งโต้ตอบกับ select ตัวใดตัวหนึ่ง (mousedown/keydown) — ดูใน selectBox() */
+  var lastSelectInteraction = -Infinity;
+  /** @returns {number} Date.now() ปกติ เว้นแต่เทสต์ตั้ง window.__NOW__ ไว้ (ควบคุมเวลาแบบ deterministic ได้) */
+  function now() { return typeof window.__NOW__ === 'number' ? window.__NOW__ : Date.now(); }
+
   /** @type {Record<string, string>} */
   var RUN_STATUS = {
     done: 'เสร็จสมบูรณ์',
@@ -230,6 +237,9 @@
       s.appendChild(opt);
     });
     s.onchange = function () { onChange(s.value); };
+    // เผื่อ dropdown ที่กำลังเปิดอยู่จริง (ดู now()/SELECT_GRACE_MS ตอน live poll ด้านล่าง)
+    s.addEventListener('mousedown', function () { lastSelectInteraction = now(); });
+    s.addEventListener('keydown', function () { lastSelectInteraction = now(); });
     return s;
   }
 
@@ -646,7 +656,11 @@
       if (document.hidden) return; // แท็บถูกซ่อนอยู่: ไม่ต้อง poll ให้เปลืองทั้งฝั่ง server และ browser
       if (composing) return; // กำลังพิมพ์ด้วย IME อยู่: เลื่อน poll ออกไปก่อน อย่าตัดคำที่พิมพ์ค้าง
       var activeTag = document.activeElement && document.activeElement.tagName ? String(document.activeElement.tagName).toLowerCase() : '';
-      if (activeTag === 'select') return; // เผื่อ dropdown ที่กำลังเปิดอยู่ ไม่ให้หายไปกลางคัน
+      // เลื่อน poll ออกไปเฉพาะตอนน่าจะเปิด dropdown อยู่จริง (เพิ่งกด mousedown/keydown บน select ภายใน
+      // SELECT_GRACE_MS) ไม่ใช่ทุกครั้งที่ focus อยู่บน select เฉย ๆ — render() คืน focus ให้ select
+      // หลัง onchange เสมอ ถ้าเช็คแค่ activeTag === 'select' จะกลายเป็นหยุดอัปเดต live ถาวรทันทีที่ผู้ใช้
+      // เปลี่ยน dropdown สักครั้งแล้วไม่ย้าย focus ไปไหนอีกเลย
+      if (activeTag === 'select' && now() - lastSelectInteraction < SELECT_GRACE_MS) return;
       fetch('/data', { cache: 'no-store' })
         .then(function (r) { return r.json(); })
         .then(/** @param {ViewData} next */ function (next) {

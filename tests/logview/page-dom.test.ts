@@ -294,7 +294,7 @@ describe('หน้า logs (DOM จำลอง)', () => {
   });
 
   describe('live poll', () => {
-    it('เลื่อน poll ออกไปก่อนถ้ากำลังพิมพ์ IME หรือมี select ถูกโฟกัสอยู่ ไม่งั้นอัปเดตข้อมูลโดยตัวกรอง/หน้าเดิมไม่หาย', async () => {
+    it('เลื่อน poll ออกไปก่อนถ้ากำลังพิมพ์ IME ไม่งั้นอัปเดตข้อมูลโดยตัวกรอง/หน้าเดิมไม่หาย', async () => {
       const nextData = JSON.parse(JSON.stringify(DATA)) as ViewData;
       (nextData.runs as unknown[]).push({
         index: 2,
@@ -323,20 +323,71 @@ describe('หน้า logs (DOM จำลอง)', () => {
       expect(fetchCalls).toBe(0);
       fire(search, 'compositionend');
 
-      // 2) โฟกัสค้างอยู่ที่ select -> เลื่อน poll ออกไปเช่นกัน (ไม่ทำ dropdown ที่เปิดอยู่หาย)
+      // 2) แค่ activeElement เป็น select เฉย ๆ (ไม่ได้เพิ่งโต้ตอบด้วย mousedown/keydown) -> poll ต้องทำงานจริง
+      //    ไม่ใช่ค้างตลอดไปแค่เพราะ render() คืน focus ให้ select ทุกครั้งหลัง onchange (นี่คือบั๊กที่แก้ในเทสต์ถัดไป)
       dom.document.activeElement = dom.document.getElementById('calls-sort')!;
-      dom.tick();
-      await flush();
-      expect(fetchCalls).toBe(0);
-
-      // 3) ไม่ติดเงื่อนไขข้างต้น -> poll ทำงานจริง รอบใหม่ขึ้น dropdown ตัวกรอง/รอบที่เลือกยังอยู่
-      dom.document.activeElement = null;
       dom.tick();
       await flush();
       expect(fetchCalls).toBe(1);
       const runSelect = dom.document.getElementById('sel-run')!;
       expect(runSelect.children).toHaveLength(3);
       expect(cards(dom).map((c) => c.id)).toEqual(['call-23']);
+    });
+
+    it('เปลี่ยนค่า select (focus ถูกคืนให้ select ตัวเดิมหลัง render) -> live poll ยังอัปเดตข้อมูลใหม่ได้ภายในไม่เกิน 2 tick ไม่ค้างตลอดไป', async () => {
+      const nextData = JSON.parse(JSON.stringify(DATA)) as ViewData;
+      (nextData.runs as unknown[]).push({
+        index: 2,
+        start: '2026-01-10T12:00:00.000Z',
+        end: '2026-01-10T12:00:01.000Z',
+        status: 'done',
+        events: [],
+        calls: [],
+        totalCostUsd: 0,
+        findings: [],
+        transcripts: {},
+      });
+      let fetchCalls = 0;
+      const dom = loadLive(() => {
+        fetchCalls++;
+        return Promise.resolve({ json: () => Promise.resolve(nextData) });
+      });
+      dom.window.__NOW__ = 0;
+      const sortSel = selects(dom, 'เรียงการเรียก agent')[0]!;
+      dom.document.activeElement = sortSel;
+      fire(sortSel, 'mousedown'); // ผู้ใช้เพิ่งเปิด/โต้ตอบกับ dropdown จริง ๆ ที่ now()=0
+      choose(sortSel, 'cost-desc'); // onchange -> render() คืน focus ให้ select ตัวใหม่ (id เดิม 'calls-sort')
+      expect(dom.document.activeElement!.id).toBe('calls-sort');
+
+      // tick แรก (now=1000, ยังไม่ถึง 3 วิหลัง interaction) -> ข้าม poll กัน dropdown ที่กำลังเปิดอยู่หาย
+      dom.window.__NOW__ = 1000;
+      dom.tick();
+      await flush();
+      expect(fetchCalls).toBe(0);
+
+      // tick ที่สอง (now=4000, ผ่านไปเกิน 3 วิแล้ว) -> ต้องอัปเดตจริง แม้ focus จะยังอยู่บน select ตัวเดิม
+      dom.window.__NOW__ = 4000;
+      dom.tick();
+      await flush();
+      expect(fetchCalls).toBe(1);
+      const runSelect = dom.document.getElementById('sel-run')!;
+      expect(runSelect.children).toHaveLength(3);
+    });
+
+    it('mousedown บน select -> tick ที่เกิดขึ้นทันที (ภายใน 3 วิ) ถูกข้าม', async () => {
+      let fetchCalls = 0;
+      const dom = loadLive(() => {
+        fetchCalls++;
+        return Promise.resolve({ json: () => Promise.resolve(DATA) });
+      });
+      dom.window.__NOW__ = 500;
+      const sortSel = selects(dom, 'เรียงการเรียก agent')[0]!;
+      dom.document.activeElement = sortSel;
+      fire(sortSel, 'mousedown');
+      dom.window.__NOW__ = 500 + 2999;
+      dom.tick();
+      await flush();
+      expect(fetchCalls).toBe(0);
     });
   });
 });

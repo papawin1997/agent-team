@@ -97,7 +97,7 @@ export function find(root: FakeNode, pred: (n: FakeNode) => boolean): FakeNode[]
 export function createDom(dataJson: string): {
   app: FakeNode;
   document: FakeDocument;
-  window: { scrollY: number; scrollTo: () => void; __LIVE__: boolean; AgentTeamList?: unknown };
+  window: { scrollY: number; scrollTo: () => void; __LIVE__: boolean; __NOW__?: number; AgentTeamList?: unknown };
 } {
   const app = new FakeNode('div');
   app.id = 'app';
