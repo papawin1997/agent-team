@@ -316,6 +316,17 @@
     return null;
   }
 
+  // id ของ select จำนวนต่อหน้าของ section เดียวกัน (ใช้ตอนปุ่มเปลี่ยนหน้าทั้งคู่กลาย disabled พร้อมกัน คือเหลือหน้าเดียว)
+  /**
+   * @param {string} id
+   * @returns {string|null}
+   */
+  function pagerSizeIdFor(id) {
+    if (/-prev$/.test(id)) return id.replace(/-prev$/, '-size');
+    if (/-next$/.test(id)) return id.replace(/-next$/, '-size');
+    return null;
+  }
+
   function render() {
     var y = window.scrollY;
     var active = /** @type {HTMLInputElement|HTMLSelectElement|HTMLButtonElement|null} */ (document.activeElement);
@@ -343,7 +354,14 @@
       if (again && again.disabled) {
         var altId = siblingPagerId(focusId);
         var alt = altId && /** @type {HTMLInputElement|HTMLSelectElement|HTMLButtonElement|null} */ (document.getElementById(altId));
-        if (alt && !alt.disabled) again = alt;
+        if (alt && !alt.disabled) {
+          again = alt;
+        } else {
+          // ปุ่มเปลี่ยนหน้าทั้งคู่ disabled พร้อมกัน (เหลือหน้าเดียว) -> ไปที่ select จำนวนต่อหน้าของ section เดียวกันแทน
+          var sizeId = pagerSizeIdFor(focusId);
+          var sizeSel = sizeId && document.getElementById(sizeId);
+          if (sizeSel) again = /** @type {HTMLSelectElement} */ (sizeSel);
+        }
       }
       if (again && again.focus) {
         again.focus();

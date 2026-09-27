@@ -233,6 +233,17 @@ describe('หน้า logs (DOM จำลอง)', () => {
       choose(sortSel, 'cost-desc');
       expect(d.document.activeElement!.id).toBe('calls-sort');
     });
+
+    it('ปุ่มเปลี่ยนหน้าทั้งคู่กลาย disabled พร้อมกัน (เหลือหน้าเดียว) -> โฟกัสไปที่ select จำนวนต่อหน้าของ section นั้นแทน', () => {
+      const d = load();
+      const evNext = d.document.getElementById('ev-next')!;
+      d.document.activeElement = evNext;
+      // เปลี่ยนจำนวนต่อหน้าเป็น 50 -> event ทั้ง 45 อยู่หน้าเดียว ปุ่ม prev/next กลาย disabled ทั้งคู่
+      choose(d.document.getElementById('ev-size')!, '50');
+      expect(d.document.getElementById('ev-next')!.disabled).toBe(true);
+      expect(d.document.getElementById('ev-prev')!.disabled).toBe(true);
+      expect(d.document.activeElement!.id).toBe('ev-size');
+    });
   });
 
   describe('ตัวกรองค้าง -> ว่างเปล่ามีปุ่มล้างตัวกรอง', () => {
