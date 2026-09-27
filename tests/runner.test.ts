@@ -105,6 +105,41 @@ describe('SdkRoleRunner', () => {
     expect(calls[0]!.options.resume).toBe('s9');
   });
 
+  it('agent.start มี sessionId เมื่อ resume, ไม่มีเมื่อไม่ resume (ให้ logview ใช้ได้ทันทีไม่ต้องหาไฟล์ตามเวลา)', async () => {
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const runner = new SdkRoleRunner({
+      projectDir: 'proj',
+      config: DEFAULT_CONFIG,
+      queryFn: (() => {
+        return (async function* () {
+          yield initMsg('s9');
+          yield okResult(validTurn, 's9');
+        })();
+      }) as never,
+      sleep: async () => {},
+      logger: { log: (level, event, data) => void events.push({ event, data: data as never }) },
+    });
+    await runner.pmTurn({ prompt: 'hi', sessionId: 's9' });
+    expect(events[0]).toMatchObject({ event: 'agent.start', data: { sessionId: 's9' } });
+
+    const events2: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const runner2 = new SdkRoleRunner({
+      projectDir: 'proj',
+      config: DEFAULT_CONFIG,
+      queryFn: (() => {
+        return (async function* () {
+          yield initMsg();
+          yield okResult(validTurn);
+        })();
+      }) as never,
+      sleep: async () => {},
+      logger: { log: (level, event, data) => void events2.push({ event, data: data as never }) },
+    });
+    await runner2.pmTurn({ prompt: 'hi' });
+    expect(events2[0]!.event).toBe('agent.start');
+    expect(events2[0]!.data.sessionId).toBeUndefined();
+  });
+
   it('retry เมื่อ SDK โยน error แล้วสำเร็จ', async () => {
     const { runner, calls, sleeps } = makeRunner([new Error('network'), [initMsg(), okResult(validTurn)]]);
     const out = await runner.pmTurn({ prompt: 'hi' });

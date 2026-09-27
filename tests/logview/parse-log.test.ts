@@ -114,4 +114,57 @@ describe('parseLog', () => {
   it('ไฟล์ว่าง -> ไม่มีรอบ', () => {
     expect(parseLog('')).toEqual([]);
   });
+
+  it('JSON ที่มี U+2028/U+2029 ดิบ (FileLogger เขียนแบบไม่ escape) ยังพาร์สได้', () => {
+    const ls = String.fromCharCode(0x2028);
+    const line = `${T} INFO  say {"text":"บรรทัดหนึ่ง${ls}บรรทัดสอง"}`;
+    expect(parseLogLine(line, 1).data).toEqual({ text: `บรรทัดหนึ่ง${ls}บรรทัดสอง` });
+  });
+
+  it('agent.start ของ role เดิมระหว่างอันเก่ายังไม่จบ (retry หลัง exception) -> ปิดอันเก่าเป็น failed/exception', () => {
+    const log = [
+      `${T} INFO  run.start {}`,
+      '2026-01-10T09:00:01.000Z INFO  agent.start {"role":"pm"}',
+      '2026-01-10T09:00:05.000Z INFO  agent.start {"role":"pm"}',
+      '2026-01-10T09:00:20.000Z INFO  agent.result {"role":"pm","subtype":"success","sessionId":"s2"}',
+    ].join('\n');
+    const [r] = parseLog(log);
+    expect(r!.calls).toHaveLength(2);
+    expect(r!.calls[0]).toMatchObject({
+      status: 'failed',
+      subtype: 'exception',
+      end: '2026-01-10T09:00:05.000Z',
+      sessionId: undefined,
+    });
+    expect(r!.calls[1]).toMatchObject({ status: 'ok', sessionId: 's2' });
+  });
+
+  it('call ค้างเมื่อรอบจบแบบ error -> ปิด end ด้วยเวลาจบรอบ แต่ยังเป็น unfinished', () => {
+    const log = [
+      `${T} INFO  run.start {}`,
+      '2026-01-10T09:00:01.000Z INFO  agent.start {"role":"backend"}',
+      '2026-01-10T09:05:00.000Z ERROR run.error {"message":"boom"}',
+    ].join('\n');
+    const [r] = parseLog(log);
+    expect(r!.status).toBe('error');
+    expect(r!.calls[0]).toMatchObject({ status: 'unfinished', end: '2026-01-10T09:05:00.000Z' });
+  });
+
+  it('call ค้างเมื่อรอบยังไม่จบ -> ไม่แตะ end (ยังอาจรันอยู่)', () => {
+    const log = [`${T} INFO  run.start {}`, '2026-01-10T09:00:01.000Z INFO  agent.start {"role":"backend"}'].join(
+      '\n',
+    );
+    const [r] = parseLog(log);
+    expect(r!.status).toBe('unfinished');
+    expect(r!.calls[0]!.end).toBeUndefined();
+  });
+
+  it('agent.start มี sessionId (resume) -> ใช้เป็น sessionId ของ call ทันที', () => {
+    const log = [
+      `${T} INFO  run.start {}`,
+      '2026-01-10T09:00:01.000Z INFO  agent.start {"role":"pm","resumed":true,"sessionId":"s-resume"}',
+    ].join('\n');
+    const [r] = parseLog(log);
+    expect(r!.calls[0]).toMatchObject({ sessionId: 's-resume', status: 'unfinished', resumed: true });
+  });
 });

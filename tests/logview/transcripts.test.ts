@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { AgentCall } from '../../src/logview/parse-log';
 import {
   clip,
+  createTranscriptCache,
   loadCallTranscript,
   MAX_STEP_CHARS,
   sliceTranscript,
@@ -165,5 +166,49 @@ describe('loadCallTranscript', () => {
 
   it('ไม่มี sessionId และไม่มีโฟลเดอร์ -> note', () => {
     expect(loadCallTranscript(path.join(dir, 'missing'), call()).note).toContain('ไม่พบ transcript');
+  });
+
+  it('ไม่มี sessionId -> เลือกไฟล์ที่ entry แรกใกล้เวลาเริ่มของ call ที่สุด ไม่ใช่ไฟล์แรกใน readdir', async () => {
+    // 'far' มาก่อน 'near' ตามลำดับตัวอักษร แต่ 'near' เวลาใกล้ call.start (01:00) กว่า
+    await fs.writeFile(path.join(dir, 'far.jsonl'), jsonl(userPrompt('00:59'), overloaded('03:00')));
+    await fs.writeFile(path.join(dir, 'near.jsonl'), jsonl(userPrompt('01:00'), overloaded('03:00')));
+    const t = loadCallTranscript(dir, call());
+    expect(t.file).toBe(path.join(dir, 'near.jsonl'));
+  });
+
+  it('exclude ไฟล์ที่ call อื่นในรอบเดียวกัน sessionId จับไปแล้ว ไม่ให้ orphan call แย่งไฟล์นั้น', async () => {
+    await fs.writeFile(path.join(dir, 'claimed.jsonl'), jsonl(userPrompt('01:00'), overloaded('03:00')));
+    await fs.writeFile(path.join(dir, 'other.jsonl'), jsonl(userPrompt('01:05'), overloaded('03:00')));
+    const t = loadCallTranscript(dir, call(), { exclude: new Set(['claimed.jsonl']) });
+    expect(t.file).toBe(path.join(dir, 'other.jsonl'));
+  });
+});
+
+describe('TranscriptCache', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-team-tx-cache-'));
+  });
+
+  it('ไฟล์เดิมไม่เปลี่ยน -> ใช้ entries ที่พาร์สไว้ซ้ำ (ไม่พาร์สใหม่), ไฟล์เปลี่ยนแล้ว -> พาร์สใหม่', async () => {
+    const file = path.join(dir, 's-qa.jsonl');
+    await fs.writeFile(file, jsonl(overloaded('03:00')));
+    const cache = createTranscriptCache();
+
+    const t1 = loadCallTranscript(dir, call({ sessionId: 's-qa' }), { cache });
+    const entries1 = cache.get(file)?.entries;
+    expect(t1.steps).toHaveLength(1);
+    expect(entries1).toBeDefined();
+
+    const t2 = loadCallTranscript(dir, call({ sessionId: 's-qa' }), { cache });
+    const entries2 = cache.get(file)?.entries;
+    expect(t2.steps).toEqual(t1.steps);
+    expect(entries2).toBe(entries1); // อ้างอิงเดียวกัน = ไม่ได้พาร์สไฟล์ใหม่
+
+    await fs.writeFile(file, jsonl(overloaded('03:00'), overloaded('04:00')));
+    const t3 = loadCallTranscript(dir, call({ sessionId: 's-qa' }), { cache });
+    const entries3 = cache.get(file)?.entries;
+    expect(t3.steps).toHaveLength(2);
+    expect(entries3).not.toBe(entries1); // ไฟล์เปลี่ยน (size ต่าง) -> พาร์สใหม่
   });
 });

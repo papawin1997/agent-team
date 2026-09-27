@@ -177,6 +177,7 @@ export class SdkRoleRunner implements RoleRunner {
       model: this.deps.config.roles[role].model,
       resumed: resume !== undefined,
       promptChars: prompt.length,
+      sessionId: resume,
     });
     this.status.start(label);
     try {

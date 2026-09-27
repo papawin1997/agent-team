@@ -29,6 +29,60 @@ export function clip(text: string, max: number = MAX_STEP_CHARS): string {
   return text.length > max ? `${text.slice(0, max)}…(ตัด ${text.length - max} ตัวอักษร)` : text;
 }
 
+interface ParsedEntry {
+  timestamp: string;
+  entry: Json;
+}
+
+/**
+ * cache ของไฟล์ transcript ที่พาร์สแล้ว คีย์ด้วย path ไฟล์ ตรวจว่ายังไม่เปลี่ยนด้วย size+mtimeMs
+ * ใช้ตอน --live เพื่อไม่ต้องอ่าน/พาร์สไฟล์เดิมซ้ำทุกครั้งที่ /data ถูก poll (ทุก 3 วินาที)
+ */
+export type TranscriptCache = Map<string, { size: number; mtimeMs: number; entries: ParsedEntry[] }>;
+
+export function createTranscriptCache(): TranscriptCache {
+  return new Map();
+}
+
+function parseJsonl(jsonl: string): ParsedEntry[] {
+  const entries: ParsedEntry[] = [];
+  for (const line of jsonl.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (isObj(entry) && typeof entry.timestamp === 'string') entries.push({ timestamp: entry.timestamp, entry });
+  }
+  return entries;
+}
+
+/** อ่าน+พาร์สไฟล์ (ใช้ cache ถ้ามีและไฟล์ไม่เปลี่ยน) */
+function loadEntries(file: string, cache?: TranscriptCache): ParsedEntry[] {
+  if (cache) {
+    const st = fs.statSync(file);
+    const hit = cache.get(file);
+    if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.entries;
+    const entries = parseJsonl(fs.readFileSync(file, 'utf8'));
+    cache.set(file, { size: st.size, mtimeMs: st.mtimeMs, entries });
+    return entries;
+  }
+  return parseJsonl(fs.readFileSync(file, 'utf8'));
+}
+
+function sliceEntries(entries: ParsedEntry[], from: string, to?: string): TranscriptStep[] {
+  const [lo, hi] = windowOf(from, to);
+  const steps: TranscriptStep[] = [];
+  for (const { timestamp, entry } of entries) {
+    const t = Date.parse(timestamp);
+    if (!(t >= lo && t <= hi)) continue;
+    steps.push(...toSteps(entry, timestamp));
+  }
+  return steps;
+}
+
 /** โฟลเดอร์ที่ Claude Agent SDK เก็บ transcript ของโปรเจกต์นี้ */
 export function transcriptsDir(
   projectDir: string,
@@ -46,22 +100,7 @@ const windowOf = (from: string, to?: string): [number, number] => [
 
 /** แปลง transcript (jsonl) เป็น step เฉพาะ entry ที่เวลาอยู่ในช่วง from..to */
 export function sliceTranscript(jsonl: string, from: string, to?: string): TranscriptStep[] {
-  const [lo, hi] = windowOf(from, to);
-  const steps: TranscriptStep[] = [];
-  for (const line of jsonl.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    let entry: unknown;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (!isObj(entry) || typeof entry.timestamp !== 'string') continue;
-    const t = Date.parse(entry.timestamp);
-    if (!(t >= lo && t <= hi)) continue;
-    steps.push(...toSteps(entry, entry.timestamp));
-  }
-  return steps;
+  return sliceEntries(parseJsonl(jsonl), from, to);
 }
 
 function toSteps(entry: Json, time: string): TranscriptStep[] {
@@ -107,8 +146,14 @@ function resultText(content: unknown): string {
     .join('\n');
 }
 
-export function loadCallTranscript(dir: string, call: AgentCall): CallTranscript {
-  const file = call.sessionId ? path.join(dir, `${call.sessionId}.jsonl`) : findByTime(dir, call);
+export interface LoadCallTranscriptOpts {
+  /** ชื่อไฟล์ (basename) ที่ call อื่นในรอบเดียวกันมี sessionId ชี้อยู่แล้ว: กัน findByTime แย่งไฟล์นั้นไป */
+  exclude?: ReadonlySet<string>;
+  cache?: TranscriptCache;
+}
+
+export function loadCallTranscript(dir: string, call: AgentCall, opts: LoadCallTranscriptOpts = {}): CallTranscript {
+  const file = call.sessionId ? path.join(dir, `${call.sessionId}.jsonl`) : findByTime(dir, call, opts);
   if (!file || !fs.existsSync(file)) {
     return {
       steps: [],
@@ -118,14 +163,18 @@ export function loadCallTranscript(dir: string, call: AgentCall): CallTranscript
     };
   }
   try {
-    return { file, steps: sliceTranscript(fs.readFileSync(file, 'utf8'), call.start, call.end) };
+    return { file, steps: sliceEntries(loadEntries(file, opts.cache), call.start, call.end) };
   } catch (e) {
     return { file, steps: [], note: `อ่าน transcript ไม่ได้: ${e instanceof Error ? e.message : String(e)}` };
   }
 }
 
-/** ไม่มี sessionId (เช่น process ล่มก่อนได้ result): หาไฟล์ที่ entry แรกที่มีเวลาอยู่ในช่วงของ call */
-function findByTime(dir: string, call: AgentCall): string | undefined {
+/**
+ * ไม่มี sessionId (เช่น process ล่มก่อนได้ result): หาไฟล์ที่ entry แรกอยู่ในช่วงเวลาของ call
+ * ข้ามไฟล์ที่ถูก exclude ไว้ (call อื่นในรอบเดียวกันจับไปแล้วด้วย sessionId) แล้วเลือกไฟล์ที่ entry แรกใกล้ call.start ที่สุด
+ * (ไม่ใช่ไฟล์แรกที่เจอใน readdir ซึ่งไม่มีลำดับที่รับประกัน)
+ */
+function findByTime(dir: string, call: AgentCall, opts: LoadCallTranscriptOpts): string | undefined {
   let names: string[];
   try {
     names = fs.readdirSync(dir).filter((n) => n.endsWith('.jsonl'));
@@ -133,27 +182,21 @@ function findByTime(dir: string, call: AgentCall): string | undefined {
     return undefined;
   }
   const [lo, hi] = windowOf(call.start, call.end);
+  const startMs = Date.parse(call.start);
+  let best: { file: string; diff: number } | undefined;
   for (const name of names) {
+    if (opts.exclude?.has(name)) continue;
     const file = path.join(dir, name);
     try {
       if (fs.statSync(file).mtimeMs < lo) continue;
-      const first = firstTimestamp(fs.readFileSync(file, 'utf8'));
-      if (first !== undefined && first >= lo && first <= hi) return file;
+      const entries = loadEntries(file, opts.cache);
+      const first = entries[0] ? Date.parse(entries[0].timestamp) : undefined;
+      if (first === undefined || !(first >= lo && first <= hi)) continue;
+      const diff = Math.abs(first - startMs);
+      if (!best || diff < best.diff) best = { file, diff };
     } catch {
       continue;
     }
   }
-  return undefined;
-}
-
-function firstTimestamp(jsonl: string): number | undefined {
-  for (const line of jsonl.split(/\r?\n/)) {
-    try {
-      const entry: unknown = JSON.parse(line);
-      if (isObj(entry) && typeof entry.timestamp === 'string') return Date.parse(entry.timestamp);
-    } catch {
-      // ข้ามบรรทัดพัง
-    }
-  }
-  return undefined;
+  return best?.file;
 }

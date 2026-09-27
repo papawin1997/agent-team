@@ -46,7 +46,7 @@ export interface Run {
   totalCostUsd: number;
 }
 
-const LINE = /^(\S+) (INFO|WARN|ERROR)\s+(\S+)(?: (.*))?$/;
+const LINE = /^(\S+) (INFO|WARN|ERROR)\s+(\S+)(?: ([\s\S]*))?$/;
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
 const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
@@ -79,6 +79,7 @@ export function parseLog(text: string): Run[] {
     if (raw.trim() === '') return;
     const ev = parseLogLine(raw, i + 1);
     if (!current || ev.event === 'run.start') {
+      if (current) finalizeRun(current, open);
       current = { index: runs.length, start: ev.time, status: 'unfinished', events: [], calls: [], totalCostUsd: 0 };
       runs.push(current);
       open.clear();
@@ -86,7 +87,19 @@ export function parseLog(text: string): Run[] {
     current.events.push(ev);
     apply(current, ev, open);
   });
+  if (current) finalizeRun(current, open);
   return runs;
+}
+
+/**
+ * ปิด call ที่ยังค้างอยู่ตอนรอบรันจบ (มี run.end/run.error/run.interrupted ตามมา) ด้วยเวลาจบรอบ
+ * แต่รอบที่ status ยังเป็น 'unfinished' (process หายไปกลางคัน) ปล่อย call ที่ค้างไว้เฉย ๆ เพราะอาจยังรันอยู่จริง
+ */
+function finalizeRun(run: Run, open: Map<string, AgentCall>): void {
+  if (run.status === 'unfinished') return;
+  for (const call of open.values()) {
+    call.end = run.end;
+  }
 }
 
 function apply(run: Run, ev: LogEvent, open: Map<string, AgentCall>): void {
@@ -98,6 +111,13 @@ function apply(run: Run, ev: LogEvent, open: Map<string, AgentCall>): void {
       break;
     case 'agent.start': {
       const role = str(d.role) ?? '?';
+      // agent.start ใหม่ของ role เดิมระหว่างอันเก่ายังไม่จบ = runner โยน exception แล้ว retry ด้วย agent.start ใหม่
+      const prev = open.get(role);
+      if (prev) {
+        prev.end = ev.time;
+        prev.status = 'failed';
+        prev.subtype = 'exception';
+      }
       const call: AgentCall = {
         id: run.calls.length,
         role,
@@ -105,6 +125,7 @@ function apply(run: Run, ev: LogEvent, open: Map<string, AgentCall>): void {
         resumed: d.resumed === true,
         start: ev.time,
         status: 'unfinished',
+        sessionId: str(d.sessionId),
       };
       run.calls.push(call);
       open.set(role, call);

@@ -46,7 +46,14 @@ export const PAGE_JS = String.raw`
 (function () {
   'use strict';
   var data = JSON.parse(document.getElementById('data').textContent);
-  var state = { run: data.runs.length - 1, open: {}, filter: 'all' };
+  function computeDefaultRun(runs) {
+    for (var i = runs.length - 1; i >= 0; i--) {
+      if (runs[i].calls.length > 0 || runs[i].findings.length > 0) return i;
+    }
+    return runs.length - 1;
+  }
+  var currentDefault = typeof window.__DEFAULT_RUN__ === 'number' ? window.__DEFAULT_RUN__ : computeDefaultRun(data.runs);
+  var state = { run: currentDefault, open: {}, filter: 'all' };
   var lastRuns = JSON.stringify(data.runs);
   var app = document.getElementById('app');
 
@@ -112,7 +119,7 @@ export const PAGE_JS = String.raw`
     var sel = el('select');
     sel.setAttribute('aria-label', 'เลือกรอบรัน');
     data.runs.forEach(function (r, i) {
-      var label = 'รอบที่ ' + (i + 1) + ' · ' + fmtTime(r.start) + ' · ' + (RUN_STATUS[r.status] || r.status) + (r.jobId ? ' · ' + r.jobId : '');
+      var label = 'รอบที่ ' + (i + 1) + ' · ' + fmtTime(r.start) + ' · ' + (RUN_STATUS[r.status] || r.status) + (r.jobId ? ' · ' + r.jobId : '') + (r.calls.length === 0 ? ' (ไม่ได้เรียก agent)' : '');
       var o = el('option', null, label);
       o.value = String(i);
       if (i === state.run) o.selected = true;
@@ -278,7 +285,12 @@ export const PAGE_JS = String.raw`
       s.appendChild(el('span', 'ev', ev.event));
       s.appendChild(el('span', null, short(summaryOf(ev), 200)));
       d.appendChild(s);
-      d.appendChild(el('pre', null, 'บรรทัด ' + ev.line + '\n' + JSON.stringify(ev.data, null, 2)));
+      var built = false;
+      d.addEventListener('toggle', function () {
+        if (built || !d.open) return;
+        built = true;
+        d.appendChild(el('pre', null, 'บรรทัด ' + ev.line + '\n' + JSON.stringify(ev.data, null, 2)));
+      });
       sec.appendChild(d);
     });
     return sec;
@@ -286,15 +298,22 @@ export const PAGE_JS = String.raw`
 
   if (window.__LIVE__) {
     setInterval(function () {
+      if (document.hidden) return; // แท็บถูกซ่อนอยู่: ไม่ต้อง poll ให้เปลืองทั้งฝั่ง server และ browser
       fetch('/data', { cache: 'no-store' })
         .then(function (r) { return r.json(); })
         .then(function (next) {
           var runs = JSON.stringify(next.runs);
           if (runs === lastRuns) return;
-          var followLatest = state.run === data.runs.length - 1;
+          var wasOnDefault = state.run === currentDefault;
+          var newDefault = computeDefaultRun(next.runs);
           data = next;
           lastRuns = runs;
-          if (followLatest || state.run >= data.runs.length) state.run = data.runs.length - 1;
+          if (state.run >= data.runs.length) {
+            state.run = newDefault;
+          } else if (wasOnDefault && newDefault !== currentDefault) {
+            state.run = newDefault;
+          }
+          currentDefault = newDefault;
           render();
         })
         .catch(function () { /* server หยุดแล้ว: คงหน้าเดิมไว้ */ });

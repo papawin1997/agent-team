@@ -81,6 +81,7 @@ describe('diagnoseRun', () => {
       'API error อื่น ๆ',
     ]);
     expect(f[3]).toMatchObject({ severity: 'warn', detail: '500 Internal' });
+    expect(f[2]!.detail).toBe('login Claude ใหม่ (รัน claude แล้วใช้ /login) แล้วทำงานต่อด้วย -r');
   });
 
   it('error_max_turns และ error_max_budget_usd', () => {
@@ -144,6 +145,19 @@ describe('diagnoseRun', () => {
     expect(diagnoseRun(run([], { errorMessage: 'boom' }), new Map())).toEqual([
       { severity: 'info', title: 'ไม่พบสาเหตุที่รู้จัก', detail: 'boom', callIds: [], count: 1 },
     ]);
+  });
+
+  it('subtype exception (ปิดจาก agent.start ซ้ำหลัง retry) -> หยุดกลางคันเหมือน no_result', () => {
+    const f = diagnoseRun(run([call(0, { status: 'failed', subtype: 'exception' })]), new Map());
+    expect(f).toHaveLength(1);
+    expect(f[0]).toMatchObject({ severity: 'error', title: 'agent qa หยุดกลางคันโดยไม่มีผลลัพธ์' });
+  });
+
+  it('รอบที่ done แต่มี call หยุดกลางคัน -> severity warn แทน error', () => {
+    const stuck = call(0, { status: 'unfinished', subtype: undefined, end: undefined });
+    const f = diagnoseRun(run([stuck], { status: 'done' }), new Map());
+    expect(f).toHaveLength(1);
+    expect(f[0]).toMatchObject({ severity: 'warn', title: 'agent qa หยุดกลางคันโดยไม่มีผลลัพธ์' });
   });
 
   it('รอบที่ปกติ -> ไม่มี finding', () => {

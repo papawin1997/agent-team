@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { PAGE_JS } from '../../src/logview/page-assets';
 import { embedJson, renderHtml } from '../../src/logview/render';
-import { buildViewData, type ViewData } from '../../src/logview/view-data';
+import { buildViewData, defaultRunIndex, type ViewData } from '../../src/logview/view-data';
 
 const LOG = [
   '2026-01-10T09:00:00.000Z INFO  run.start {"projectDir":"/work/app","resume":false,"pid":1}',
@@ -70,6 +70,25 @@ describe('renderHtml', () => {
     expect(renderHtml(data)).toContain('<title>agent-team logs — app</title>');
   });
 
+  it('ฝัง window.__DEFAULT_RUN__ ตาม defaultRunIndex (รอบล่าสุดที่เรียก agent/มีปัญหา ไม่ใช่รอบสุดท้ายเสมอไป) ในสคริปต์เดียวกับ __LIVE__', () => {
+    const twoRuns = buildViewData({
+      projectDir: '/work/app',
+      logFile: 'x',
+      // รอบ 0: เรียก agent qa แล้ว error (มีปัญหา) / รอบ 1: PM คุยต่อ ยังไม่ได้เรียก agent เลย
+      logText: `${LOG}\n2026-01-10T09:07:00.000Z INFO  run.start {}\n2026-01-10T09:07:01.000Z INFO  say {"text":"hi"}`,
+      transcriptsDir: path.join(os.tmpdir(), 'agent-team-no-such-dir'),
+      now: () => new Date(0),
+    });
+    expect(twoRuns.runs).toHaveLength(2);
+    expect(twoRuns.runs[1]!.calls).toHaveLength(0);
+    const idx = defaultRunIndex(twoRuns.runs);
+    expect(idx).toBe(0);
+    const html = renderHtml(twoRuns);
+    expect(html).toContain(`window.__DEFAULT_RUN__ = ${idx};`);
+    expect(html).toMatch(/window\.__LIVE__ = false;\s*window\.__DEFAULT_RUN__ = 0;/);
+    expect(html.match(/<\/script>/g)).toHaveLength(3);
+  });
+
   it('embedJson escape <, U+2028, U+2029', () => {
     expect(embedJson({ a: '</script>\u2028\u2029' })).toBe('{"a":"\\u003c/script>\\u2028\\u2029"}');
   });
@@ -77,5 +96,21 @@ describe('renderHtml', () => {
   it('โค้ดฝั่งเบราว์เซอร์ไม่มี syntax error และไม่มี </script>', () => {
     expect(() => new Function(PAGE_JS)).not.toThrow();
     expect(PAGE_JS).not.toContain('</script');
+  });
+
+  it('ใช้ window.__DEFAULT_RUN__ เป็นค่าเริ่มต้นของรอบที่แสดง', () => {
+    expect(PAGE_JS).toContain('__DEFAULT_RUN__');
+  });
+
+  it('บอกรอบที่ไม่ได้เรียก agent ใน dropdown', () => {
+    expect(PAGE_JS).toContain('(ไม่ได้เรียก agent)');
+  });
+
+  it('live: หยุด poll เมื่อแท็บถูกซ่อน (document.hidden)', () => {
+    expect(PAGE_JS).toContain('document.hidden');
+  });
+
+  it('live: เลื่อนไปรอบล่าสุดอัตโนมัติเฉพาะตอนอยู่ที่ default เดิมและ default ใหม่เปลี่ยน', () => {
+    expect(PAGE_JS).toContain('computeDefaultRun');
   });
 });

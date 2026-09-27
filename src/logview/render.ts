@@ -1,5 +1,5 @@
 import { PAGE_CSS, PAGE_JS } from './page-assets';
-import type { ViewData } from './view-data';
+import { defaultRunIndex, type ViewData } from './view-data';
 
 /** JSON ที่วางใน <script> ได้ปลอดภัย: กัน </script> และ U+2028/2029 */
 const LINE_SEPARATOR = String.fromCharCode(0x2028);
@@ -30,7 +30,8 @@ export function renderHtml(data: ViewData, opts: { live?: boolean } = {}): strin
 <body>
 <div id="app"></div>
 <script id="data" type="application/json">${embedJson(data)}</script>
-<script>window.__LIVE__ = ${opts.live ? 'true' : 'false'};</script>
+<script>window.__LIVE__ = ${opts.live ? 'true' : 'false'};
+window.__DEFAULT_RUN__ = ${defaultRunIndex(data.runs)};</script>
 <script>${PAGE_JS}</script>
 </body>
 </html>

@@ -37,7 +37,7 @@ const RATE_LIMIT: Base = {
 const AUTH: Base = {
   severity: 'error',
   title: 'login/สิทธิ์ใช้งานมีปัญหา (401/403)',
-  detail: 'ตรวจ login ด้วย npm run smoke:auth แล้ว login Claude ใหม่',
+  detail: 'login Claude ใหม่ (รัน claude แล้วใช้ /login) แล้วทำงานต่อด้วย -r',
 };
 
 const apiErrors = (t: CallTranscript | undefined): ApiError[] =>
@@ -130,12 +130,13 @@ export function diagnoseRun(run: Run, transcripts: ReadonlyMap<number, CallTrans
     }
     const stopped =
       call.subtype === 'no_result' ||
+      call.subtype === 'exception' ||
       (call.status === 'unfinished' && run.status !== 'unfinished' && run.status !== 'interrupted');
     if (stopped && errs.length === 0) {
       add(
         `no_result:${call.role}`,
         {
-          severity: 'error',
+          severity: run.status === 'done' ? 'warn' : 'error',
           title: `agent ${call.role} หยุดกลางคันโดยไม่มีผลลัพธ์`,
           detail: 'stream ของ SDK จบก่อนได้ result หรือเกิด exception — ดูข้อความ error ของรอบรันและ transcript ของครั้งนี้',
         },

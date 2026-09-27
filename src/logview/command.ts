@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { openInBrowser } from './open-browser';
 import { renderHtml } from './render';
 import { startLiveServer, type LiveServer } from './serve';
-import { transcriptsDir } from './transcripts';
+import { createTranscriptCache, transcriptsDir } from './transcripts';
 import { buildViewData, type ViewData } from './view-data';
 
 export interface LogsCommandDeps {
@@ -25,18 +25,21 @@ export async function runLogsCommand(
     throw new Error(`ไม่พบ log: ${logFile} (โปรเจกต์นี้ยังไม่เคยรัน agent-team)`);
   }
   const dir = transcriptsDir(projectDir, deps.env, deps.home);
-  const load = (): ViewData =>
-    buildViewData({ projectDir, logFile, logText: fs.readFileSync(logFile, 'utf8'), transcriptsDir: dir });
   const open = deps.open ?? ((target: string) => openInBrowser(target));
 
   if (live) {
+    // cache เดียวใช้ตลอดอายุ server: กันอ่าน/พาร์ส transcript ที่ไม่เปลี่ยนซ้ำทุกครั้งที่ /data ถูก poll
+    const cache = createTranscriptCache();
+    const load = (): ViewData =>
+      buildViewData({ projectDir, logFile, logText: fs.readFileSync(logFile, 'utf8'), transcriptsDir: dir, cache });
     const server = await startLiveServer({ load });
     deps.say(`เปิดหน้า log แบบ live ที่ ${server.url} (กด Ctrl+C เพื่อหยุด)`);
     open(server.url);
     return server;
   }
   const out = path.join(projectDir, '.agent-team', 'logs.html');
-  fs.writeFileSync(out, renderHtml(load()), 'utf8');
+  const data = buildViewData({ projectDir, logFile, logText: fs.readFileSync(logFile, 'utf8'), transcriptsDir: dir });
+  fs.writeFileSync(out, renderHtml(data), 'utf8');
   deps.say(`สร้างหน้า log แล้ว: ${out}`);
   open(out);
   return undefined;
