@@ -1,4 +1,5 @@
 import * as fs from 'node:fs/promises';
+import * as fsSync from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -129,6 +130,17 @@ describe('renderHtml', () => {
     expect(html.match(/@font-face\{/g)).toHaveLength(3);
     expect(html).not.toContain('<link');
     expect(html).not.toContain('fonts.googleapis.com');
+  });
+
+  it('LIST_JS/PAGE_JS อ่านมาจากไฟล์ .js จริงใน web/ (มี // @ts-check ตรวจ type ได้ และไม่มี </script)', () => {
+    const listSrc = fsSync.readFileSync(path.join(__dirname, '../../src/logview/web/list.js'), 'utf8');
+    const pageSrc = fsSync.readFileSync(path.join(__dirname, '../../src/logview/web/page.js'), 'utf8');
+    expect(LIST_JS).toBe(listSrc);
+    expect(PAGE_JS).toBe(pageSrc);
+    expect(listSrc.startsWith('// @ts-check')).toBe(true);
+    expect(pageSrc.startsWith('// @ts-check')).toBe(true);
+    expect(LIST_JS).not.toContain('</script');
+    expect(PAGE_JS).not.toContain('</script');
   });
 
   it('ฝัง LIST_JS ก่อน PAGE_JS', () => {
