@@ -85,7 +85,12 @@ function clearStaleQuickDesign(state: State): void {
 }
 
 /** ยอมรับ turn นี้เป็นงาน full: confirm = ไป DESIGN, revise = คุยต่อ (false ให้ผู้เรียกไปถาม "อยากปรับอะไร?") */
-async function confirmAsFull(deps: Deps, state: State, turn: PmTurn): Promise<boolean> {
+async function confirmAsFull(
+  deps: Deps,
+  state: State,
+  turn: PmTurn,
+  flags: readonly RiskCategory[] = [],
+): Promise<boolean> {
   const { io } = deps;
   let current = turn;
   const decision = await decide(deps, state, 'ยืนยัน requirements นี้ไหม?', ['confirm', 'revise'] as const, (newTurn) => {
@@ -95,11 +100,16 @@ async function confirmAsFull(deps: Deps, state: State, turn: PmTurn): Promise<bo
     }
   });
   if (decision !== 'confirm') return false;
-  await acceptFull(deps, state, current);
+  await acceptFull(deps, state, current, flags);
   return true;
 }
 
-async function acceptFull(deps: Deps, state: State, turn: PmTurn): Promise<void> {
+async function acceptFull(
+  deps: Deps,
+  state: State,
+  turn: PmTurn,
+  flags: readonly RiskCategory[] = [],
+): Promise<void> {
   const { store, levelPreference } = deps;
   clearStaleQuickDesign(state);
   state.requirements = turn.requirements!;
@@ -107,7 +117,7 @@ async function acceptFull(deps: Deps, state: State, turn: PmTurn): Promise<void>
   state.quickTask = undefined;
   state.phase = 'DESIGN';
   await store.saveArtifact('requirements.json', turn.requirements!);
-  logLevelDecided(deps, 'full', levelPreference === 'full' ? 'user' : 'pm', turn.levelReason, []);
+  logLevelDecided(deps, 'full', levelPreference === 'full' ? 'user' : 'pm', turn.levelReason, flags);
   await store.save(state);
 }
 
@@ -129,7 +139,10 @@ async function decideLevel(deps: Deps, state: State, first: PmTurn): Promise<boo
     ? ['full', 'quick', 'revise']
     : ['quick', 'full', 'revise'];
 
-  const decision = await decide(deps, state, LEVEL_PROMPT, options, (newTurn) => {
+  // true เฉพาะเมื่อความเสี่ยงโผล่ขึ้นมาใหม่ระหว่างตัดสินใจ (onTurn ปรับ flags จากไม่เสี่ยง/หมวดอื่นเป็นเสี่ยง)
+  // ไม่ใช่กรณีที่ turn แรกเสี่ยงอยู่แล้วตั้งแต่ต้น (ตัวเลือกถูกเรียง full ก่อนให้ user เห็นแต่แรกแล้ว ไม่ต้องถามซ้ำ)
+  let riskAppearedMidDecision = false;
+  const onTurn = (newTurn: PmTurn): void => {
     if (newTurn.status !== 'proposal' || !newTurn.requirements) return;
     turn = newTurn;
     io.say(formatRequirements(newTurn.requirements));
@@ -137,15 +150,26 @@ async function decideLevel(deps: Deps, state: State, first: PmTurn): Promise<boo
     const newFlags = riskFlags(riskText(newTurn.requirements, newTurn.quickTask));
     const changed = newFlags.length !== flags.length || newFlags.some((f, i) => f !== flags[i]);
     if (offersQuick(deps, newTurn) && changed) warn(newFlags);
+    if (changed && newFlags.length > 0) riskAppearedMidDecision = true;
     flags = newFlags;
-  });
+  };
+
+  let decision = await decide(deps, state, LEVEL_PROMPT, options, onTurn);
   if (decision === 'revise') return false;
+
+  if (decision === 'quick' && offersQuick(deps, turn) && riskAppearedMidDecision) {
+    // user เลือก quick จากตัวเลือกที่เห็นก่อนความเสี่ยงจะโผล่มา (options ยังไม่ได้เรียง full ก่อน): ห้ามรับทันที
+    // เตือนอีกครั้งแล้วถามซ้ำด้วยตัวเลือกที่เรียง full ก่อน ยึดคำตอบรอบสองเป็นที่สุด (ไม่ถามวนซ้ำไม่รู้จบ)
+    warn(flags);
+    decision = await decide(deps, state, LEVEL_PROMPT, ['full', 'quick', 'revise'] as const, onTurn);
+    if (decision === 'revise') return false;
+  }
 
   if (decision === 'quick' && !offersQuick(deps, turn)) {
     // PM เปลี่ยนข้อเสนอระหว่างที่ user กำลังตัดสินใจ (ไม่เสนอ quick แล้ว): quick ที่เลือกไว้ใช้ไม่ได้กับ turn ล่าสุด
     // ห้ามยอมรับ quick แบบเงียบ ๆ — บอก user แล้วถามยืนยันแบบ full ตามปกติ
     io.say('PM เปลี่ยนข้อเสนอเป็น full แล้ว');
-    return confirmAsFull(deps, state, turn);
+    return confirmAsFull(deps, state, turn, flags);
   }
 
   const requirements = turn.requirements!;

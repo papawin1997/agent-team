@@ -290,6 +290,52 @@ describe('runRequirements', () => {
     });
   });
 
+  it('PM เปลี่ยนข้อเสนอเป็น full ระหว่างตัดสินใจ quick โดย requirements ใหม่เสี่ยง: log riskFlags ล่าสุด (ไม่ใช่ [])', async () => {
+    const events: { event: string; data?: Record<string, unknown> }[] = [];
+    const risky = { ...makeRequirements(), goal: 'เพิ่มปุ่ม login' };
+    const { deps, io } = makeDeps(
+      { pm: [quickProposal(), proposal(risky)] },
+      ['แก้คำผิด', 'ทำไมถึงเสนอ quick', 'quick', 'confirm'],
+    );
+    deps.log = { log: (_level, event, data) => events.push({ event, data }) };
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(io.said.join('\n')).toContain('PM เปลี่ยนข้อเสนอเป็น full แล้ว');
+    expect(state.phase).toBe('DESIGN');
+    expect(state.level).toBe('full');
+    expect(events.find((e) => e.event === 'level.decided')?.data).toEqual({
+      level: 'full',
+      by: 'pm',
+      reason: undefined,
+      riskFlags: ['auth'],
+    });
+  });
+
+  it('risk flags โผล่มาระหว่างตัดสินใจ quick (ยังเสนอ quick อยู่) แต่ user ยังเลือก quick: ห้ามรับทันที ต้องเตือนแล้วถามซ้ำแบบเรียง full ก่อน', async () => {
+    const events: { event: string; data?: Record<string, unknown> }[] = [];
+    const risky = { ...makeRequirements(), goal: 'เพิ่มปุ่ม login' };
+    const { deps, io } = makeDeps(
+      { pm: [quickProposal(), quickProposal(risky)] },
+      ['แก้คำผิด', 'ทำไมถึงเสนอ quick', 'quick', 'quick'],
+    );
+    deps.log = { log: (_level, event, data) => events.push({ event, data }) };
+    const state = newState();
+    await runRequirements(deps, state);
+
+    const LEVEL_PROMPT = 'ทำแบบไหน? (quick = ทำเลยแบบย่อ 1 task, full = ออกแบบก่อนแบบเต็ม, revise = แก้ requirements)';
+    // ask#1 (คำถามอิสระ) + ask#2 ('quick' รอบแรก จบ decide() แรก) + ask#3 (ถามซ้ำหลังเจอความเสี่ยง 'quick' รอบสอง) = 3 ครั้ง
+    expect(io.asked.filter((p) => p === LEVEL_PROMPT).length).toBe(3);
+    expect(io.said.join('\n')).toContain('⚠ งานนี้แตะเรื่อง auth — แนะนำ full (มีขั้นออกแบบและตรวจ Security)');
+    expect(state.phase).toBe('BUILD');
+    expect(state.level).toBe('quick');
+    expect(events.find((e) => e.event === 'level.decided')?.data).toMatchObject({
+      level: 'quick',
+      by: 'pm',
+      riskFlags: ['auth'],
+    });
+  });
+
   it('งานเดิมเคยเป็น quick แล้วขอแก้ตอน DELIVER จน PM เสนอ full: ล้าง design/progress ให้ Planning เริ่มใหม่', async () => {
     const quickTask = makeQuickTask();
     const design = quickDesign(makeRequirements(), quickTask);
