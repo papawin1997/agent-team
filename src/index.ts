@@ -23,8 +23,9 @@ async function main(): Promise<void> {
     process.exit(130);
   };
   process.on('SIGINT', quitBeforeStart);
+  const isLogs = args.command === 'logs';
   const registry = new ProjectRegistry(undefined, { warn: (m) => cli.say(m) });
-  const projectDir = args.projectDir ?? (await selectProject({ registry, io: cli }));
+  const projectDir = args.projectDir ?? (await selectProject({ registry, io: cli, allowNew: !isLogs }));
   if (!projectDir) {
     cli.close();
     return;
@@ -40,10 +41,13 @@ async function main(): Promise<void> {
     cli.close();
     process.exit(1);
   }
-  try {
-    await registry.touch(projectDir);
-  } catch (e) {
-    cli.say(`บันทึกรายชื่อโปรเจกต์ไม่สำเร็จ (${e instanceof Error ? e.message : String(e)}) — ทำงานต่อได้ตามปกติ`);
+  // agent-team logs แค่ดู log ไม่ควรทำให้โปรเจกต์นี้ขึ้นไปอยู่บนสุดของเมนู (เหมือนเปิดโปรเจกต์จริง)
+  if (!isLogs) {
+    try {
+      await registry.touch(projectDir);
+    } catch (e) {
+      cli.say(`บันทึกรายชื่อโปรเจกต์ไม่สำเร็จ (${e instanceof Error ? e.message : String(e)}) — ทำงานต่อได้ตามปกติ`);
+    }
   }
   process.off('SIGINT', quitBeforeStart);
   if (args.command === 'logs') {
