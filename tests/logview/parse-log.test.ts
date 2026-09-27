@@ -195,4 +195,12 @@ describe('parseLog', () => {
     const [r] = parseLog(log);
     expect(r!.calls[0]).toMatchObject({ sessionId: 's-resume', status: 'unfinished', resumed: true });
   });
+
+  it('level.decided -> run.level ใช้ค่าล่าสุดในรอบ', () => {
+    const r = parseLog(
+      `${T} INFO  run.start {}\n${T} INFO  level.decided {"level":"quick","by":"pm","riskFlags":[]}\n${T} INFO  level.decided {"level":"full","by":"user","riskFlags":[]}`,
+    );
+    expect(r[0]!.level).toBe('full');
+    expect(parseLog(`${T} INFO  run.start {}`)[0]!.level).toBeUndefined();
+  });
 });

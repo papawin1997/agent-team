@@ -41,6 +41,8 @@ export interface Run {
   jobId?: string;
   status: RunStatus;
   errorMessage?: string;
+  /** ระดับงานล่าสุดที่ตัดสินในรอบนี้ (event level.decided) */
+  level?: 'quick' | 'full';
   events: LogEvent[];
   calls: AgentCall[];
   totalCostUsd: number;
@@ -170,5 +172,10 @@ function apply(run: Run, ev: LogEvent, open: Map<string, AgentCall>): void {
     case 'run.interrupted':
       run.status = 'interrupted';
       break;
+    case 'level.decided': {
+      const level = str(d.level);
+      if (level === 'quick' || level === 'full') run.level = level;
+      break;
+    }
   }
 }

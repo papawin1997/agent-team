@@ -62,6 +62,20 @@
 Ctrl+C หยุดได้ทุกเมื่อ: state ถูกบันทึกทุกครั้งที่เปลี่ยน phase/รอบ จึงเสียอย่างมากแค่รอบที่กำลังทำอยู่ แล้วรันใหม่เลือกงานนี้จากเมนู หรือใช้ -r (stdin ที่ถูกปิด/pipe จะหยุดพร้อมข้อความ EOF ไม่ค้าง)
 ระหว่างที่ agent ทำงานจะมีบรรทัดสถานะ เช่น `⠹ [QA] T2: กำลังตรวจ 1m23s · อ่านไฟล์ src/api/user.ts` (เวลาที่ผ่านไป + สิ่งที่ agent ทำล่าสุด) ถ้า output ไม่ใช่ terminal (pipe/redirect) จะพิมพ์แค่ `[QA] T2: กำลังตรวจ...` บรรทัดเดียวตอนเริ่ม
 
+## ระดับงาน: quick / full
+PM จะจัดระดับงานให้ตอนเสนอ requirements:
+- **quick** — งานเล็กที่ชัดเจน (ประมาณ 1–3 ไฟล์ ไม่มี design/API/data model ใหม่) PM เสนองาน 1 task ให้ worker ทำเลย แล้ว QA รันเทสต์ทั้งหมด (สูงสุด 2 รอบ ปรับได้ด้วย `quickMaxQaRounds` ใน `agent-team.config.json`) ไม่มีขั้น Planning/REVIEW/Security จึงเร็วและถูกกว่ามาก
+- **full** — ขั้นตอนเต็มตาม flow ด้านล่าง
+
+ตอน PM เสนอ quick คุณเลือกได้ว่า `quick` / `full` / `revise` ถ้าคำขอแตะเรื่องเสี่ยง (login/สิทธิ์, secret/token, การชำระเงิน, ลบหรือย้ายข้อมูล, SQL, อัปโหลดไฟล์, รันคำสั่ง shell, CORS/webhook) จะมีคำเตือน ⚠ และแนะนำ full
+
+ถ้างาน quick ไม่ผ่าน QA ครบรอบ ตัวเลือกจะมี `full` เพิ่ม เพื่อยกระดับไปออกแบบใหม่แบบเต็ม (โค้ดที่ทำไปแล้วยังอยู่)
+
+```
+    agent-team --quick   # บอก PM ว่าอยากได้ quick (ยังผ่านเกณฑ์และเช็คคำเสี่ยงตามปกติ)
+    agent-team --full    # ไม่เสนอ quick ใช้ขั้นตอนเต็มเสมอ
+```
+
 ## flow การทำงาน
 ภาพรวมตั้งแต่พิมพ์คำสั่งจนส่งมอบงาน:
 
@@ -122,7 +136,7 @@ Ctrl+C หยุดได้ทุกเมื่อ: state ถูกบัน�
 event หลัก: `run.start/run.end/run.error/run.interrupted`, `team.start/team.end`, `phase.change`,
 `agent.start/agent.result/agent.no_result`, `agent.api_retry` (SDK เจอ error ที่ retryable เช่น 529/rate limit/login แล้วจะลองใหม่),
 `agent.session` (sessionId จริงของ SDK ทันทีที่รู้ ไม่ต้องรอ agent.result — ใช้หาสาเหตุตอน `--live`),
-`qa.report`, `security.report`, `escalate.decision`, `guard.deny`,
+`qa.report`, `security.report`, `escalate.decision`, `level.decided` (ระดับงานที่ตัดสิน: level, by, reason, riskFlags), `guard.deny`,
 `say` (ทุกข้อความที่แสดงใน terminal), `user.input` / `user.choice` (สิ่งที่คุณพิมพ์/เลือก)
 event เกี่ยวกับ job (housekeeping ของหลายงานใน `jobs/`):
 `job.selected` (งานที่เลือกในแต่ละรอบรัน), `job.migrated` (ย้าย state แบบเก่าเข้า `jobs/` สำเร็จ),
