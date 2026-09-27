@@ -13,6 +13,7 @@ const data = (n: number): ViewData => ({
   projectDir: '/work/app',
   logFile: 'x',
   generatedAt: '2026-01-10T00:00:00.000Z',
+  defaultRun: n - 1,
   runs: Array.from({ length: n }, (_, i) => ({
     index: i,
     start: '',

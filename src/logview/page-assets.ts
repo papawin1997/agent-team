@@ -46,13 +46,7 @@ export const PAGE_JS = String.raw`
 (function () {
   'use strict';
   var data = JSON.parse(document.getElementById('data').textContent);
-  function computeDefaultRun(runs) {
-    for (var i = runs.length - 1; i >= 0; i--) {
-      if (runs[i].calls.length > 0 || runs[i].findings.length > 0) return i;
-    }
-    return runs.length - 1;
-  }
-  var currentDefault = typeof window.__DEFAULT_RUN__ === 'number' ? window.__DEFAULT_RUN__ : computeDefaultRun(data.runs);
+  var currentDefault = data.defaultRun;
   var state = { run: currentDefault, open: {}, filter: 'all' };
   var lastRuns = JSON.stringify(data.runs);
   var app = document.getElementById('app');
@@ -305,7 +299,7 @@ export const PAGE_JS = String.raw`
           var runs = JSON.stringify(next.runs);
           if (runs === lastRuns) return;
           var wasOnDefault = state.run === currentDefault;
-          var newDefault = computeDefaultRun(next.runs);
+          var newDefault = next.defaultRun;
           data = next;
           lastRuns = runs;
           if (state.run >= data.runs.length) {

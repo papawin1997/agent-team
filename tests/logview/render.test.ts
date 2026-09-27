@@ -63,6 +63,11 @@ describe('renderHtml', () => {
     expect(html).not.toContain('<script>alert(1)');
   });
 
+  it('มี defaultRun ในข้อมูลที่ฝัง ตาม defaultRunIndex', () => {
+    expect(data.defaultRun).toBe(defaultRunIndex(data.runs));
+    expect(readData(renderHtml(data)).defaultRun).toBe(data.defaultRun);
+  });
+
   it('ตั้งค่า live ตามตัวเลือก และมี lang/title', () => {
     expect(renderHtml(data)).toContain('window.__LIVE__ = false');
     expect(renderHtml(data, { live: true })).toContain('window.__LIVE__ = true');
@@ -70,7 +75,7 @@ describe('renderHtml', () => {
     expect(renderHtml(data)).toContain('<title>agent-team logs — app</title>');
   });
 
-  it('ฝัง window.__DEFAULT_RUN__ ตาม defaultRunIndex (รอบล่าสุดที่เรียก agent/มีปัญหา ไม่ใช่รอบสุดท้ายเสมอไป) ในสคริปต์เดียวกับ __LIVE__', () => {
+  it('defaultRun ในข้อมูล (ผ่าน buildViewData) ตาม defaultRunIndex (รอบล่าสุดที่เรียก agent/มีปัญหา ไม่ใช่รอบสุดท้ายเสมอไป)', () => {
     const twoRuns = buildViewData({
       projectDir: '/work/app',
       logFile: 'x',
@@ -83,9 +88,9 @@ describe('renderHtml', () => {
     expect(twoRuns.runs[1]!.calls).toHaveLength(0);
     const idx = defaultRunIndex(twoRuns.runs);
     expect(idx).toBe(0);
+    expect(twoRuns.defaultRun).toBe(0);
     const html = renderHtml(twoRuns);
-    expect(html).toContain(`window.__DEFAULT_RUN__ = ${idx};`);
-    expect(html).toMatch(/window\.__LIVE__ = false;\s*window\.__DEFAULT_RUN__ = 0;/);
+    expect(readData(html).defaultRun).toBe(0);
     expect(html.match(/<\/script>/g)).toHaveLength(3);
   });
 
@@ -98,8 +103,10 @@ describe('renderHtml', () => {
     expect(PAGE_JS).not.toContain('</script');
   });
 
-  it('ใช้ window.__DEFAULT_RUN__ เป็นค่าเริ่มต้นของรอบที่แสดง', () => {
-    expect(PAGE_JS).toContain('__DEFAULT_RUN__');
+  it('ใช้ data.defaultRun เป็นค่าเริ่มต้นของรอบที่แสดง (ไม่คำนวณเองซ้ำกับ view-data.ts)', () => {
+    expect(PAGE_JS).toContain('data.defaultRun');
+    expect(PAGE_JS).not.toContain('computeDefaultRun');
+    expect(PAGE_JS).not.toContain('__DEFAULT_RUN__');
   });
 
   it('บอกรอบที่ไม่ได้เรียก agent ใน dropdown', () => {
@@ -110,7 +117,7 @@ describe('renderHtml', () => {
     expect(PAGE_JS).toContain('document.hidden');
   });
 
-  it('live: เลื่อนไปรอบล่าสุดอัตโนมัติเฉพาะตอนอยู่ที่ default เดิมและ default ใหม่เปลี่ยน', () => {
-    expect(PAGE_JS).toContain('computeDefaultRun');
+  it('live: เลื่อนไปรอบล่าสุดอัตโนมัติเฉพาะตอนอยู่ที่ default เดิมและ default ใหม่เปลี่ยน (ใช้ next.defaultRun จาก server)', () => {
+    expect(PAGE_JS).toContain('next.defaultRun');
   });
 });

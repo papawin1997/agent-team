@@ -12,6 +12,8 @@ export interface ViewData {
   projectDir: string;
   logFile: string;
   generatedAt: string;
+  /** รอบรันที่ควรเลือกไว้เป็นค่าเริ่มต้น (ดู defaultRunIndex) คำนวณครั้งเดียวที่นี่ ไม่ใช่ซ้ำในฝั่งเบราว์เซอร์ */
+  defaultRun: number;
   runs: RunView[];
 }
 
@@ -43,6 +45,7 @@ export function buildViewData(opts: {
     projectDir: opts.projectDir,
     logFile: opts.logFile,
     generatedAt: (opts.now ?? (() => new Date()))().toISOString(),
+    defaultRun: defaultRunIndex(runs),
     runs,
   };
 }
