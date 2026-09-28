@@ -16,6 +16,9 @@ type Rule = {
   thMatch?: (text: string) => boolean;
 };
 
+/** คำที่หมายถึง "ข้อมูล" ใช้ร่วมกับ "ลบ" + "ทุก"/"ทั้งหมด" กันหมวด delete จับงานแก้ไขทั่วไป (ดูหมายเหตุที่ thMatch ของ delete) */
+const DATA_NOUNS_TH: readonly string[] = ['ข้อมูล', 'ผู้ใช้', 'ลูกค้า', 'บัญชี', 'ตาราง', 'ฐานข้อมูล'];
+
 const RULES: readonly Rule[] = [
   {
     category: 'auth',
@@ -38,8 +41,13 @@ const RULES: readonly Rule[] = [
     th: [],
     // ไทย: ต้องมีทั้ง "ลบ" และ ("ทั้งหมด" หรือ "ทุก") เป็น substring แยกกัน (ไม่ต้องติดกัน) เพื่อไม่ให้ "ลบ" เดี่ยว ๆ
     // (เช่น เพิ่ม/ลบ todo) เข้าเงื่อนไข; "ล้างข้อมูล" ยังนับเป็น delete เสมอ
+    // แก้ false positive จาก review: "ลบ" + "ทุก"/"ทั้งหมด" อย่างเดียวจับงานแก้ไขทั่วไปเยอะเกิน
+    // (เช่น "ลบ console.log ทุกไฟล์", "ลบ todo ได้ทุกรายการ") ต้องมีคำที่หมายถึงข้อมูลร่วมด้วยจึงจะถือว่าเสี่ยงจริง
     thMatch: (text) =>
-      (text.includes('ลบ') && (text.includes('ทั้งหมด') || text.includes('ทุก'))) || text.includes('ล้างข้อมูล'),
+      (text.includes('ลบ') &&
+        (text.includes('ทั้งหมด') || text.includes('ทุก')) &&
+        DATA_NOUNS_TH.some((w) => text.includes(w))) ||
+      text.includes('ล้างข้อมูล'),
   },
   {
     category: 'migration',
@@ -48,9 +56,13 @@ const RULES: readonly Rule[] = [
   },
   {
     category: 'sql',
-    // gap ระหว่าง select/update กับ from/set ต้องอยู่บรรทัดเดียวกันและสั้น (<=8 ตัวอักษร) กันไม่ให้จับประโยคภาษาอังกฤษ
-    // ทั่วไปที่บังเอิญมีทั้งสองคำ (เช่น "select a color from the palette") ผิดเป็น SQL จริง
-    en: /\b(sql|raw query)\b|\bselect\b[^\n]{0,8}?\bfrom\b|\binsert\s+into\b|\bupdate\b[^\n]{0,8}?\bset\b|\bdelete\s+from\b/i,
+    // แก้ false negative จาก review: จำกัดความยาวช่องว่างระหว่าง select/update กับ from/set (เดิม <=8 ตัวอักษร)
+    // ทำให้ query จริงที่มีรายชื่อคอลัมน์/ชื่อตารางยาวหลุด (เช่น "SELECT id, name, email FROM users") เปลี่ยนมาใช้
+    // รูปแบบ token ของ SQL แทน: select ต้องตามด้วย "*" หรือรายชื่อคอลัมน์แบบ comma (>=2 คอลัมน์) แล้วค่อย from+ชื่อตาราง,
+    // update ต้องตามด้วยชื่อตารางคำเดียวแล้ว set แล้วมี "=" (เพื่อแยกจาก "update the header text and set color")
+    // ตัดสินใจ: "select a from b" (คอลัมน์เดี่ยว ไม่มี comma/*) ยังก้ำกึ่งเกินกว่าจะแยกจากประโยคภาษาอังกฤษทั่วไปได้
+    // (เช่น "select a color from the palette") จึงไม่จับ — ดูเทสต์ tests/risk.test.ts
+    en: /\b(sql|raw query)\b|\bselect\s+(\*|[\w.]+(?:\s*,\s*[\w.]+)+)\s+from\s+[\w.]+|\binsert\s+into\b|\bupdate\s+[\w.]+\s+set\s+[\w.]+\s*=|\bdelete\s+from\b/i,
     th: [],
   },
   { category: 'upload', en: /\b(upload\w*|multipart)\b/i, th: ['อัปโหลด', 'อัพโหลด'] },

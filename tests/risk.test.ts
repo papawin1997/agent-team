@@ -83,6 +83,18 @@ describe('riskFlags - แก้ false negative/positive จาก review', () =>
     expect(riskFlags('เพิ่ม/ลบ todo ในรายการ')).toEqual([]);
   });
 
+  it('delete: ภาษาไทย false positive จาก review — มี "ลบ" + "ทุก"/"ทั้งหมด" แต่ไม่ได้พูดถึงข้อมูล/ผู้ใช้/ลูกค้า ไม่ควรเข้าเงื่อนไข', () => {
+    expect(riskFlags('แก้ปุ่มให้ทุกหน้าลบเงาออก')).toEqual([]);
+    expect(riskFlags('ลบ console.log ทุกไฟล์')).toEqual([]);
+    expect(riskFlags('ลบ todo ได้ทุกรายการ')).toEqual([]);
+  });
+
+  it('delete: ต้องยังจับกรณีลบข้อมูล/ผู้ใช้/ลูกค้าทั้งหมดเหมือนเดิม', () => {
+    expect(riskFlags('ปุ่มลบข้อมูลทั้งหมดของผู้ใช้')).toEqual(['delete']);
+    expect(riskFlags('ลบผู้ใช้ทั้งหมด')).toEqual(['delete']);
+    expect(riskFlags('ลบข้อมูลลูกค้าทั้งหมด')).toEqual(['delete']);
+  });
+
   it('shell: false negatives ที่ต้องจับ', () => {
     expect(riskFlags('use os.system to run a command')).toEqual(['shell']);
     expect(riskFlags('subprocess.run(["ls"])')).toEqual(['shell']);
@@ -148,6 +160,15 @@ describe('riskFlags - sql: ต้องไม่ข้าม field/บรรท�
     expect(riskFlags("UPDATE users SET role = 'admin'")).toEqual(['sql']);
     expect(riskFlags('DELETE FROM sessions')).toEqual(['sql']);
     expect(riskFlags('build the report with raw SQL')).toEqual(['sql']);
+  });
+
+  it('false negative จาก review: gap ยาวเกิน 8 ตัวอักษร (คอลัมน์/ชื่อตารางยาว) ต้องยังจับได้', () => {
+    expect(riskFlags('SELECT id, name, email FROM users')).toEqual(['sql']);
+    expect(riskFlags('update user_profiles set email = ?')).toEqual(['sql']);
+  });
+
+  it('เคสก้ำกึ่ง "select a from b" (คอลัมน์เดี่ยว ไม่มี comma/*): ตัดสินใจไม่จับ เพราะแยกจากประโยคภาษาอังกฤษทั่วไปไม่ได้', () => {
+    expect(riskFlags('select a from b')).toEqual([]);
   });
 });
 
