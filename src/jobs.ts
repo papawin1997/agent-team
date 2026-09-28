@@ -7,6 +7,8 @@ import { FileStateStore, newState, type State } from './state';
 export interface JobLock {
   pid: number;
   startedAt: string;
+  /** process ที่ถือ lock รันแบบ headless (lock เก่า/โหมดโต้ตอบไม่มี key นี้) */
+  headless?: boolean;
 }
 
 export interface JobInfo {
@@ -26,6 +28,8 @@ export interface JobRepositoryOptions {
   isAlive?: (pid: number) => boolean;
   /** ย้ายไฟล์/โฟลเดอร์ (เทสต์ส่งตัวที่ล้มได้) */
   rename?: (from: string, to: string) => Promise<void>;
+  /** process นี้รันแบบ headless: เขียน headless: true ลง run.lock (คำสั่ง answer/stop ใช้แยกจากงานที่รันใน terminal) */
+  headless?: boolean;
 }
 
 const errCode = (e: unknown): string | undefined => (e as NodeJS.ErrnoException).code;
@@ -55,6 +59,9 @@ export function formatJobId(d: Date): string {
   );
 }
 
+/** รูปแบบ id ของงาน (formatJobId + suffix -n) ใช้ตรวจ jobId ที่รับจากผู้ใช้ กัน path traversal */
+export const JOB_ID_RE = /^\d{8}-\d{6}(-\d+)?$/;
+
 /** งานที่ยังไม่มีข้อมูลอะไรเลย เช่นกด n แล้ว Ctrl+C ก่อนพิมพ์ */
 export function isEmptyJob(state: State): boolean {
   return state.phase === 'REQUIREMENTS' && !state.title && !state.pmSessionId && !state.requirements;
@@ -68,7 +75,9 @@ function parseLock(raw: string): JobLock | undefined {
       typeof data.startedAt === 'string' &&
       !Number.isNaN(Date.parse(data.startedAt))
     ) {
-      return { pid: data.pid, startedAt: data.startedAt };
+      return data.headless === true
+        ? { pid: data.pid, startedAt: data.startedAt, headless: true }
+        : { pid: data.pid, startedAt: data.startedAt };
     }
   } catch {
     // ไฟล์ lock พัง = ถือว่าค้าง
@@ -84,6 +93,7 @@ export class JobRepository {
   private readonly pid: number;
   private readonly isAlive: (pid: number) => boolean;
   private readonly rename: (from: string, to: string) => Promise<void>;
+  private readonly headless: boolean;
 
   constructor(projectDir: string, opts: JobRepositoryOptions = {}) {
     this.root = path.join(projectDir, '.agent-team');
@@ -93,6 +103,7 @@ export class JobRepository {
     this.pid = opts.pid ?? process.pid;
     this.isAlive = opts.isAlive ?? isProcessAlive;
     this.rename = opts.rename ?? fsp.rename;
+    this.headless = opts.headless ?? false;
   }
 
   jobDir(id: string): string {
@@ -171,7 +182,9 @@ export class JobRepository {
 
   async lock(id: string): Promise<boolean> {
     const file = this.lockPath(id);
-    const body = JSON.stringify({ pid: this.pid, startedAt: this.now().toISOString() });
+    const lock: JobLock = { pid: this.pid, startedAt: this.now().toISOString() };
+    if (this.headless) lock.headless = true;
+    const body = JSON.stringify(lock);
     if (await this.tryCreateLock(file, body)) return true;
     const held = await this.readLock(file);
     if (held?.pid === this.pid) return true;
@@ -202,6 +215,11 @@ export class JobRepository {
         this.log.log('WARN', 'job.unlock_failed', { jobId: id, message: errMessage(e) });
       }
     }
+  }
+
+  /** lock ของงานนี้ถ้า process ที่ถือยังทำงานอยู่ (คำสั่ง headless ที่ไม่ได้ถือ lock เองใช้เช็กว่างานยังรันไหม) */
+  async runningLock(id: string): Promise<JobLock | undefined> {
+    return this.liveLock(id);
   }
 
   async remove(id: string): Promise<void> {

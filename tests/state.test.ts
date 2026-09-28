@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { FileStateStore, newState } from '../src/state';
 import { buildState } from './helpers/builders';
 
@@ -74,5 +74,31 @@ describe('FileStateStore', () => {
     state.lastBuildAt = '2026-09-01T00:00:00.000Z';
     await new FileStateStore(jobDir, clock).save(state);
     expect(state.lastBuildAt).toBe('2026-09-01T00:00:00.000Z');
+  });
+});
+
+describe('FileStateStore.save rename บน Windows', () => {
+  const errno = (code: string): NodeJS.ErrnoException => Object.assign(new Error(code), { code });
+
+  it('rename ล้มด้วย EPERM ชั่วคราว (อีก process เปิด state.json อ่านอยู่) → retry แล้ว save สำเร็จ', async () => {
+    let fails = 3;
+    const rename = vi.fn(async (from: string, to: string) => {
+      if (fails-- > 0) throw errno('EPERM');
+      await fs.rename(from, to);
+    });
+    const store = new FileStateStore(jobDir, clock, { rename });
+    const state = newState();
+    await store.save(state);
+    expect(rename).toHaveBeenCalledTimes(4);
+    expect(await store.load()).toEqual(state);
+  });
+
+  it('rename ล้มตลอด → throw และไม่ทิ้ง state.json.tmp', async () => {
+    const rename = vi.fn(async () => {
+      throw errno('EPERM');
+    });
+    const store = new FileStateStore(jobDir, clock, { rename });
+    await expect(store.save(newState())).rejects.toThrow('EPERM');
+    expect(await fs.readdir(jobDir)).toEqual([]);
   });
 });

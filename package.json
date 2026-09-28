@@ -12,7 +12,8 @@
     "src",
     "skills",
     "scripts",
-    "tsconfig.json"
+    "tsconfig.json",
+    "claude-skill"
   ],
   "engines": {
     "node": ">=20.6"

@@ -19,6 +19,8 @@ export interface TeamConfig {
   maxQaRounds: number;
   extraRoundsOnContinue: number;
   quickMaxQaRounds: number;
+  /** โหมด headless: รอคำตอบนานสุดกี่นาทีก่อนจบงาน (resume ต่อได้) กัน process ค้างถ้าไม่มีใครตอบ */
+  headlessIdleMinutes: number;
   roles: Record<RoleName, RoleConfig>;
 }
 
@@ -60,6 +62,7 @@ export const DEFAULT_CONFIG: TeamConfig = {
   maxQaRounds: 5,
   extraRoundsOnContinue: 5,
   quickMaxQaRounds: 2,
+  headlessIdleMinutes: 120,
   roles: {
     pm: { model: SONNET, maxTurns: 20, maxBudgetUsd: 2, tools: READ_TOOLS, allowedTools: READ_TOOLS, skills: [] },
     planning: { model: OPUS, maxTurns: 40, maxBudgetUsd: 5, tools: READ_TOOLS, allowedTools: READ_TOOLS, skills: [] },
@@ -84,6 +87,7 @@ const ConfigOverrideSchema = z
     maxQaRounds: z.number().int().positive().optional(),
     extraRoundsOnContinue: z.number().int().positive().optional(),
     quickMaxQaRounds: z.number().int().positive().optional(),
+    headlessIdleMinutes: z.number().int().positive().optional(),
     roles: z
       .object({
         pm: RoleOverrideSchema.optional(),
@@ -113,6 +117,7 @@ export function mergeConfig(base: TeamConfig, override: unknown): TeamConfig {
     maxQaRounds: parsed.maxQaRounds ?? base.maxQaRounds,
     extraRoundsOnContinue: parsed.extraRoundsOnContinue ?? base.extraRoundsOnContinue,
     quickMaxQaRounds: parsed.quickMaxQaRounds ?? base.quickMaxQaRounds,
+    headlessIdleMinutes: parsed.headlessIdleMinutes ?? base.headlessIdleMinutes,
     roles,
   };
 }

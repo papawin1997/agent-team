@@ -8,6 +8,7 @@ import {
   formatJobId,
   isEmptyJob,
   isProcessAlive,
+  JOB_ID_RE,
   JobRepository,
   type JobRepositoryOptions,
 } from '../src/jobs';
@@ -73,6 +74,20 @@ describe('JobRepository', () => {
       pid: 1000,
       startedAt: at.toISOString(),
     });
+  });
+
+  it('repo headless: lock มี headless true และ list/runningLock อ่านกลับได้; lock เก่าไม่มี key ยังใช้ได้', async () => {
+    const repo = make({ headless: true });
+    const { id } = await repo.create();
+    expect(JSON.parse(await fs.readFile(repo.lockPath(id), 'utf8'))).toEqual({
+      pid: 1000,
+      startedAt: at.toISOString(),
+      headless: true,
+    });
+    expect(await repo.runningLock(id)).toEqual({ pid: 1000, startedAt: at.toISOString(), headless: true });
+    expect((await repo.list())[0]!.lock).toEqual({ pid: 1000, startedAt: at.toISOString(), headless: true });
+    await fs.writeFile(repo.lockPath(id), JSON.stringify({ pid: 1000, startedAt: at.toISOString() }), 'utf8');
+    expect(await repo.runningLock(id)).toEqual({ pid: 1000, startedAt: at.toISOString() });
   });
 
   it('create ในวินาทีเดียวกันได้ id ไม่ซ้ำ', async () => {
@@ -260,6 +275,25 @@ describe('JobRepository', () => {
     await store.saveArtifact('design.json', {});
     await repo.remove(id);
     expect(existsSync(repo.jobDir(id))).toBe(false);
+  });
+});
+
+describe('JOB_ID_RE', () => {
+  it('รับรูปแบบ id ของงาน และปฏิเสธ path', () => {
+    expect(JOB_ID_RE.test(formatJobId(at))).toBe(true);
+    expect(JOB_ID_RE.test('20260925-093015-2')).toBe(true);
+    expect(JOB_ID_RE.test('../x')).toBe(false);
+    expect(JOB_ID_RE.test('20260925-093015/..')).toBe(false);
+  });
+});
+
+describe('runningLock', () => {
+  it('คืน lock เมื่อ process ที่ถือยังอยู่ และ undefined เมื่อตายแล้ว', async () => {
+    const { id } = await make().create();
+    const other = make({ pid: 2000 });
+    expect(await other.runningLock(id)).toMatchObject({ pid: 1000 });
+    alive.delete(1000);
+    expect(await other.runningLock(id)).toBeUndefined();
   });
 });
 
