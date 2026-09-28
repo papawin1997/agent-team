@@ -136,3 +136,12 @@ describe('quickMaxQaRounds', () => {
     expect(() => mergeConfig(DEFAULT_CONFIG, { quickMaxQaRounds: 0 })).toThrow();
   });
 });
+
+describe('headlessIdleMinutes', () => {
+  it('ค่าเริ่มต้น 120 และ override ได้', () => {
+    expect(DEFAULT_CONFIG.headlessIdleMinutes).toBe(120);
+    expect(mergeConfig(DEFAULT_CONFIG, { headlessIdleMinutes: 30 }).headlessIdleMinutes).toBe(30);
+    expect(mergeConfig(DEFAULT_CONFIG, {}).headlessIdleMinutes).toBe(120);
+    expect(() => mergeConfig(DEFAULT_CONFIG, { headlessIdleMinutes: 0 })).toThrow();
+  });
+});
