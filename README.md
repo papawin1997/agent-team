@@ -128,6 +128,7 @@ PM จะจัดระดับงานให้ตอนเสนอ require
 รอบแก้หลัง QA ไม่ผ่าน:
 - worker ทำต่อใน session เดิม (ส่งแค่ผล QA) ได้ติดกัน 2 ครั้ง ครั้งถัดไปเปิด session ใหม่พร้อม task/design เต็ม ถ้า resume ไม่สำเร็จจะเปิดใหม่ให้เองในรอบเดียวกัน
 - ถ้าโปรเจกต์เป็น git repo QA จะได้ diff เฉพาะสิ่งที่ worker แก้ในรอบนั้น (snapshot ด้วย index ชั่วคราว ไม่แตะ index/branch/stash ของคุณ ไม่รวม .agent-team) แล้วตรวจแค่ส่วนที่เปลี่ยน + ปัญหาเดิม แต่ยังรัน build/lint/test ทั้งหมดทุกรอบ รอบแรกและโปรเจกต์ที่ไม่ใช่ git ตรวจทั้ง task เหมือนเดิม
+- submodule/repo ซ้อนอยู่ในโปรเจกต์ diff จะเห็นแค่การเปลี่ยน commit ของ submodule เท่านั้น ไม่เห็นไฟล์ข้างในที่เปลี่ยนจริง
 - ดูได้ใน log: `worker.session`, `worker.resume_failed`, `qa.scope`, `snapshot.failed`
 
 ## ดู log / หาสาเหตุเมื่อ agent error
