@@ -125,6 +125,11 @@ PM จะจัดระดับงานให้ตอนเสนอ require
 5. DELIVER: PM ส่งมอบ ให้คุณตรวจรับ (accept) หรือขอแก้/เพิ่ม (change) — คำขอแก้ที่ถูก triage เป็น quick จะข้าม
    DESIGN/REVIEW ไป BUILD เลยเหมือนข้อ 1
 
+รอบแก้หลัง QA ไม่ผ่าน:
+- worker ทำต่อใน session เดิม (ส่งแค่ผล QA) ได้ติดกัน 2 ครั้ง ครั้งถัดไปเปิด session ใหม่พร้อม task/design เต็ม ถ้า resume ไม่สำเร็จจะเปิดใหม่ให้เองในรอบเดียวกัน
+- ถ้าโปรเจกต์เป็น git repo QA จะได้ diff เฉพาะสิ่งที่ worker แก้ในรอบนั้น (snapshot ด้วย index ชั่วคราว ไม่แตะ index/branch/stash ของคุณ ไม่รวม .agent-team) แล้วตรวจแค่ส่วนที่เปลี่ยน + ปัญหาเดิม แต่ยังรัน build/lint/test ทั้งหมดทุกรอบ รอบแรกและโปรเจกต์ที่ไม่ใช่ git ตรวจทั้ง task เหมือนเดิม
+- ดูได้ใน log: `worker.session`, `worker.resume_failed`, `qa.scope`, `snapshot.failed`
+
 ## ดู log / หาสาเหตุเมื่อ agent error
     agent-team logs                  # เลือกโปรเจกต์จากเมนู → สร้างหน้า log แล้วเปิดเบราว์เซอร์
     agent-team logs C:/path/to/app   # ระบุโปรเจกต์ตรง ๆ (หรือ agent-team logs . ในโฟลเดอร์โปรเจกต์)

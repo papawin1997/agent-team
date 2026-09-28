@@ -104,6 +104,7 @@ async function main(): Promise<void> {
       config,
       log: logger,
       levelPreference: args.level,
+      snapshots: ctx.snapshots,
     });
     console.log(
       final.phase === 'DONE'

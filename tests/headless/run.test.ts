@@ -8,9 +8,10 @@ import { HeadlessIO } from '../../src/headless/io';
 import { runHeadlessJob, startHeadlessJob } from '../../src/headless/run';
 import { JobRepository } from '../../src/jobs';
 import { nullLogger } from '../../src/logger';
-import { asking, makeDesign, passReport, proposal } from '../helpers/builders';
+import { asking, failReport, makeDesign, passReport, proposal } from '../helpers/builders';
 import { FakeRunner, type FakeScript } from '../helpers/fakes';
 import { until } from '../helpers/until';
+import type { QaInput } from '../../src/deps';
 
 let projectDir: string;
 beforeEach(() => {
@@ -131,5 +132,36 @@ describe('runHeadlessJob', () => {
     writeJsonAtomic(headlessPath(dir, 'stop'), { at: 'old' });
     writeJsonAtomic(headlessPath(dir, 'exit'), { status: 'error', at: 'old' });
     await expect(run(1000)).resolves.toBe('idle');
+  });
+
+  it('ส่ง snapshots ต่อให้ BUILD: รอบแก้ QA ได้ roundDiff', async () => {
+    const repo = new JobRepository(projectDir);
+    const job = await startHeadlessJob(repo, { request: 'อยากได้ todo', resume: false });
+    const dir = repo.jobDir(job.id);
+    const runner = new FakeRunner({
+      pm: [proposal(), asking('สรุป design'), asking('สรุปส่งมอบ')],
+      plans: [makeDesign()],
+      qa: [failReport('api'), passReport('api'), passReport('ui')],
+    });
+    let n = 0;
+    const snapshots = {
+      snapshot: async () => `t${++n}`,
+      diff: async (a: string, b: string) => ({ diff: `${a}..${b}`, files: ['src/api.ts'], truncated: false }),
+    };
+    const result = runHeadlessJob({
+      repo,
+      jobId: job.id,
+      store: job.store,
+      runner,
+      config: DEFAULT_CONFIG,
+      logger: nullLogger,
+      io: new HeadlessIO({ dir, idleTimeoutMs: 3000, pollMs: 5 }),
+      onStop: () => {},
+      snapshots,
+    });
+    await answerAll(dir, ['confirm', 'confirm', 'accept']);
+    await expect(result).resolves.toBe('done');
+    const qa = runner.calls.filter((c) => c.role === 'qa').map((c) => c.input as QaInput);
+    expect(qa[1]!.roundDiff?.diff).toBe('t1..t2');
   });
 });

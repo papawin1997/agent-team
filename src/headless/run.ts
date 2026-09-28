@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import type { CliArgs } from '../args';
 import type { TeamConfig } from '../config';
 import type { RoleRunner, StateStore, UserIO } from '../deps';
+import type { SnapshotProvider } from '../snapshot';
 import { makeInterruptHandler, type InterruptSignal } from '../interrupt';
 import { selectJob, type SelectedJob } from '../job-menu';
 import type { JobRepository } from '../jobs';
@@ -68,6 +69,8 @@ export interface HeadlessJobOptions {
   /** เรียกหลังเขียน exit.json เมื่อเจอ stop.json (runHeadless ส่ง interrupt handler ที่จบด้วย exit 130) */
   onStop: () => void;
   stopPollMs?: number;
+  /** ส่งต่อเข้า Deps.snapshots (ไม่มี = QA ตรวจทั้ง task ทุกรอบ) */
+  snapshots?: SnapshotProvider;
 }
 
 /** รัน orchestrator กับงานที่ lock แล้ว เขียน exit.json ตอนจบทุกทาง และปล่อย lock */
@@ -91,6 +94,7 @@ export async function runHeadlessJob(o: HeadlessJobOptions): Promise<ExitStatus>
       config: o.config,
       log: o.logger,
       levelPreference: o.levelPreference,
+      snapshots: o.snapshots,
     });
     const status: ExitStatus = final.phase === 'DONE' ? 'done' : 'aborted';
     writeExit(dir, status);
@@ -169,6 +173,7 @@ export async function runHeadless(args: CliArgs): Promise<number> {
     io,
     levelPreference: args.level,
     onStop: () => onSignal('stop'),
+    snapshots: ctx.snapshots,
   });
   console.log(JSON.stringify({ jobId: job.id, status }));
   return status === 'error' || status === 'idle' ? 1 : 0;
