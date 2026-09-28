@@ -46,4 +46,12 @@ describe('makeInterruptHandler', () => {
     expect(printed).toEqual(['\nหยุดแล้ว']);
     expect(exits).toEqual([130]);
   });
+
+  it.each(['SIGTERM', 'stop'] as const)('%s: ทำงานเหมือน SIGINT (ปล่อย lock, abort, exit 130)', async (signal) => {
+    const { repo, id, calls, exits, handler } = await setup('created');
+    handler(signal);
+    expect(existsSync(repo.lockPath(id!))).toBe(false);
+    expect(calls).toContain('abort');
+    expect(exits).toEqual([130]);
+  });
 });

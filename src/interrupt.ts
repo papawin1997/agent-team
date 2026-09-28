@@ -13,8 +13,11 @@ export interface InterruptDeps {
   exit: (code: number) => void;
 }
 
-/** handler เดียวใช้กับทั้ง SIGINT และ SIGHUP ทุกขั้นเป็น sync เพราะจบด้วย exit */
-export function makeInterruptHandler(deps: InterruptDeps): (signal: 'SIGINT' | 'SIGHUP') => void {
+/** SIGTERM/stop ใช้ในโหมด headless (stop = เจอ stop.json จากคำสั่ง agent-team stop) */
+export type InterruptSignal = 'SIGINT' | 'SIGHUP' | 'SIGTERM' | 'stop';
+
+/** handler เดียวใช้กับทุกสัญญาณหยุด ทุกขั้นเป็น sync เพราะจบด้วย exit */
+export function makeInterruptHandler(deps: InterruptDeps): (signal: InterruptSignal) => void {
   return (signal) => {
     deps.logger.log('WARN', 'run.interrupted', { signal });
     deps.abort();
