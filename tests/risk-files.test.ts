@@ -49,4 +49,21 @@ describe('riskyFiles', () => {
       { file: 'package.json', category: 'dependency' },
     ]);
   });
+
+  describe('M5: absolute path ทำเป็น relative กับ projectDir ก่อนตรวจ', () => {
+    const projectDir = 'C:\\Users\\dev\\tests\\myproj';
+    const file = 'C:\\Users\\dev\\tests\\myproj\\src\\auth\\login.ts';
+
+    it('ไม่ส่ง projectDir: path เต็มมี "\\tests\\" จากชื่อโฟลเดอร์นอกโปรเจกต์ ถูกเข้าใจผิดว่าเป็นไฟล์เทสต์ ไม่นับเป็นเสี่ยง', () => {
+      expect(riskyFiles([file])).toEqual([]);
+    });
+
+    it('ส่ง projectDir: ตัดเหลือ path relative จริงในโปรเจกต์ (src/auth/login.ts) ไม่ใช่ไฟล์เทสต์ ตรวจเจอ auth', () => {
+      expect(riskyFiles([file], projectDir)).toEqual([{ file: 'src/auth/login.ts', category: 'auth' }]);
+    });
+
+    it('path ที่ไม่ absolute ไม่ถูกแตะแม้ส่ง projectDir มาด้วย', () => {
+      expect(riskyFiles(['src/auth/login.ts'], projectDir)).toEqual([{ file: 'src/auth/login.ts', category: 'auth' }]);
+    });
+  });
 });

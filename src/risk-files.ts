@@ -1,3 +1,4 @@
+import * as path from 'node:path';
 import { TEST_PATH_PATTERNS } from './config';
 import type { RiskCategory } from './risk';
 
@@ -34,14 +35,20 @@ const RULES: readonly { category: FileRiskCategory; re: RegExp }[] = [
   },
 ];
 
-const isTestFile = (file: string): boolean => TEST_PATH_PATTERNS.some((re) => re.test(file));
+export const isTestFile = (file: string): boolean => TEST_PATH_PATTERNS.some((re) => re.test(file));
 
-/** ไฟล์ที่แตะเรื่องเสี่ยง (ดูจาก path อย่างเดียว) ใช้ตัดสินว่า task ระดับ quick/standard ต้องให้ Security ตรวจไหม */
-export function riskyFiles(paths: readonly string[]): RiskyFile[] {
+/**
+ * ไฟล์ที่แตะเรื่องเสี่ยง (ดูจาก path อย่างเดียว) ใช้ตัดสินว่า task ระดับ quick/standard ต้องให้ Security ตรวจไหม
+ * projectDir: ถ้า path เป็น absolute ให้ทำเป็น relative กับโฟลเดอร์โปรเจกต์ก่อนตรวจ (M5) — กัน false
+ * positive/negative จากชื่อโฟลเดอร์นอกโปรเจกต์ (เช่น cwd ชื่อ .../tests/my-project/... หรือ .../secrets-backup/...)
+ * ที่บังเอิญไปพ้องกับ rule ของไฟล์เทสต์หรือหมวดเสี่ยง ไม่ใช่ path จริงในโปรเจกต์
+ */
+export function riskyFiles(paths: readonly string[], projectDir?: string): RiskyFile[] {
   const seen = new Set<string>();
   const found: RiskyFile[] = [];
   for (const raw of paths) {
-    const file = raw.replace(/\\/g, '/');
+    const relative = projectDir && path.isAbsolute(raw) ? path.relative(projectDir, raw) : raw;
+    const file = relative.replace(/\\/g, '/');
     if (seen.has(file) || isTestFile(file)) continue;
     seen.add(file);
     const rule = RULES.find((r) => r.re.test(file));

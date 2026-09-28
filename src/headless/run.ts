@@ -71,6 +71,8 @@ export interface HeadlessJobOptions {
   stopPollMs?: number;
   /** ส่งต่อเข้า Deps.snapshots (ไม่มี = QA ตรวจทั้ง task ทุกรอบ) */
   snapshots?: SnapshotProvider;
+  /** ส่งต่อเข้า Deps.projectDir (M5: ทำ absolute path ให้เป็น relative ก่อนตัดสิน riskyFiles) */
+  projectDir?: string;
   /** ส่งต่อเข้า Deps.abortSignal (ctx.abortController.signal) */
   abortSignal?: AbortSignal;
 }
@@ -97,6 +99,7 @@ export async function runHeadlessJob(o: HeadlessJobOptions): Promise<ExitStatus>
       log: o.logger,
       levelPreference: o.levelPreference,
       snapshots: o.snapshots,
+      projectDir: o.projectDir,
       abortSignal: o.abortSignal,
     });
     const status: ExitStatus = final.phase === 'DONE' ? 'done' : 'aborted';
@@ -177,6 +180,7 @@ export async function runHeadless(args: CliArgs): Promise<number> {
     levelPreference: args.level,
     onStop: () => onSignal('stop'),
     snapshots: ctx.snapshots,
+    projectDir,
     abortSignal: ctx.abortController.signal,
   });
   console.log(JSON.stringify({ jobId: job.id, status }));

@@ -105,6 +105,7 @@ async function main(): Promise<void> {
       log: logger,
       levelPreference: args.level,
       snapshots: ctx.snapshots,
+      projectDir,
       abortSignal: abortController.signal,
     });
     console.log(
