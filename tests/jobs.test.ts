@@ -8,6 +8,7 @@ import {
   formatJobId,
   isEmptyJob,
   isProcessAlive,
+  JOB_ID_RE,
   JobRepository,
   type JobRepositoryOptions,
 } from '../src/jobs';
@@ -260,6 +261,25 @@ describe('JobRepository', () => {
     await store.saveArtifact('design.json', {});
     await repo.remove(id);
     expect(existsSync(repo.jobDir(id))).toBe(false);
+  });
+});
+
+describe('JOB_ID_RE', () => {
+  it('รับรูปแบบ id ของงาน และปฏิเสธ path', () => {
+    expect(JOB_ID_RE.test(formatJobId(at))).toBe(true);
+    expect(JOB_ID_RE.test('20260925-093015-2')).toBe(true);
+    expect(JOB_ID_RE.test('../x')).toBe(false);
+    expect(JOB_ID_RE.test('20260925-093015/..')).toBe(false);
+  });
+});
+
+describe('runningLock', () => {
+  it('คืน lock เมื่อ process ที่ถือยังอยู่ และ undefined เมื่อตายแล้ว', async () => {
+    const { id } = await make().create();
+    const other = make({ pid: 2000 });
+    expect(await other.runningLock(id)).toMatchObject({ pid: 1000 });
+    alive.delete(1000);
+    expect(await other.runningLock(id)).toBeUndefined();
   });
 });
 

@@ -55,6 +55,9 @@ export function formatJobId(d: Date): string {
   );
 }
 
+/** รูปแบบ id ของงาน (formatJobId + suffix -n) ใช้ตรวจ jobId ที่รับจากผู้ใช้ กัน path traversal */
+export const JOB_ID_RE = /^\d{8}-\d{6}(-\d+)?$/;
+
 /** งานที่ยังไม่มีข้อมูลอะไรเลย เช่นกด n แล้ว Ctrl+C ก่อนพิมพ์ */
 export function isEmptyJob(state: State): boolean {
   return state.phase === 'REQUIREMENTS' && !state.title && !state.pmSessionId && !state.requirements;
@@ -202,6 +205,11 @@ export class JobRepository {
         this.log.log('WARN', 'job.unlock_failed', { jobId: id, message: errMessage(e) });
       }
     }
+  }
+
+  /** lock ของงานนี้ถ้า process ที่ถือยังทำงานอยู่ (คำสั่ง headless ที่ไม่ได้ถือ lock เองใช้เช็กว่างานยังรันไหม) */
+  async runningLock(id: string): Promise<JobLock | undefined> {
+    return this.liveLock(id);
   }
 
   async remove(id: string): Promise<void> {
