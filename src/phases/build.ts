@@ -5,7 +5,7 @@ import { RoleRunError } from '../errors';
 import { escalateLevel } from '../level';
 import { nullLogger } from '../logger';
 import { riskFlags } from '../risk';
-import { riskyFiles } from '../risk-files';
+import { isTestFile, riskyFiles } from '../risk-files';
 import type { Design, QAReport, Requirements, Task, WorkerResult } from '../schemas';
 import type { RoundDiff } from '../snapshot';
 import type { State, TaskProgress } from '../state';
@@ -98,9 +98,36 @@ function updateReviewedTree(progress: TaskProgress, after: string | undefined): 
 }
 
 /**
+ * เนื้อหาบรรทัดที่ถูก "เพิ่ม" ใหม่ (ไม่รวม context/บรรทัดที่ถูกลบ) จากไฟล์ที่ไม่ใช่ไฟล์เทสต์เท่านั้น (M4)
+ * กัน false positive จากโค้ดเดิม/ไฟล์เทสต์ที่มีคำเสี่ยงอยู่แล้วแต่ worker ไม่ได้เพิ่มอะไรใหม่ที่เสี่ยงจริง
+ */
+function addedLinesFromNonTestFiles(diff: string): string {
+  const added: string[] = [];
+  let skipFile = false;
+  for (const line of diff.split('\n')) {
+    const header = /^diff --git a\/.+ b\/(.+)$/.exec(line);
+    if (header) {
+      skipFile = isTestFile(header[1]!.replace(/\\/g, '/'));
+      continue;
+    }
+    if (skipFile || line.startsWith('+++')) continue;
+    if (line.startsWith('+')) added.push(line.slice(1));
+  }
+  return added.join('\n');
+}
+
+/** ข้อความบอกเหตุผลที่ Security ถูกเรียก (M9): มีแค่ไฟล์เสี่ยง = "ตรวจเพราะแตะ ..."; มีแค่เนื้อหาเสี่ยง = "ตรวจเพราะเนื้อหาเกี่ยวกับ ..." (ไม่มี "แตะ"); มีทั้งคู่ = ต่อกันด้วย " / " */
+function securityReason(listed: string, more: string, contentFlags: readonly string[]): string {
+  const filesPart = listed ? `แตะ ${listed}${more}` : '';
+  const contentPart = contentFlags.length ? `เนื้อหาเกี่ยวกับ ${contentFlags.join(', ')}` : '';
+  return [filesPart, contentPart].filter(Boolean).join(' / ');
+}
+
+/**
  * ตัดสินว่า task นี้ (รอบนี้) ต้องให้ Security ตรวจไหม: full (หรือไม่มี level) = ตรวจทุก task เหมือนเดิม
- * quick/standard = ตรวจเฉพาะ task ที่แตะไฟล์เสี่ยง (riskyFiles จากไฟล์ที่ worker รายงาน + ไฟล์ที่ diff เจอ
- * ตั้งแต่ startTree ถึง after ของรอบนี้ ไม่นับไฟล์เทสต์) หรือเนื้อหา diff มีคำเสี่ยง (riskFlags)
+ * quick/standard = ตรวจเฉพาะ task ที่แตะไฟล์เสี่ยง (riskyFiles จาก progress.touchedFiles ที่สะสมทุกรอบของ
+ * worker + ไฟล์ที่ diff เจอตั้งแต่ startTree ถึง after ของรอบนี้ ไม่นับไฟล์เทสต์ — I2: กันไฟล์เสี่ยงที่แก้ใน
+ * รอบที่ QA ไม่ผ่านหลุดจากการตัดสิน) หรือเนื้อหาบรรทัดที่เพิ่มใหม่ในไฟล์ไม่ใช่เทสต์มีคำเสี่ยง (riskFlags, M4)
  */
 async function decideSecurity(
   deps: Deps,
@@ -108,7 +135,6 @@ async function decideSecurity(
   task: Task,
   progress: TaskProgress,
   round: number,
-  result: WorkerResult,
   after: string | undefined,
 ): Promise<SecurityDecision> {
   if (state.level !== 'quick' && state.level !== 'standard') {
@@ -118,9 +144,9 @@ async function decideSecurity(
     progress.startTree !== undefined && after !== undefined
       ? await tryDiff(deps, task, round, progress.startTree, after)
       : undefined;
-  const files = [...new Set([...result.filesChanged, ...(taskDiff?.files ?? [])])];
-  const risky = riskyFiles(files);
-  const contentFlags = riskFlags(taskDiff?.diff ?? '');
+  const files = [...new Set([...(progress.touchedFiles ?? []), ...(taskDiff?.files ?? [])])];
+  const risky = riskyFiles(files, deps.projectDir);
+  const contentFlags = riskFlags(addedLinesFromNonTestFiles(taskDiff?.diff ?? ''));
   if (risky.length === 0 && contentFlags.length === 0) {
     return { run: false, reason: 'none', files: [], categories: [] };
   }
@@ -129,13 +155,12 @@ async function decideSecurity(
     .map((r) => `${r.file} (${r.category})`)
     .join(', ');
   const more = risky.length > MAX_LISTED_FILES ? ', …' : '';
-  const content = contentFlags.length ? `${listed ? ' / ' : ''}เนื้อหาเกี่ยวกับ ${contentFlags.join(', ')}` : '';
   return {
     run: true,
     reason: 'risky-files',
     files: risky.map((r) => r.file),
     categories: [...new Set([...risky.map((r) => r.category), ...contentFlags])],
-    note: `[Security] ${task.id}: ตรวจเพราะแตะ ${listed}${more}${content}`,
+    note: `[Security] ${task.id}: ตรวจเพราะ${securityReason(listed, more, contentFlags)}`,
   };
 }
 
@@ -190,10 +215,19 @@ async function runRound(
     const round = progress.rounds + 1;
     // tree ก่อน worker แตะ task นี้ครั้งแรก ใช้หาไฟล์ทั้งหมดที่ task แตะตอนตัดสิน Security ของ quick/standard
     // (ตรวจแค่รอบแรกของ task เท่านั้น — ค่านี้อยู่ยาวตลอดอายุ task ไม่ถูกเลื่อนเหมือน reviewedTree)
-    if (progress.rounds === 0 && progress.startTree === undefined) {
+    // เฉพาะ quick/standard เท่านั้น (M6) — full ตรวจ Security ทุก task อยู่แล้วไม่ต้องเสีย snapshot เพิ่ม
+    // I1: save ทันทีหลังตั้งค่า ก่อนเรียก worker — กัน resume หลัง crash/Ctrl+C ระหว่างรอบแรกเจอ startTree ที่
+    // ถ่ายใหม่ตอน resume (มี edit เสี่ยงของ worker ติดมาด้วยแล้ว) ทำให้ diff ตั้งแต่ startTree มองไม่เห็น edit นั้น
+    if ((state.level === 'quick' || state.level === 'standard') && progress.rounds === 0 && progress.startTree === undefined) {
       progress.startTree = await trySnapshot(deps, task, round);
+      if (progress.startTree !== undefined) await deps.store.save(state);
     }
     const result = await runWorker(deps, ctx, task, progress, round);
+    // I2: สะสมไฟล์ที่ worker รายงานว่าแก้ทุกรอบ (normalize \ เป็น /) กันไฟล์เสี่ยงที่แก้ในรอบที่ QA ไม่ผ่านหลุดจาก
+    // การตัดสิน Security ตอนรอบที่ผ่านจริงไม่ได้แตะไฟล์นั้นอีกแล้ว — อัปเดตก่อน QA เสมอ ไม่ว่ารอบนี้จะผ่านหรือไม่
+    progress.touchedFiles = [
+      ...new Set([...(progress.touchedFiles ?? []), ...result.filesChanged.map((f) => f.replace(/\\/g, '/'))]),
+    ];
     step = 'qa';
     // baseline คือ tree ล่าสุดที่ QA ตรวจจริง (reviewedTree) ไม่ใช่ snapshot ตอนเริ่มรอบนี้ — กัน edit ที่ QA
     // ไม่เคยเห็นหลุดออกจาก diff (worker ชน limit หลังแก้บางส่วน, QA ชน limit, process ถูกฆ่ากลางคัน,
@@ -227,7 +261,10 @@ async function runRound(
     if (!isPass(qaReport)) return { report: qaReport, limitHit: false, securityReviewed: false };
 
     // full (หรือไม่มี level) ตรวจทุก task เหมือนเดิม; quick/standard ตรวจเฉพาะ task ที่แตะไฟล์เสี่ยง/เนื้อหาเสี่ยง
-    const security = await decideSecurity(deps, state, task, progress, round, result, after);
+    const security = await decideSecurity(deps, state, task, progress, round, after);
+    // I3: เก็บเหตุผลของรอบที่ QA ผ่านล่าสุดไว้บอก PM ตอน DELIVER (securityReviewed=false ที่ trigger='none'
+    // คือข้ามโดยตั้งใจ ไม่ใช่ยังไม่ผ่านจริง)
+    progress.securityTrigger = security.reason;
     (deps.log ?? nullLogger).log('INFO', 'security.trigger', {
       taskId: task.id,
       round,

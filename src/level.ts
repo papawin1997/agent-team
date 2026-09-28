@@ -70,6 +70,7 @@ export function restoreBaseDesign(state: State): void {
       delete progress.reviewedTree;
       delete progress.lastRoundLimit;
       delete progress.startTree;
+      delete progress.touchedFiles;
     }
   } else {
     state.design = undefined;
