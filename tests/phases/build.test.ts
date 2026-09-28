@@ -609,6 +609,46 @@ describe('runBuild: worker resume session', () => {
     expect(workInputs(runner.calls).map((w) => w.resumeSessionId)).toEqual([undefined, 'api-s1', undefined]);
   });
 
+  it('resume ล้มระหว่างถูก abort (deps.abortSignal.aborted) → โยนต่อ ไม่ fallback ไปเปิด session ใหม่', async () => {
+    const controller = new AbortController();
+    const { deps, runner } = makeDeps(
+      { qa: [failReport('api'), passReport('api')], work: [undefined, new Error('aborted mid-flight')] },
+      [],
+    );
+    deps.abortSignal = controller.signal;
+    const state = buildState(single());
+    controller.abort();
+    await expect(runBuild(deps, state)).rejects.toThrow('aborted mid-flight');
+
+    expect(workInputs(runner.calls).map((w) => w.resumeSessionId)).toEqual([undefined, 'api-s1']);
+    expect(state.progress.api?.rounds).toBe(1);
+  });
+
+  it('resume ล้มด้วย error ทั่วไป (ไม่ได้ถูก abort) แล้ว fresh fallback ชน SDK limit: นับเป็นรอบเดียว, ล้าง session', async () => {
+    const { deps, runner } = makeDeps(
+      {
+        qa: [failReport('api')],
+        work: [
+          undefined,
+          new Error('resume broken'),
+          new RoleRunError('backend: error_max_turns', false, 'error_max_turns'),
+        ],
+        pm: [asking('ค้าง')],
+      },
+      ['abort'],
+    );
+    const state = buildState(single());
+    state.progress.api!.maxRounds = 2;
+    await runBuild(deps, state);
+
+    expect(workInputs(runner.calls).map((w) => w.resumeSessionId)).toEqual([undefined, 'api-s1', undefined]);
+    expect(state.progress.api?.rounds).toBe(2);
+    expect(state.progress.api?.lastRoundLimit).toBe(true);
+    expect(state.progress.api).not.toHaveProperty('workerSessionId');
+    expect(state.progress.api).not.toHaveProperty('workerResumes');
+    expect(state.phase).toBe('ABORTED');
+  });
+
   it('เก็บ workerSessionId/workerResumes ลง state (resume ข้าม process ได้)', async () => {
     const { deps, store } = makeDeps({ qa: [failReport('api'), passReport('api')] }, []);
     await runBuild(deps, buildState(single()));
@@ -617,18 +657,23 @@ describe('runBuild: worker resume session', () => {
 });
 
 describe('runBuild: QA ตรวจเฉพาะ diff ในรอบแก้', () => {
-  it('รอบ 1 ตรวจทั้ง task; รอบแก้ได้ roundDiff ของรอบนั้น + previousReport', async () => {
+  it('รอบ 1 ตรวจทั้ง task; รอบแก้ได้ roundDiff จาก baseline (reviewedTree) ไปถึง tree ปัจจุบัน + previousReport', async () => {
     const { deps, runner } = makeDeps({ qa: [failReport('api'), failReport('api'), passReport('api')] }, []);
     const snaps = fakeSnapshots();
     deps.snapshots = snaps;
-    await runBuild(deps, buildState(single()));
+    const state = buildState(single());
+    await runBuild(deps, state);
 
     const qa = qaInputs(runner.calls);
     expect(qa[0]!.roundDiff).toBeUndefined();
+    // baseline = reviewedTree ของรอบก่อน (t1 หลังรอบ 1) ไม่ใช่ snapshot ที่ถ่ายตอนเริ่มรอบ 2
     expect(qa[1]!.roundDiff?.diff).toBe('diff t1..t2');
     expect(qa[1]!.previousReport?.verdict).toBe('FAIL');
-    expect(qa[2]!.roundDiff?.diff).toBe('diff t3..t4');
-    expect(snaps.taken).toBe(4);
+    // รอบ 3 diff ต่อจาก reviewedTree ที่เพิ่งเลื่อนมาเป็น t2 (ไม่ใช่ t3..t4 แบบ snapshot ตอนเริ่มรอบ)
+    expect(qa[2]!.roundDiff?.diff).toBe('diff t2..t3');
+    // snapshot ถ่ายครั้งเดียวต่อรอบ (หลัง worker) ไม่ใช่สองครั้ง (ก่อน+หลัง)
+    expect(snaps.taken).toBe(3);
+    expect(state.progress.api?.reviewedTree).toBe('t3');
   });
 
   it('log qa.scope ทุกรอบ (full แล้ว diff)', async () => {
@@ -664,6 +709,86 @@ describe('runBuild: QA ตรวจเฉพาะ diff ในรอบแก้
     const security = runner.calls.filter((c) => c.role === 'security').map((c) => c.input as QaInput);
     expect(security).toHaveLength(1);
     expect(security[0]!.roundDiff).toBeUndefined();
+  });
+
+  it('เก็บ reviewedTree ลง store.state (baseline ของรอบแก้ถัดไป ข้าม process ได้)', async () => {
+    const { deps, store } = makeDeps({ qa: [failReport('api'), passReport('api')] }, []);
+    deps.snapshots = fakeSnapshots();
+    await runBuild(deps, buildState(single()));
+    expect(store.state?.progress.api?.reviewedTree).toBe('t2');
+  });
+
+  it('งานที่ resume ข้าม process: progress มี reviewedTree + lastReport เดิมอยู่แล้ว รอบแรกของการรันใหม่ diff จาก reviewedTree ที่เก็บไว้', async () => {
+    const { deps, runner } = makeDeps({ qa: [passReport('api')] }, []);
+    deps.snapshots = fakeSnapshots();
+    const state = buildState(single());
+    state.progress.api = {
+      rounds: 1,
+      maxRounds: 5,
+      done: false,
+      acceptedWithIssues: false,
+      securityReviewed: false,
+      lastReport: failReport('api'),
+      reviewedTree: 'stored-tree',
+      workerSessionId: 'api-s1',
+      workerResumes: 0,
+    };
+    await runBuild(deps, state);
+
+    const qa = qaInputs(runner.calls);
+    expect(qa[0]!.roundDiff?.diff).toBe('diff stored-tree..t1');
+    expect(state.progress.api?.done).toBe(true);
+  });
+
+  it('QA ชนขีดจำกัด: รอบถัดไปตรวจทั้ง task (lastRoundLimit) และ worker ต้องเปิด session ใหม่ ไม่ resume แล้วรอบถัดจากนั้น diff จาก reviewedTree ล่าสุด', async () => {
+    const { deps, runner } = makeDeps(
+      {
+        qa: [
+          failReport('api'),
+          new RoleRunError('qa: error_max_turns', false, 'error_max_turns'),
+          failReport('api'),
+          passReport('api'),
+        ],
+      },
+      [],
+    );
+    deps.snapshots = fakeSnapshots();
+    const state = buildState(single());
+    await runBuild(deps, state);
+
+    const qa = qaInputs(runner.calls);
+    expect(qa).toHaveLength(4);
+    expect(qa[0]!.roundDiff).toBeUndefined(); // รอบ 1: full
+    expect(qa[1]!.roundDiff?.diff).toBe('diff t1..t2'); // รอบ 2 (ชน limit): ยัง diff จาก reviewedTree เดิม
+    expect(qa[2]!.roundDiff).toBeUndefined(); // รอบ 3: รอบหลัง QA ชน limit บังคับ full
+    expect(qa[3]!.roundDiff?.diff).toBe('diff t3..t4'); // รอบ 4: diff จาก reviewedTree ที่เลื่อนมาเป็นของรอบ 3
+
+    expect(workInputs(runner.calls).map((w) => w.resumeSessionId)).toEqual([undefined, 'api-s1', undefined, 'api-s3']);
+    expect(state.progress.api?.reviewedTree).toBe('t4');
+    expect(state.progress.api?.done).toBe(true);
+  });
+
+  it('worker ชนขีดจำกัด: รอบถัดไปตรวจทั้ง task (lastRoundLimit) แม้ reviewedTree เดิมยังอยู่', async () => {
+    const { deps, runner } = makeDeps(
+      {
+        work: [undefined, new RoleRunError('backend: error_max_turns', false, 'error_max_turns'), undefined, undefined],
+        qa: [failReport('api'), failReport('api'), passReport('api')],
+      },
+      [],
+    );
+    deps.snapshots = fakeSnapshots();
+    const state = buildState(single());
+    await runBuild(deps, state);
+
+    const qa = qaInputs(runner.calls);
+    expect(qa).toHaveLength(3);
+    expect(qa[0]!.roundDiff).toBeUndefined(); // รอบ 1: full
+    expect(qa[1]!.roundDiff).toBeUndefined(); // รอบ 3: รอบหลัง worker ชน limit บังคับ full
+    expect(qa[2]!.roundDiff?.diff).toBe('diff t2..t3'); // รอบ 4: diff จาก reviewedTree ที่เลื่อนมาเป็นของรอบ 3
+
+    expect(workInputs(runner.calls).map((w) => w.resumeSessionId)).toEqual([undefined, 'api-s1', undefined, 'api-s3']);
+    expect(state.progress.api?.done).toBe(true);
+    expect(state.progress.api?.reviewedTree).toBe('t3');
   });
 });
 

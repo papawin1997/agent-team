@@ -78,6 +78,8 @@ export interface Deps {
   levelPreference?: Level;
   /** snapshot working tree เพื่อหา diff ของรอบแก้ ไม่มี = QA ตรวจทั้ง task ทุกรอบ */
   snapshots?: SnapshotProvider;
+  /** ส่งมาจาก ctx.abortController.signal — ใช้เช็คตอน resume worker ล้ม: กำลังถูก abort อยู่ให้โยนต่อ ไม่ fallback ไปเปิด session ใหม่ */
+  abortSignal?: AbortSignal;
 }
 
 /**

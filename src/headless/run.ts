@@ -71,6 +71,8 @@ export interface HeadlessJobOptions {
   stopPollMs?: number;
   /** ส่งต่อเข้า Deps.snapshots (ไม่มี = QA ตรวจทั้ง task ทุกรอบ) */
   snapshots?: SnapshotProvider;
+  /** ส่งต่อเข้า Deps.abortSignal (ctx.abortController.signal) */
+  abortSignal?: AbortSignal;
 }
 
 /** รัน orchestrator กับงานที่ lock แล้ว เขียน exit.json ตอนจบทุกทาง และปล่อย lock */
@@ -95,6 +97,7 @@ export async function runHeadlessJob(o: HeadlessJobOptions): Promise<ExitStatus>
       log: o.logger,
       levelPreference: o.levelPreference,
       snapshots: o.snapshots,
+      abortSignal: o.abortSignal,
     });
     const status: ExitStatus = final.phase === 'DONE' ? 'done' : 'aborted';
     writeExit(dir, status);
@@ -174,6 +177,7 @@ export async function runHeadless(args: CliArgs): Promise<number> {
     levelPreference: args.level,
     onStop: () => onSignal('stop'),
     snapshots: ctx.snapshots,
+    abortSignal: ctx.abortController.signal,
   });
   console.log(JSON.stringify({ jobId: job.id, status }));
   return status === 'error' || status === 'idle' ? 1 : 0;

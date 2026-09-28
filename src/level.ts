@@ -43,6 +43,8 @@ export function restoreBaseDesign(state: State): void {
     for (const progress of Object.values(state.progress)) {
       delete progress.workerSessionId;
       delete progress.workerResumes;
+      delete progress.reviewedTree;
+      delete progress.lastRoundLimit;
     }
   } else {
     state.design = undefined;

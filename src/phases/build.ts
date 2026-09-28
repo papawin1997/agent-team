@@ -67,9 +67,9 @@ async function trySnapshot(deps: Deps, task: Task, round: number): Promise<strin
   }
 }
 
-async function tryDiff(deps: Deps, task: Task, round: number, before: string): Promise<RoundDiff | undefined> {
-  const after = await trySnapshot(deps, task, round);
-  if (after === undefined || !deps.snapshots) return undefined;
+/** diff ระหว่าง tree สอง snapshot error = log snapshot.failed แล้วถือว่าไม่มี diff (QA ตรวจทั้ง task) */
+async function tryDiff(deps: Deps, task: Task, round: number, before: string, after: string): Promise<RoundDiff | undefined> {
+  if (!deps.snapshots) return undefined;
   try {
     return await deps.snapshots.diff(before, after);
   } catch (e) {
@@ -78,13 +78,30 @@ async function tryDiff(deps: Deps, task: Task, round: number, before: string): P
   }
 }
 
-/** เรียก worker ตามนโยบาย session: resume ในรอบแก้ได้ติดกัน MAX_WORKER_RESUMES ครั้ง resume ล้ม = เปิดใหม่ */
-async function runWorker(deps: Deps, ctx: BuildContext, task: Task, progress: TaskProgress): Promise<WorkerResult> {
+/** ตั้ง baseline ของ diff รอบถัดไปเป็น tree ที่ QA เพิ่งตรวจจริง (after ไม่มีค่า = ลบทิ้ง ให้รอบถัดไปตรวจทั้ง task) */
+function updateReviewedTree(progress: TaskProgress, after: string | undefined): void {
+  if (after === undefined) delete progress.reviewedTree;
+  else progress.reviewedTree = after;
+}
+
+/** เรียก worker ตามนโยบาย session: resume ในรอบแก้ได้ติดกัน MAX_WORKER_RESUMES ครั้ง resume ล้ม = เปิดใหม่
+ * รอบก่อนหน้าชนขีดจำกัด SDK (lastRoundLimit) ห้าม resume เสมอ (กัน M6: worker resume มาเจอ synthetic limit report เป็น previousReport) */
+async function runWorker(
+  deps: Deps,
+  ctx: BuildContext,
+  task: Task,
+  progress: TaskProgress,
+  round: number,
+): Promise<WorkerResult> {
   const log = deps.log ?? nullLogger;
-  const round = progress.rounds + 1;
   const base = { task, ...ctx, previousReport: progress.lastReport };
   const resumes = progress.workerResumes ?? 0;
-  if (progress.lastReport && progress.workerSessionId && resumes < MAX_WORKER_RESUMES) {
+  const canResume =
+    progress.lastReport !== undefined &&
+    progress.workerSessionId !== undefined &&
+    resumes < MAX_WORKER_RESUMES &&
+    progress.lastRoundLimit !== true;
+  if (canResume) {
     try {
       const out = await deps.runner.work({ ...base, resumeSessionId: progress.workerSessionId });
       progress.workerSessionId = out.sessionId;
@@ -93,6 +110,7 @@ async function runWorker(deps: Deps, ctx: BuildContext, task: Task, progress: Ta
       return out.result;
     } catch (e) {
       if (isLimitError(e)) throw e;
+      if (deps.abortSignal?.aborted) throw e;
       log.log('WARN', 'worker.resume_failed', { taskId: task.id, round, reason: errReason(e) });
     }
   }
@@ -115,10 +133,18 @@ async function runRound(
   let qaReport: QAReport | undefined;
   try {
     const round = progress.rounds + 1;
-    const before = progress.lastReport ? await trySnapshot(deps, task, round) : undefined;
-    const result = await runWorker(deps, ctx, task, progress);
+    const result = await runWorker(deps, ctx, task, progress, round);
     step = 'qa';
-    const roundDiff = before === undefined ? undefined : await tryDiff(deps, task, round, before);
+    // baseline คือ tree ล่าสุดที่ QA ตรวจจริง (reviewedTree) ไม่ใช่ snapshot ตอนเริ่มรอบนี้ — กัน edit ที่ QA
+    // ไม่เคยเห็นหลุดออกจาก diff (worker ชน limit หลังแก้บางส่วน, QA ชน limit, process ถูกฆ่ากลางคัน,
+    // user แก้เองระหว่าง escalate prompt) รอบก่อนชนขีดจำกัด (lastRoundLimit) บังคับตรวจทั้ง task เสมอ
+    const after = await trySnapshot(deps, task, round);
+    const useDiff =
+      progress.lastReport !== undefined &&
+      progress.lastRoundLimit !== true &&
+      progress.reviewedTree !== undefined &&
+      after !== undefined;
+    const roundDiff = useDiff ? await tryDiff(deps, task, round, progress.reviewedTree!, after!) : undefined;
     (deps.log ?? nullLogger).log(
       'INFO',
       'qa.scope',
@@ -136,6 +162,8 @@ async function runRound(
     qaReport = await runner.qa(
       roundDiff ? { task, result, ...ctx, roundDiff, previousReport: progress.lastReport } : { task, result, ...ctx },
     );
+    // QA ให้ผลจริงแล้ว (ไม่ใช่ limit ซึ่งโยน error ก่อนถึงบรรทัดนี้) — เลื่อน baseline มาเป็น tree รอบนี้
+    updateReviewedTree(progress, after);
     if (!isPass(qaReport)) return { report: qaReport, limitHit: false, securityReviewed: false };
 
     // โหมด quick ไม่มี Security โดยตั้งใจ (งานเสี่ยงถูกกันไม่ให้เข้า quick ตั้งแต่ตอนจัดระดับ)
@@ -240,6 +268,7 @@ async function buildTask(
       progress.rounds += 1;
       progress.lastReport = report;
       progress.securityReviewed = securityReviewed;
+      progress.lastRoundLimit = limitHit;
       await store.saveArtifact(`reports/${task.id}-round${progress.rounds}.json`, report);
 
       const passed = isPass(report);

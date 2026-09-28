@@ -24,6 +24,10 @@ export interface TaskProgress {
   workerSessionId?: string;
   /** จำนวนครั้งที่ resume session นี้ติดกัน (ครบ MAX_WORKER_RESUMES แล้วรอบถัดไปเปิด session ใหม่) */
   workerResumes?: number;
+  /** snapshot (after) ของรอบล่าสุดที่ QA ตรวจจริง (PASS/FAIL รวม security-merged FAIL) — baseline ของ diff รอบถัดไป ไม่มี = รอบถัดไปตรวจทั้ง task */
+  reviewedTree?: string;
+  /** รอบก่อนหน้าชนขีดจำกัด SDK (worker หรือ QA) — รอบถัดไปตรวจทั้ง task และ worker ต้องเปิด session ใหม่ ห้าม resume */
+  lastRoundLimit?: boolean;
 }
 
 export interface State {
