@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { renameWithRetrySync } from '../fs-retry';
 
 /** ไฟล์สื่อสารระหว่าง process headless กับคำสั่ง wait/status/answer/stop (อยู่ใน .agent-team/jobs/<id>/) */
 export const HEADLESS_FILES = {
@@ -51,35 +52,15 @@ export interface Activity {
   at: string;
 }
 
-const RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
-const RENAME_RETRIES = 10;
-const RENAME_RETRY_MS = 20;
-
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
 /**
  * เขียนไฟล์ชั่วคราวแล้ว rename ทับ ผู้อ่านจึงเห็นแต่ไฟล์เก่าทั้งก้อนหรือไฟล์ใหม่ทั้งก้อน
- * Windows: rename ทับไฟล์ที่อีก process เปิดอ่านอยู่อาจได้ EPERM/EBUSY ชั่วครู่ จึง retry สั้น ๆ
+ * Windows: rename ทับไฟล์ที่อีก process เปิดอ่านอยู่อาจได้ EPERM/EBUSY ชั่วครู่ จึง retry สั้น ๆ (ดู fs-retry)
  */
 export function writeJsonAtomic(file: string, data: unknown): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(data), 'utf8');
-  for (let attempt = 0; ; attempt++) {
-    try {
-      fs.renameSync(tmp, file);
-      return;
-    } catch (e) {
-      const code = (e as NodeJS.ErrnoException).code ?? '';
-      if (!RETRY_CODES.has(code) || attempt >= RENAME_RETRIES) {
-        fs.rmSync(tmp, { force: true });
-        throw e;
-      }
-      sleepSync(RENAME_RETRY_MS);
-    }
-  }
+  renameWithRetrySync(tmp, file);
 }
 
 /** ไม่มีไฟล์ อ่านไม่ได้ หรือ JSON พัง → undefined (ห้าม throw: อีก process อาจกำลังเขียน/ลบอยู่) */

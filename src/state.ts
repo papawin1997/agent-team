@@ -1,6 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { StateStore } from './deps';
+import { renameWithRetry } from './fs-retry';
 import type { Design, Level, QAReport, QuickTask, Requirements } from './schemas';
 
 export type Phase =
@@ -58,6 +59,8 @@ export class FileStateStore implements StateStore {
   constructor(
     private readonly dir: string,
     private readonly now: () => Date = () => new Date(),
+    /** เทสต์ส่ง rename ที่ล้มได้ */
+    private readonly opts: { rename?: (from: string, to: string) => Promise<void> } = {},
   ) {}
 
   async load(): Promise<State | undefined> {
@@ -85,7 +88,8 @@ export class FileStateStore implements StateStore {
     const file = path.join(this.dir, 'state.json');
     const tmp = `${file}.tmp`;
     await fs.writeFile(tmp, JSON.stringify(state, null, 2), 'utf8');
-    await fs.rename(tmp, file);
+    // คำสั่ง wait/status อ่าน state.json ทุกวินาที: บน Windows rename ทับไฟล์ที่เปิดอยู่ล้มชั่วคราวได้
+    await renameWithRetry(tmp, file, { rename: this.opts.rename });
   }
 
   async saveArtifact(name: string, data: unknown): Promise<void> {
