@@ -20,6 +20,10 @@ export interface TaskProgress {
   acceptedWithIssues: boolean;
   securityReviewed: boolean;
   lastReport?: QAReport;
+  /** session ของ worker รอบล่าสุด — รอบแก้ถัดไป resume ต่อได้ (ไม่มี = เปิดใหม่) */
+  workerSessionId?: string;
+  /** จำนวนครั้งที่ resume session นี้ติดกัน (ครบ MAX_WORKER_RESUMES แล้วรอบถัดไปเปิด session ใหม่) */
+  workerResumes?: number;
 }
 
 export interface State {

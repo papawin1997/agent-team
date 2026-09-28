@@ -39,6 +39,11 @@ export function restoreBaseDesign(state: State): void {
   if (state.baseDesign) {
     state.design = state.baseDesign;
     state.progress = state.baseProgress ?? {};
+    // session ของ worker ใน base เก่าเกินจะ resume ต่อ (มีงาน quick คั่น) ให้รอบถัดไปเปิดใหม่
+    for (const progress of Object.values(state.progress)) {
+      delete progress.workerSessionId;
+      delete progress.workerResumes;
+    }
   } else {
     state.design = undefined;
     state.progress = {};

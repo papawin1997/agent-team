@@ -4,7 +4,8 @@ import { isPass, isSecurityPass, orderTasks } from '../domain';
 import { RoleRunError } from '../errors';
 import { escalateToFull } from '../level';
 import { nullLogger } from '../logger';
-import type { Design, QAReport, Requirements, Task } from '../schemas';
+import type { Design, QAReport, Requirements, Task, WorkerResult } from '../schemas';
+import type { RoundDiff } from '../snapshot';
 import type { State, TaskProgress } from '../state';
 
 type Outcome = 'done' | 'aborted' | 'escalated';
@@ -15,6 +16,13 @@ interface BuildContext {
 }
 
 const LIMIT_SUBTYPES: readonly string[] = ['error_max_turns', 'error_max_budget_usd'];
+
+/** resume session เดิมของ worker ติดกันได้กี่ครั้ง ก่อนบังคับเปิดใหม่ด้วย prompt เต็ม (กัน context บวม/วนกับแนวคิดผิด) */
+export const MAX_WORKER_RESUMES = 2;
+
+const errReason = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+const isLimitError = (e: unknown): boolean =>
+  e instanceof RoleRunError && e.subtype !== undefined && LIMIT_SUBTYPES.includes(e.subtype);
 
 type Step = 'work' | 'qa' | 'security';
 
@@ -48,6 +56,53 @@ function limitReport(task: Task, step: Step, subtype: string): QAReport {
   };
 }
 
+/** snapshot แบบไม่ทำให้รอบล้ม: error = log แล้วถือว่าไม่มี snapshot (QA ตรวจทั้ง task) */
+async function trySnapshot(deps: Deps, task: Task, round: number): Promise<string | undefined> {
+  if (!deps.snapshots) return undefined;
+  try {
+    return await deps.snapshots.snapshot();
+  } catch (e) {
+    (deps.log ?? nullLogger).log('WARN', 'snapshot.failed', { taskId: task.id, round, reason: errReason(e) });
+    return undefined;
+  }
+}
+
+async function tryDiff(deps: Deps, task: Task, round: number, before: string): Promise<RoundDiff | undefined> {
+  const after = await trySnapshot(deps, task, round);
+  if (after === undefined || !deps.snapshots) return undefined;
+  try {
+    return await deps.snapshots.diff(before, after);
+  } catch (e) {
+    (deps.log ?? nullLogger).log('WARN', 'snapshot.failed', { taskId: task.id, round, reason: errReason(e) });
+    return undefined;
+  }
+}
+
+/** เรียก worker ตามนโยบาย session: resume ในรอบแก้ได้ติดกัน MAX_WORKER_RESUMES ครั้ง resume ล้ม = เปิดใหม่ */
+async function runWorker(deps: Deps, ctx: BuildContext, task: Task, progress: TaskProgress): Promise<WorkerResult> {
+  const log = deps.log ?? nullLogger;
+  const round = progress.rounds + 1;
+  const base = { task, ...ctx, previousReport: progress.lastReport };
+  const resumes = progress.workerResumes ?? 0;
+  if (progress.lastReport && progress.workerSessionId && resumes < MAX_WORKER_RESUMES) {
+    try {
+      const out = await deps.runner.work({ ...base, resumeSessionId: progress.workerSessionId });
+      progress.workerSessionId = out.sessionId;
+      progress.workerResumes = resumes + 1;
+      log.log('INFO', 'worker.session', { taskId: task.id, round, resumed: true, resumes: progress.workerResumes });
+      return out.result;
+    } catch (e) {
+      if (isLimitError(e)) throw e;
+      log.log('WARN', 'worker.resume_failed', { taskId: task.id, round, reason: errReason(e) });
+    }
+  }
+  const out = await deps.runner.work(base);
+  progress.workerSessionId = out.sessionId;
+  progress.workerResumes = 0;
+  log.log('INFO', 'worker.session', { taskId: task.id, round, resumed: false, resumes: 0 });
+  return out.result;
+}
+
 async function runRound(
   deps: Deps,
   ctx: BuildContext,
@@ -59,9 +114,28 @@ async function runRound(
   let step: Step = 'work';
   let qaReport: QAReport | undefined;
   try {
-    const result = (await runner.work({ task, ...ctx, previousReport: progress.lastReport })).result;
+    const round = progress.rounds + 1;
+    const before = progress.lastReport ? await trySnapshot(deps, task, round) : undefined;
+    const result = await runWorker(deps, ctx, task, progress);
     step = 'qa';
-    qaReport = await runner.qa({ task, result, ...ctx });
+    const roundDiff = before === undefined ? undefined : await tryDiff(deps, task, round, before);
+    (deps.log ?? nullLogger).log(
+      'INFO',
+      'qa.scope',
+      roundDiff
+        ? {
+            taskId: task.id,
+            round,
+            mode: 'diff',
+            files: roundDiff.files.length,
+            chars: roundDiff.diff.length,
+            truncated: roundDiff.truncated,
+          }
+        : { taskId: task.id, round, mode: 'full' },
+    );
+    qaReport = await runner.qa(
+      roundDiff ? { task, result, ...ctx, roundDiff, previousReport: progress.lastReport } : { task, result, ...ctx },
+    );
     if (!isPass(qaReport)) return { report: qaReport, limitHit: false, securityReviewed: false };
 
     // โหมด quick ไม่มี Security โดยตั้งใจ (งานเสี่ยงถูกกันไม่ให้เข้า quick ตั้งแต่ตอนจัดระดับ)
@@ -110,6 +184,11 @@ async function runRound(
       return { report: qaReport, limitHit: false, securityReviewed: false };
     }
     if (e instanceof RoleRunError && e.subtype !== undefined && LIMIT_SUBTYPES.includes(e.subtype)) {
+      if (step === 'work') {
+        // session ที่ชนขีดจำกัดแล้ว resume ต่อก็มักชนอีก: รอบถัดไปเปิดใหม่
+        delete progress.workerSessionId;
+        delete progress.workerResumes;
+      }
       const report = limitReport(task, step, e.subtype);
       io.say(`[${stepSayName(task, step)}] ${task.id}: ชนขีดจำกัด ${e.subtype} — นับเป็นรอบที่ไม่ผ่าน`);
       return { report, limitHit: true, securityReviewed: false };
