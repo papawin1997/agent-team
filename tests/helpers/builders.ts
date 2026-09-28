@@ -105,6 +105,14 @@ export const quickProposal = (
   quickTask,
 });
 
+export const standardProposal = (requirements: Requirements = makeRequirements()): PmTurn => ({
+  message: 'สรุป requirements',
+  status: 'proposal',
+  requirements,
+  level: 'standard',
+  levelReason: 'หลายไฟล์',
+});
+
 export function buildState(design: Design = makeDesign()): State {
   const state = newState();
   state.phase = 'BUILD';

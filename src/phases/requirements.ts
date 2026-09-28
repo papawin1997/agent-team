@@ -1,7 +1,7 @@
 import type { Deps, LevelHintState } from '../deps';
 import { formatRequirements } from '../format';
 import { askNonEmpty } from '../io-util';
-import { confirmAsFull, decideLevel, offersQuick } from '../level';
+import { confirmAsFull, decideLevel, offersChoice } from '../level';
 import { mergeRiskFlags, riskFlags, type RiskCategory } from '../risk';
 import type { Level } from '../schemas';
 import type { State } from '../state';
@@ -71,7 +71,7 @@ export async function runRequirements(
 
     if (turn.status === 'proposal' && turn.requirements) {
       io.say(formatRequirements(turn.requirements));
-      if (offersQuick(deps, turn)) {
+      if (offersChoice(deps, turn)) {
         if (await decideLevel(deps, state, turn, userRisk)) return;
         const revise = await askNonEmpty(io, 'อยากปรับอะไร?\n> ');
         noteUserText(revise);
