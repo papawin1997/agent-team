@@ -96,7 +96,7 @@ PM จะจัดระดับงานให้ตอนเสนอ require
 - `agent-team answer [--job <id>] -- "<คำตอบ>"` ตอบคำถามที่รออยู่
 - `agent-team stop [--job <id>]` หยุดงาน (process ไม่หยุดใน 10 วินาทีจะถูก kill)
 
-`run` เป็นคำสั่งย่อยเมื่ออยู่คำแรก (ใส่หรือไม่ใส่ก็ได้: `agent-team run --headless ...` = `agent-team --headless ...`) ถ้าโฟลเดอร์โปรเจกต์ชื่อ `run` ให้พิมพ์ `agent-team ./run` (เหมือน `logs`)
+`run`, `wait`, `status`, `answer`, `stop`, `install-skill` เป็นคำสั่งย่อยเมื่ออยู่คำแรก (เหมือน `logs`; `run` ใส่หรือไม่ใส่ก็ได้: `agent-team run --headless ...` = `agent-team --headless ...`) ถ้าโฟลเดอร์โปรเจกต์ชื่อตรงกับคำเหล่านี้ให้พิมพ์ `./run`, `./status` ฯลฯ เช่น `agent-team ./status`
 
 ทุกคำสั่งรับ `--project <path>` (ไม่ใส่ = โฟลเดอร์ปัจจุบัน) ไฟล์สื่อสารอยู่ใน `.agent-team/jobs/<id>/` (`events.jsonl`, `question.json`, `answer.json`, `activity.json`, `exit.json`, `stop.json`)
 ถ้าไม่มีใครตอบคำถามเกิน `headlessIdleMinutes` (ค่าเริ่มต้น 120 นาที) งานจะหยุดแบบ resume ต่อได้ด้วย `--job <id>`
@@ -193,7 +193,7 @@ Security ถูกเรียกเฉพาะรอบที่ QA ผ่า�
 ปรับได้: model, maxTurns, maxBudgetUsd, skills ต่อ role (เครื่องมือและสิทธิ์แก้ในโค้ด `src/config.ts`)
 `security` override ได้เหมือน role อื่นทุกประการ (รวม model/maxTurns/maxBudgetUsd/skills)
 Security เพิ่มการเรียก Sonnet 1 ครั้งต่อ design (ตรวจครั้งเดียว) และ 1 ครั้งต่อรอบ build ที่ QA ผ่านแล้ว (ต่อ task)
-`headlessIdleMinutes` — เวลาที่รอการตอบคำถามเป็นนาที ก่อนจะยกเลิกงาน headless (ค่าเริ่มต้น 120, ต้องเป็นจำนวนเต็มบวก)
+`headlessIdleMinutes` — เวลาที่รอการตอบคำถามเป็นนาที ก่อนที่ process headless จะหยุดรอ (สถานะ `idle` งานไม่ถูกยกเลิก ทำต่อได้ด้วย `agent-team run --headless --job <id>`) (ค่าเริ่มต้น 120, ต้องเป็นจำนวนเต็มบวก)
 
 ## Skills
 วาง skill ที่ `skills/skills/<ชื่อ>/SKILL.md` แล้วเปิดให้ role ผ่าน config ด้านบน (ชื่อ `team:<ชื่อ>`)
