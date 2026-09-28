@@ -19,7 +19,7 @@ export interface RunContext {
 /** ของที่ทั้งโหมดโต้ตอบและ headless ต้องใช้ในการรันงาน (config, log, runner, repo) */
 export function createRunContext(
   projectDir: string,
-  opts: { say: (line: string) => void; status: StatusSink },
+  opts: { say: (line: string) => void; status: StatusSink; headless?: boolean },
 ): RunContext {
   const config = loadConfig();
   const abortController = new AbortController();
@@ -34,7 +34,7 @@ export function createRunContext(
     status: opts.status,
     debug: process.env.AGENT_TEAM_DEBUG === '1',
   });
-  const repo = new JobRepository(projectDir, { log: logger });
+  const repo = new JobRepository(projectDir, { log: logger, headless: opts.headless });
   return { config, logger, logFile, abortController, runner, repo };
 }
 

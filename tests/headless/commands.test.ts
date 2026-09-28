@@ -13,8 +13,8 @@ beforeEach(() => {
 });
 
 /** งาน headless ที่ lock ด้วย pid ของ process จริงที่ยังอยู่ (process.pid ของเทสต์เอง) */
-async function runningJob(): Promise<{ id: string; dir: string; repo: JobRepository }> {
-  const repo = new JobRepository(projectDir);
+async function runningJob(headless = true): Promise<{ id: string; dir: string; repo: JobRepository }> {
+  const repo = new JobRepository(projectDir, { headless });
   const { id } = await repo.create();
   const dir = repo.jobDir(id);
   fs.appendFileSync(headlessPath(dir, 'events'), '');
@@ -58,6 +58,15 @@ describe('answer', () => {
     const result = await runHeadlessCommand({ command: 'answer', projectDir, job: id, text: 'ใหม่' });
     expect(result.exitCode).toBe(0);
     expect(readJsonSafe<Answer>(headlessPath(dir, 'answer'))).toEqual({ questionId: 'q1', text: 'ใหม่' });
+  });
+
+  it('งานถูกเปิดทำต่อใน terminal (lock ไม่ใช่ headless) → exit 1 ไม่เขียน answer.json', async () => {
+    const { id, dir } = await runningJob(false);
+    ask(dir, 'text');
+    const result = await runHeadlessCommand({ command: 'answer', projectDir, job: id, text: 'x' });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('terminal');
+    expect(fs.existsSync(headlessPath(dir, 'answer'))).toBe(false);
   });
 
   it('process ไม่ได้รันอยู่ → exit 1 พร้อมวิธีทำต่อ', async () => {
@@ -116,6 +125,20 @@ describe('stop', () => {
     expect(JSON.parse(result.stdout!)).toMatchObject({ stopped: true, killed: true });
     expect(fs.existsSync(repo.lockPath(id))).toBe(false);
     expect(readJsonSafe<ExitInfo>(headlessPath(dir, 'exit'))?.status).toBe('stopped');
+  });
+
+  it('งาน headless ที่ถูกเปิดทำต่อใน terminal (lock ไม่ใช่ headless) → exit 1 ไม่ kill ไม่เขียน stop.json', async () => {
+    const { id, dir, repo } = await runningJob(false);
+    const kill = vi.fn();
+    const result = await runHeadlessCommand(
+      { command: 'stop', projectDir, job: id },
+      { sleep: async () => {}, kill, pollMs: 10, stopGraceMs: 30 },
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('terminal');
+    expect(kill).not.toHaveBeenCalled();
+    expect(fs.existsSync(headlessPath(dir, 'stop'))).toBe(false);
+    expect(fs.existsSync(repo.lockPath(id))).toBe(true);
   });
 
   it('งานไม่ได้รันอยู่ → exit 0 stopped false', async () => {

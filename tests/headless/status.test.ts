@@ -8,7 +8,7 @@ import { JobRepository } from '../../src/jobs';
 
 let projectDir: string;
 const alive = new Set<number>();
-const owner = () => new JobRepository(projectDir, { pid: 1000, isAlive: (p) => alive.has(p) });
+const owner = (headless = true) => new JobRepository(projectDir, { pid: 1000, isAlive: (p) => alive.has(p), headless });
 const viewer = () => new JobRepository(projectDir, { pid: 2000, isAlive: (p) => alive.has(p) });
 
 beforeEach(() => {
@@ -18,8 +18,8 @@ beforeEach(() => {
 });
 
 /** งาน headless ที่ process 1000 ถือ lock อยู่ (มี events.jsonl) */
-async function headlessJob(): Promise<{ id: string; dir: string }> {
-  const repo = owner();
+async function headlessJob(headless = true): Promise<{ id: string; dir: string }> {
+  const repo = owner(headless);
   const { id } = await repo.create();
   const dir = repo.jobDir(id);
   fs.appendFileSync(headlessPath(dir, 'events'), '');
@@ -54,6 +54,17 @@ describe('readStatus', () => {
     expect((await readStatus(viewer(), id, 0)).status).toBe('question');
     fs.writeFileSync(headlessPath(dir, 'answer'), '{พัง', 'utf8');
     expect((await readStatus(viewer(), id, 0)).status).toBe('question');
+  });
+
+  it('งาน headless ที่ถูกเปิดทำต่อใน terminal (lock ไม่ใช่ headless) → running ไม่รายงาน question.json ค้าง', async () => {
+    const { id, dir } = await headlessJob(false);
+    writeJsonAtomic(headlessPath(dir, 'question'), { id: 'q1', kind: 'text', prompt: '?', askedAt: 't' });
+    writeJsonAtomic(headlessPath(dir, 'activity'), { label: '[qa] ค้าง', at: 't' });
+    const report = await readStatus(viewer(), id, 0);
+    expect(report.status).toBe('running');
+    expect(report.question).toBeUndefined();
+    expect(report.activity).toBeUndefined();
+    expect(report.message).toContain('terminal');
   });
 
   it('since กรองข้อความ และ lastSeq ไม่ต่ำกว่า since เมื่อไม่มีข้อความใหม่', async () => {

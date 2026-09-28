@@ -76,6 +76,20 @@ describe('JobRepository', () => {
     });
   });
 
+  it('repo headless: lock มี headless true และ list/runningLock อ่านกลับได้; lock เก่าไม่มี key ยังใช้ได้', async () => {
+    const repo = make({ headless: true });
+    const { id } = await repo.create();
+    expect(JSON.parse(await fs.readFile(repo.lockPath(id), 'utf8'))).toEqual({
+      pid: 1000,
+      startedAt: at.toISOString(),
+      headless: true,
+    });
+    expect(await repo.runningLock(id)).toEqual({ pid: 1000, startedAt: at.toISOString(), headless: true });
+    expect((await repo.list())[0]!.lock).toEqual({ pid: 1000, startedAt: at.toISOString(), headless: true });
+    await fs.writeFile(repo.lockPath(id), JSON.stringify({ pid: 1000, startedAt: at.toISOString() }), 'utf8');
+    expect(await repo.runningLock(id)).toEqual({ pid: 1000, startedAt: at.toISOString() });
+  });
+
   it('create ในวินาทีเดียวกันได้ id ไม่ซ้ำ', async () => {
     const repo = make();
     const ids = [(await repo.create()).id, (await repo.create()).id, (await repo.create()).id];

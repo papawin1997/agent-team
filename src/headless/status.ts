@@ -49,7 +49,13 @@ export async function readStatus(repo: JobRepository, jobId: string, since?: num
   if (state.title) report.title = state.title;
   if (truncated) report.truncated = true;
 
-  if (await repo.runningLock(jobId)) {
+  const lock = await repo.runningLock(jobId);
+  if (lock) {
+    // งาน headless ที่ถูกเปิดทำต่อใน terminal: question.json/activity.json เป็นของค้างจาก process headless ก่อนหน้า
+    if (!lock.headless) {
+      report.message = 'งานนี้กำลังรันใน terminal แบบโต้ตอบ (ไม่ใช่ headless) — ตอบคำถามหรือหยุดงานที่ terminal นั้น';
+      return report;
+    }
     const question = readJsonSafe<Question>(headlessPath(dir, 'question'));
     // นับว่าตอบแล้วเฉพาะ answer.json ที่อ่านได้และตรงคำถามนี้ (ไฟล์ค้างของคำถามก่อนต้องไม่บังคำถามใหม่)
     const answered = question !== undefined && readJsonSafe<Answer>(headlessPath(dir, 'answer'))?.questionId === question.id;

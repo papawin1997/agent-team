@@ -25,6 +25,8 @@ export interface CommandDeps {
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 const json = (data: unknown): string => JSON.stringify(data, null, 2);
 const fail = (message: string): CommandResult => ({ exitCode: 1, stderr: message });
+const interactiveMessage = (jobId: string): string =>
+  `งาน ${jobId} กำลังรันใน terminal แบบโต้ตอบ (ไม่ใช่ headless) — ตอบคำถามหรือหยุดงาน (Ctrl+C) ที่ terminal นั้น`;
 
 /** คำสั่งสั้น ๆ ของ headless: อ่าน/เขียนไฟล์ในโฟลเดอร์งาน ไม่เรียกโมเดล */
 export async function runHeadlessCommand(cmd: HeadlessCommand, deps: CommandDeps = {}): Promise<CommandResult> {
@@ -62,9 +64,11 @@ export async function runHeadlessCommand(cmd: HeadlessCommand, deps: CommandDeps
 
 async function answer(repo: JobRepository, jobId: string, text: string): Promise<CommandResult> {
   const dir = repo.jobDir(jobId);
-  if (!(await repo.runningLock(jobId))) {
+  const lock = await repo.runningLock(jobId);
+  if (!lock) {
     return fail(`งาน ${jobId} ไม่ได้รันอยู่ — ทำต่อด้วย agent-team run --headless --job ${jobId}`);
   }
+  if (!lock.headless) return fail(interactiveMessage(jobId));
   const question = readJsonSafe<Question>(headlessPath(dir, 'question'));
   if (!question) return fail(`งาน ${jobId} ไม่มีคำถามรอคำตอบอยู่ — ดูสถานะด้วย agent-team status --job ${jobId}`);
   // answer.json ของคำถามก่อนที่ลบไม่สำเร็จ (id ไม่ตรง/พัง) เขียนทับได้ ปฏิเสธเฉพาะคำตอบของคำถามนี้ที่ยังไม่ถูกอ่าน
@@ -90,6 +94,8 @@ async function stop(
   }
   const lock = await repo.runningLock(jobId);
   if (!lock) return { exitCode: 0, stdout: json({ ok: true, jobId, stopped: false, message: 'งานนี้ไม่ได้รันอยู่' }) };
+  // ห้าม kill process ของ terminal ที่ผู้ใช้เปิดงานนี้ทำต่อเอง
+  if (!lock.headless) return fail(interactiveMessage(jobId));
   const pollMs = deps.pollMs ?? 500;
   const graceMs = deps.stopGraceMs ?? 10_000;
   writeJsonAtomic(headlessPath(dir, 'stop'), { at: new Date().toISOString() });
