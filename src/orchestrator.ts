@@ -1,4 +1,4 @@
-import type { Deps } from './deps';
+import type { Deps, LevelHintState } from './deps';
 import { nullLogger } from './logger';
 import { runBuild } from './phases/build';
 import { runDeliver } from './phases/deliver';
@@ -14,11 +14,14 @@ export async function runTeam(deps: Deps): Promise<State> {
   const log = deps.log ?? nullLogger;
   log.log('INFO', 'team.start', { phase: state.phase, level: state.level });
 
+  // per-run เท่านั้น (ไม่ผูกกับ deps ที่อาจถูกใช้ซ้ำข้ามการรัน) — ดูหมายเหตุที่ LevelHintState ใน deps.ts
+  const levelHint: LevelHintState = { sent: false };
+
   while (state.phase !== 'DONE' && state.phase !== 'ABORTED') {
     const from = state.phase;
     switch (state.phase) {
       case 'REQUIREMENTS':
-        await runRequirements(deps, state);
+        await runRequirements(deps, state, levelHint);
         break;
       case 'DESIGN':
         await runDesign(deps, state);

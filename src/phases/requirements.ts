@@ -1,4 +1,4 @@
-import type { Deps } from '../deps';
+import type { Deps, LevelHintState } from '../deps';
 import { initProgress, quickDesign, restoreBaseDesign, QUICK_TASK_ID } from '../domain';
 import { formatQuickTask, formatRequirements } from '../format';
 import { askNonEmpty, decide } from '../io-util';
@@ -14,7 +14,11 @@ const LEVEL_HINT: Record<Level, string> = {
 
 const LEVEL_PROMPT = 'ทำแบบไหน? (quick = ทำเลยแบบย่อ 1 task, full = ออกแบบก่อนแบบเต็ม, revise = แก้ requirements)';
 
-export async function runRequirements(deps: Deps, state: State): Promise<void> {
+export async function runRequirements(
+  deps: Deps,
+  state: State,
+  levelHint: LevelHintState = { sent: false },
+): Promise<void> {
   const { io, runner, store } = deps;
 
   // ความเสี่ยงจากข้อความที่ user พิมพ์เอง (ไม่ใช่แค่ requirements/quickTask ที่ PM สรุป) สะสมตลอด loop นี้
@@ -39,9 +43,9 @@ export async function runRequirements(deps: Deps, state: State): Promise<void> {
     prompt = `requirements ปัจจุบัน:\n${JSON.stringify(state.requirements)}\n\nคำขอแก้ไขจาก user: ${prompt}`;
   }
   // บอก PM เรื่อง --quick/--full ในข้อความแรกที่คุยกับ PM ของการรันนี้เสมอ (ไม่ว่าจะเป็นงานใหม่หรืองานค้างที่คุยกับ PM มาก่อนแล้ว)
-  if (deps.levelPreference && !deps.levelHintSent) {
+  if (deps.levelPreference && !levelHint.sent) {
     prompt = `${LEVEL_HINT[deps.levelPreference]}\n${prompt}`;
-    deps.levelHintSent = true;
+    levelHint.sent = true;
   }
   state.pendingPrompt = undefined;
 

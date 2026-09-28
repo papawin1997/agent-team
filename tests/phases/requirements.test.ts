@@ -253,6 +253,27 @@ describe('runRequirements', () => {
     expect(pmInput(runner, 0).prompt).toBe('[ผู้ใช้ขอโหมด quick ถ้างานเข้าเกณฑ์]\nแก้คำผิด');
   });
 
+  it('levelHint เป็น state ต่อการรันหนึ่งครั้ง (ไม่ใช่ของ deps): ส่ง object เดิมซ้ำไม่บอก PM อีก, deps ใช้ซ้ำข้ามการรันไม่ค้าง flag', async () => {
+    const levelHint = { sent: false };
+    const { deps: deps1, runner: runner1 } = makeDeps({ pm: [quickProposal()] }, ['ขอ A', 'quick']);
+    deps1.levelPreference = 'quick';
+    await runRequirements(deps1, newState(), levelHint);
+    expect(pmInput(runner1, 0).prompt).toBe('[ผู้ใช้ขอโหมด quick ถ้างานเข้าเกณฑ์]\nขอ A');
+    expect(levelHint.sent).toBe(true);
+
+    // เรียกซ้ำด้วย levelHint object เดิม (จำลองกลับเข้า REQUIREMENTS อีกครั้งในรอบรันเดียวกัน): ไม่บอกซ้ำ
+    const { deps: deps2, runner: runner2 } = makeDeps({ pm: [quickProposal()] }, ['ขอ B', 'quick']);
+    deps2.levelPreference = 'quick';
+    await runRequirements(deps2, newState(), levelHint);
+    expect(pmInput(runner2, 0).prompt).toBe('ขอ B');
+
+    // deps ใช้ซ้ำได้ (ไม่มี field ค้างอยู่บน deps เอง) — ถ้าไม่ส่ง levelHint มาเลย (การรันใหม่) จะบอก PM อีกครั้ง
+    const { deps: deps3, runner: runner3 } = makeDeps({ pm: [quickProposal()] }, ['ขอ C', 'quick']);
+    deps3.levelPreference = 'quick';
+    await runRequirements(deps3, newState());
+    expect(pmInput(runner3, 0).prompt).toBe('[ผู้ใช้ขอโหมด quick ถ้างานเข้าเกณฑ์]\nขอ C');
+  });
+
   it('PM เปลี่ยนข้อเสนอเป็น full ระหว่างตัดสินใจ quick: ไม่รับ quick แบบเงียบ ๆ ถามยืนยันแบบ full แทน', async () => {
     const events: { event: string; data?: Record<string, unknown> }[] = [];
     const { deps, io } = makeDeps(

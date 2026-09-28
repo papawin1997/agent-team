@@ -63,9 +63,14 @@ export interface Deps {
   log?: Logger;
   /** จาก --quick / --full: บอก PM ว่าผู้ใช้อยากได้ระดับไหน (full = ไม่เสนอ quick) */
   levelPreference?: Level;
-  /**
-   * true หลังบอก PM เรื่อง levelPreference ไปแล้วครั้งแรกของการรันนี้ (mutable ระหว่างรัน — กันไม่ให้บอกซ้ำ
-   * ทุกครั้งที่กลับเข้า REQUIREMENTS ในรอบรันเดียวกัน เช่น ขอแก้ requirements หรือ change ตอน DELIVER)
-   */
-  levelHintSent?: boolean;
+}
+
+/**
+ * ถือ flag "บอก PM เรื่อง levelPreference ไปแล้วหรือยังในการรันนี้" เป็นตัวแปรของการรันแต่ละครั้ง
+ * (ไม่ใช่ field ใน Deps ซึ่งเป็นของที่ส่งเข้ามาจากข้างนอกและอาจถูกใช้ซ้ำข้ามการรัน เช่นในเทสต์หรือ headless runner)
+ * runTeam สร้างอันใหม่ทุกครั้งที่เรียก แล้วส่งเข้า runRequirements — กันไม่ให้บอกซ้ำทุกครั้งที่กลับเข้า
+ * REQUIREMENTS ในรอบรันเดียวกัน (เช่น ขอแก้ requirements หรือ change ตอน DELIVER)
+ */
+export interface LevelHintState {
+  sent: boolean;
 }
