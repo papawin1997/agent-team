@@ -69,6 +69,7 @@ export function restoreBaseDesign(state: State): void {
       delete progress.workerResumes;
       delete progress.reviewedTree;
       delete progress.lastRoundLimit;
+      delete progress.startTree;
     }
   } else {
     state.design = undefined;
@@ -248,14 +249,20 @@ export async function decideLevel(
 }
 
 /**
- * ยกระดับงาน quick กลับเป็น full ตอน escalate ระหว่าง BUILD (QA ไม่ผ่านครบรอบ แล้ว user เลือก full)
- * คืน design/progress ของงาน full เดิมถ้าเคยเก็บไว้ใน baseDesign (ก่อนถูก triage เป็น quick) แทนการล้างทิ้ง
- * เฉย ๆ — ไม่มี baseDesign (เริ่มจาก quick มาแต่แรก) ยังล้างเหมือนเดิมเพื่อไม่ให้ Planning เห็น design
- * สังเคราะห์ของ quick เป็น previousDesign โค้ดที่ worker ทำไปแล้วยังอยู่ในโปรเจกต์ ไม่ได้ถูกลบ แค่บอก
- * Planning ผ่าน designFeedback แทนให้ออกแบบใหม่ตามสมควร
+ * ยกระดับงาน quick กลับไปมีขั้นออกแบบ (standard หรือ full) ตอน escalate ระหว่าง BUILD (QA ไม่ผ่านครบรอบ
+ * แล้ว user เลือก standard/full) คืน design/progress ของงานเดิมถ้าเคยเก็บไว้ใน baseDesign (ก่อนถูก triage
+ * เป็น quick) แทนการล้างทิ้งเฉย ๆ — ไม่มี baseDesign (เริ่มจาก quick มาแต่แรก) ยังล้างเหมือนเดิมเพื่อไม่ให้
+ * Planning เห็น design สังเคราะห์ของ quick เป็น previousDesign โค้ดที่ worker ทำไปแล้วยังอยู่ในโปรเจกต์
+ * ไม่ได้ถูกลบ แค่บอก Planning ผ่าน designFeedback แทนให้ออกแบบใหม่ตามสมควร
  */
-export function escalateToFull(deps: Deps, state: State, task: Task, progress: TaskProgress): void {
-  state.level = 'full';
+export function escalateLevel(
+  deps: Deps,
+  state: State,
+  task: Task,
+  progress: TaskProgress,
+  level: 'standard' | 'full',
+): void {
+  state.level = level;
   state.quickTask = undefined;
   state.phase = 'DESIGN';
   restoreBaseDesign(state);
@@ -263,5 +270,5 @@ export function escalateToFull(deps: Deps, state: State, task: Task, progress: T
     `ลองทำแบบ quick (task "${task.title}") แล้วไม่ผ่าน QA ครบ ${progress.rounds} รอบ ` +
     `ปัญหาที่ค้าง: ${JSON.stringify(progress.lastReport?.issues ?? [])} — ` +
     'โค้ดที่ worker ทำไปแล้วยังอยู่ในโปรเจกต์ ให้ออกแบบใหม่โดยใช้หรือแก้โค้ดนั้นตามสมควร';
-  logLevelDecided(deps, 'full', 'user', `QA ไม่ผ่านครบ ${progress.rounds} รอบในโหมด quick`, []);
+  logLevelDecided(deps, level, 'user', `QA ไม่ผ่านครบ ${progress.rounds} รอบในโหมด quick`, []);
 }

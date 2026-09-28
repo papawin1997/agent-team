@@ -666,14 +666,15 @@ describe('runBuild: QA ตรวจเฉพาะ diff ในรอบแก้
 
     const qa = qaInputs(runner.calls);
     expect(qa[0]!.roundDiff).toBeUndefined();
-    // baseline = reviewedTree ของรอบก่อน (t1 หลังรอบ 1) ไม่ใช่ snapshot ที่ถ่ายตอนเริ่มรอบ 2
-    expect(qa[1]!.roundDiff?.diff).toBe('diff t1..t2');
+    // t1 = startTree (ถ่ายก่อน worker รอบแรก) baseline ของ QA รอบแรกยังเป็น full เสมอ
+    // baseline = reviewedTree ของรอบก่อน (t2 หลังรอบ 1) ไม่ใช่ snapshot ที่ถ่ายตอนเริ่มรอบ 2
+    expect(qa[1]!.roundDiff?.diff).toBe('diff t2..t3');
     expect(qa[1]!.previousReport?.verdict).toBe('FAIL');
-    // รอบ 3 diff ต่อจาก reviewedTree ที่เพิ่งเลื่อนมาเป็น t2 (ไม่ใช่ t3..t4 แบบ snapshot ตอนเริ่มรอบ)
-    expect(qa[2]!.roundDiff?.diff).toBe('diff t2..t3');
-    // snapshot ถ่ายครั้งเดียวต่อรอบ (หลัง worker) ไม่ใช่สองครั้ง (ก่อน+หลัง)
-    expect(snaps.taken).toBe(3);
-    expect(state.progress.api?.reviewedTree).toBe('t3');
+    // รอบ 3 diff ต่อจาก reviewedTree ที่เพิ่งเลื่อนมาเป็น t3 (ไม่ใช่ t4..t5 แบบ snapshot ตอนเริ่มรอบ)
+    expect(qa[2]!.roundDiff?.diff).toBe('diff t3..t4');
+    // snapshot ต่อรอบ 1 ครั้ง (หลัง worker) บวก 1 ครั้งของ startTree ก่อน worker รอบแรกของ task
+    expect(snaps.taken).toBe(4);
+    expect(state.progress.api?.reviewedTree).toBe('t4');
   });
 
   it('log qa.scope ทุกรอบ (full แล้ว diff)', async () => {
@@ -715,7 +716,7 @@ describe('runBuild: QA ตรวจเฉพาะ diff ในรอบแก้
     const { deps, store } = makeDeps({ qa: [failReport('api'), passReport('api')] }, []);
     deps.snapshots = fakeSnapshots();
     await runBuild(deps, buildState(single()));
-    expect(store.state?.progress.api?.reviewedTree).toBe('t2');
+    expect(store.state?.progress.api?.reviewedTree).toBe('t3');
   });
 
   it('งานที่ resume ข้าม process: progress มี reviewedTree + lastReport เดิมอยู่แล้ว รอบแรกของการรันใหม่ diff จาก reviewedTree ที่เก็บไว้', async () => {
@@ -758,13 +759,13 @@ describe('runBuild: QA ตรวจเฉพาะ diff ในรอบแก้
 
     const qa = qaInputs(runner.calls);
     expect(qa).toHaveLength(4);
-    expect(qa[0]!.roundDiff).toBeUndefined(); // รอบ 1: full
-    expect(qa[1]!.roundDiff?.diff).toBe('diff t1..t2'); // รอบ 2 (ชน limit): ยัง diff จาก reviewedTree เดิม
+    expect(qa[0]!.roundDiff).toBeUndefined(); // รอบ 1: full (t1 = startTree ก่อน worker รอบแรก)
+    expect(qa[1]!.roundDiff?.diff).toBe('diff t2..t3'); // รอบ 2 (ชน limit): ยัง diff จาก reviewedTree เดิม
     expect(qa[2]!.roundDiff).toBeUndefined(); // รอบ 3: รอบหลัง QA ชน limit บังคับ full
-    expect(qa[3]!.roundDiff?.diff).toBe('diff t3..t4'); // รอบ 4: diff จาก reviewedTree ที่เลื่อนมาเป็นของรอบ 3
+    expect(qa[3]!.roundDiff?.diff).toBe('diff t4..t5'); // รอบ 4: diff จาก reviewedTree ที่เลื่อนมาเป็นของรอบ 3
 
     expect(workInputs(runner.calls).map((w) => w.resumeSessionId)).toEqual([undefined, 'api-s1', undefined, 'api-s3']);
-    expect(state.progress.api?.reviewedTree).toBe('t4');
+    expect(state.progress.api?.reviewedTree).toBe('t5');
     expect(state.progress.api?.done).toBe(true);
   });
 
@@ -782,13 +783,13 @@ describe('runBuild: QA ตรวจเฉพาะ diff ในรอบแก้
 
     const qa = qaInputs(runner.calls);
     expect(qa).toHaveLength(3);
-    expect(qa[0]!.roundDiff).toBeUndefined(); // รอบ 1: full
+    expect(qa[0]!.roundDiff).toBeUndefined(); // รอบ 1: full (t1 = startTree ก่อน worker รอบแรก)
     expect(qa[1]!.roundDiff).toBeUndefined(); // รอบ 3: รอบหลัง worker ชน limit บังคับ full
-    expect(qa[2]!.roundDiff?.diff).toBe('diff t2..t3'); // รอบ 4: diff จาก reviewedTree ที่เลื่อนมาเป็นของรอบ 3
+    expect(qa[2]!.roundDiff?.diff).toBe('diff t3..t4'); // รอบ 4: diff จาก reviewedTree ที่เลื่อนมาเป็นของรอบ 3
 
     expect(workInputs(runner.calls).map((w) => w.resumeSessionId)).toEqual([undefined, 'api-s1', undefined, 'api-s3']);
     expect(state.progress.api?.done).toBe(true);
-    expect(state.progress.api?.reviewedTree).toBe('t3');
+    expect(state.progress.api?.reviewedTree).toBe('t4');
   });
 });
 
@@ -802,5 +803,82 @@ describe('restoreBaseDesign ล้าง session ของ worker', () => {
     restoreBaseDesign(state);
     expect(state.progress.api).not.toHaveProperty('workerSessionId');
     expect(state.progress.api).not.toHaveProperty('workerResumes');
+  });
+});
+
+describe('runBuild: Security ตามไฟล์เสี่ยง (quick/standard)', () => {
+  /** snapshot ปลอมที่ diff ระหว่าง startTree กับรอบล่าสุดคืนไฟล์ที่กำหนด */
+  const snapsWithFiles = (files: string[], diff = '') => {
+    let n = 0;
+    return {
+      snapshot: async () => `t${++n}`,
+      diff: async () => ({ diff, files, truncated: false }),
+    };
+  };
+
+  it('standard ไม่แตะไฟล์เสี่ยง: ไม่เรียก Security, log security.trigger none', async () => {
+    const events: { event: string; data?: Record<string, unknown> }[] = [];
+    const { deps, runner } = makeDeps({ qa: [passReport('api')] }, []);
+    deps.snapshots = snapsWithFiles(['src/components/Button.tsx']);
+    deps.log = { log: (_l, event, data) => void events.push({ event, data }) };
+    const state = { ...buildState(single()), level: 'standard' as const };
+    await runBuild(deps, state);
+    expect(roles(runner.calls)).toEqual(['backend', 'qa']);
+    expect(state.progress.api?.securityReviewed).toBe(false);
+    expect(events.find((e) => e.event === 'security.trigger')?.data).toMatchObject({ taskId: 'api', reason: 'none' });
+  });
+
+  it('standard แตะ src/auth/login.ts: เรียก Security พร้อมบอกเหตุผล', async () => {
+    const { deps, runner, io } = makeDeps({ qa: [passReport('api')] }, []);
+    deps.snapshots = snapsWithFiles(['src/auth/login.ts']);
+    const state = { ...buildState(single()), level: 'standard' as const };
+    await runBuild(deps, state);
+    expect(roles(runner.calls)).toEqual(['backend', 'qa', 'security']);
+    expect(io.said.join('\n')).toContain('ตรวจเพราะแตะ src/auth/login.ts (auth)');
+  });
+
+  it('quick: filesChanged ของ worker ก็นับ (ไม่มี snapshots)', async () => {
+    const { deps, runner } = makeDeps({ qa: [passReport('quick')] }, []);
+    const task = { ...makeTask('quick'), id: 'quick' };
+    const state = { ...buildState(makeDesign([task])), level: 'quick' as const };
+    // FakeRunner รายงาน filesChanged = ['src/quick.ts'] ซึ่งไม่เสี่ยง
+    await runBuild(deps, state);
+    expect(roles(runner.calls)).not.toContain('security');
+  });
+
+  it('เนื้อหา diff มีคำเสี่ยง (child_process) แม้ชื่อไฟล์ธรรมดา: เรียก Security', async () => {
+    const { deps, runner } = makeDeps({ qa: [passReport('api')] }, []);
+    deps.snapshots = snapsWithFiles(['src/tools/run.ts'], "+import { exec } from 'child_process';");
+    const state = { ...buildState(single()), level: 'standard' as const };
+    await runBuild(deps, state);
+    expect(roles(runner.calls)).toContain('security');
+  });
+
+  it('full: เรียก Security ทุก task เหมือนเดิม และเก็บ startTree ตอนรอบแรก', async () => {
+    const { deps, runner } = makeDeps({ qa: [passReport('api')] }, []);
+    deps.snapshots = snapsWithFiles(['README.md']);
+    const state = buildState(single());
+    await runBuild(deps, state);
+    expect(roles(runner.calls)).toEqual(['backend', 'qa', 'security']);
+    expect(state.progress.api?.startTree).toBe('t1');
+  });
+});
+
+describe('runBuild: quick เสนอยกเป็น standard', () => {
+  it('quick ไม่ผ่านครบรอบ เลือก standard → DESIGN ด้วย level standard, log by user', async () => {
+    const events: { event: string; data?: Record<string, unknown> }[] = [];
+    const task = { ...makeTask('quick'), id: 'quick' };
+    const { deps } = makeDeps(
+      { qa: fails('quick', 2), pm: [asking('ค้าง 2 รอบ')] },
+      ['standard'],
+    );
+    deps.log = { log: (_l, event, data) => void events.push({ event, data }) };
+    const state = { ...buildState(makeDesign([task])), level: 'quick' as const };
+    state.progress.quick = { ...state.progress.quick!, maxRounds: 2 };
+    await runBuild(deps, state);
+    expect(state.phase).toBe('DESIGN');
+    expect(state.level).toBe('standard');
+    expect(state.designFeedback).toContain('ไม่ผ่าน QA');
+    expect(events.find((e) => e.event === 'level.decided')?.data).toMatchObject({ level: 'standard', by: 'user' });
   });
 });

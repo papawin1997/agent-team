@@ -62,21 +62,29 @@
 Ctrl+C หยุดได้ทุกเมื่อ: state ถูกบันทึกทุกครั้งที่เปลี่ยน phase/รอบ จึงเสียอย่างมากแค่รอบที่กำลังทำอยู่ แล้วรันใหม่เลือกงานนี้จากเมนู หรือใช้ -r (stdin ที่ถูกปิด/pipe จะหยุดพร้อมข้อความ EOF ไม่ค้าง)
 ระหว่างที่ agent ทำงานจะมีบรรทัดสถานะ เช่น `⠹ [QA] T2: กำลังตรวจ 1m23s · อ่านไฟล์ src/api/user.ts` (เวลาที่ผ่านไป + สิ่งที่ agent ทำล่าสุด) ถ้า output ไม่ใช่ terminal (pipe/redirect) จะพิมพ์แค่ `[QA] T2: กำลังตรวจ...` บรรทัดเดียวตอนเริ่ม
 
-## ระดับงาน: quick / full
+## ระดับงาน: quick / standard / full
 PM จะจัดระดับงานให้ตอนเสนอ requirements:
 - **quick** — งานเล็กที่ชัดเจน (ประมาณ 1–3 ไฟล์ ไม่มี design/API/data model ใหม่) PM เสนองาน 1 task ให้ worker ทำเลย แล้ว QA รันเทสต์ทั้งหมด (สูงสุด 2 รอบ ปรับได้ด้วย `quickMaxQaRounds` ใน `agent-team.config.json`) ไม่มีขั้น Planning/REVIEW/Security จึงเร็วและถูกกว่ามาก
+- **standard** — งานขนาดกลาง (หลายไฟล์/หลาย task แต่ไม่ใช่ระบบใหม่) มี Planning และให้คุณยืนยัน design แต่ไม่มี Security ตรวจ design ส่วน Security ตรวจ task เฉพาะที่แตะไฟล์เสี่ยง
 - **full** — ขั้นตอนเต็มตาม flow ด้านล่าง
 
-ตอน PM เสนอ quick คุณเลือกได้ว่า `quick` / `full` / `revise` ถ้าคำขอแตะเรื่องเสี่ยง (login/สิทธิ์, secret/token, การชำระเงิน, ลบหรือย้ายข้อมูล, SQL, อัปโหลดไฟล์, รันคำสั่ง shell, CORS/webhook) จะมีคำเตือน ⚠ และแนะนำ full
+ตอน PM เสนอ quick คุณเลือกได้ว่า `quick` / `standard` / `full` / `revise` (PM เสนอ standard เลือกได้ `standard` / `full` / `revise`) ถ้าคำขอแตะเรื่องเสี่ยง (login/สิทธิ์, secret/token, การชำระเงิน, ลบหรือย้ายข้อมูล, SQL, อัปโหลดไฟล์, รันคำสั่ง shell, CORS/webhook) จะมีคำเตือน ⚠ และแนะนำ full
 คำเตือนนี้ตรวจแบบ keyword-based (best-effort) เท่านั้น อาจพลาดคำที่มีความหมายเสี่ยงแต่ไม่ตรง keyword หรือเตือนงานที่ไม่ได้เสี่ยงจริงก็ได้ ควรใช้วิจารณญาณของคุณเองประกอบด้วยเสมอ
 คำเสี่ยงที่พิมพ์เองสะสมเฉพาะรอบรันปัจจุบัน (ถ้า resume งานกลางการคุยกับ PM คนละ process ข้อความเสี่ยงที่พิมพ์รอบก่อนจะไม่ถูกนับซ้ำ) และไม่ลดลงเมื่อคุณถอนคำขอ (เช่นพิมพ์ "ไม่เอา login แล้ว" ก็ยังถูกเตือนเรื่อง auth ต่อในรอบรันนั้น) ผลกระทบต่ำเพราะเป็นแค่คำเตือน ไม่ใช่การบล็อก
 
-ถ้างาน quick ไม่ผ่าน QA ครบรอบ ตัวเลือกจะมี `full` เพิ่ม เพื่อยกระดับไปออกแบบใหม่แบบเต็ม (โค้ดที่ทำไปแล้วยังอยู่) ถ้างานนี้เคยเป็น full มาก่อน (มี design จริงอยู่แล้วตอนถูกเปลี่ยนเป็น quick) design เดิมจะถูกคืนกลับมาให้ Planning เห็นเป็น previousDesign ไม่ได้เริ่มออกแบบใหม่ทั้งหมด
+Security ใน quick/standard: หลัง QA ผ่าน ถ้า task แตะไฟล์เสี่ยง (auth/session/permission, .env/secret/key, payment, migration/sql/schema, upload, cors/webhook/proxy, Dockerfile/compose/CI, dependency manifest) หรือ diff มีคำเสี่ยง (เช่น child_process, raw SQL) จะเรียก Security ตรวจ task นั้นพร้อมบอกเหตุผล ไฟล์เทสต์ไม่นับ (ดูใน log: security.trigger)
 
-    agent-team --quick   # บอก PM ว่าอยากได้ quick (ยังผ่านเกณฑ์และเช็คคำเสี่ยงตามปกติ)
-    agent-team --full    # ไม่เสนอ quick ใช้ขั้นตอนเต็มเสมอ
+ยกระดับ (คุณเป็นคนเลือกเสมอ ไม่มีการลดระดับเอง):
+- quick ไม่ผ่าน QA ครบรอบ → เลือก standard (แนะนำ) หรือ full ได้ นอกจาก continue/accept/abort
+- standard ที่ requirements/design มีคำเสี่ยง → ตอนยืนยัน design จะเตือน ⚠ และมีตัวเลือก full (Security ตรวจ design ทันทีโดยไม่ต้องออกแบบใหม่)
 
-ทั้งสองแฟล็กจะถูกบอก PM ในข้อความแรกที่คุยกับ PM ของการรันครั้งนี้เสมอ แม้เป็นการทำต่องานค้างที่เคยคุยกับ PM มาก่อนแล้วก็ตาม
+ถ้างาน quick ไม่ผ่าน QA ครบรอบ ตัวเลือกจะมี `standard`/`full` เพิ่ม เพื่อยกระดับไปออกแบบใหม่ (โค้ดที่ทำไปแล้วยังอยู่) ถ้างานนี้เคยเป็น standard/full มาก่อน (มี design จริงอยู่แล้วตอนถูกเปลี่ยนเป็น quick) design เดิมจะถูกคืนกลับมาให้ Planning เห็นเป็น previousDesign ไม่ได้เริ่มออกแบบใหม่ทั้งหมด
+
+    agent-team --quick      # บอก PM ว่าอยากได้ quick (ยังผ่านเกณฑ์และเช็คคำเสี่ยงตามปกติ)
+    agent-team --standard   # ไม่เสนอ quick (standard หรือ full)
+    agent-team --full       # ไม่เสนอ quick ใช้ขั้นตอนเต็มเสมอ
+
+ทั้งสามแฟล็กจะถูกบอก PM ในข้อความแรกที่คุยกับ PM ของการรันครั้งนี้เสมอ แม้เป็นการทำต่องานค้างที่เคยคุยกับ PM มาก่อนแล้วก็ตาม
 
 ## ใช้ผ่าน Claude Code (headless)
 
@@ -90,7 +98,7 @@ PM จะจัดระดับงานให้ตอนเสนอ require
 
 คำสั่งที่ skill ใช้ (เรียกเองก็ได้):
 
-- `agent-team run --headless --project <path> --request "..." [--quick|--full]` เริ่มงานใหม่ (ทำต่อ: `--resume` หรือ `--job <id>`) ไม่มีเมนูและไม่อ่าน stdin
+- `agent-team run --headless --project <path> --request "..." [--quick|--standard|--full]` เริ่มงานใหม่ (ทำต่อ: `--resume` หรือ `--job <id>`) ไม่มีเมนูและไม่อ่าน stdin
 - `agent-team wait [--job <id>] [--since <seq>] [--timeout <วินาที>]` รอจนมีคำถาม/งานจบ (ค่าเริ่มต้น 540 วินาที) พิมพ์ JSON สถานะ
 - `agent-team status [--job <id>] [--since <seq>]` เหมือน wait แต่ตอบทันที
 - `agent-team answer [--job <id>] -- "<คำตอบ>"` ตอบคำถามที่รออยู่
@@ -113,15 +121,15 @@ PM จะจัดระดับงานให้ตอนเสนอ require
                                   ↑__________ขอแก้/เพิ่ม_________________|
 
 1. REQUIREMENTS: คุยกับ PM (ถามตอบ/เสนอไอเดีย) จนคุณกด confirm requirements — ถ้า PM เสนอ quick และคุณเลือก quick
-   จะข้าม DESIGN/REVIEW ไป BUILD เลย (ดูหัวข้อ "ระดับงาน: quick / full" ด้านบน)
+   จะข้าม DESIGN/REVIEW ไป BUILD เลย (ดูหัวข้อ "ระดับงาน: quick / standard / full" ด้านบน)
 2. DESIGN: Planning ออกแบบและแตก task (frontend / backend) จากนั้น Security ตรวจ design ครั้งเดียว
    (แบบ advisory เท่านั้น — ถ้า Security ตรวจไม่สำเร็จก็ไม่ทำให้ทั้งรอบล้ม แค่ไม่มี securityNotes) แล้วแนบ securityNotes เข้า design
 3. REVIEW: PM สรุปแบบ (รวม securityNotes จาก Security) ให้คุณ confirm หรือขอแก้ (ขอแก้ = วนกลับข้อ 1-3 โดยข้อความที่ขอแก้จะส่งให้ทั้ง PM และ Planning)
 4. BUILD: worker ทำทีละ task ตามลำดับ dependency แล้ว QA ตรวจ และเมื่อ QA ผ่านแล้ว Security ตรวจต่ออีกรอบ (เฉพาะตอน QA ผ่านเท่านั้น เพื่อประหยัด API call)
    QA ไม่ผ่าน หรือ Security เจอ blocker/major ให้ worker แก้ใหม่ (Security ไม่ผ่าน = เสียรอบเหมือน QA ไม่ผ่าน)
    สูงสุด 5 รอบต่อ task (โหมด quick สูงสุด `quickMaxQaRounds` รอบ) ถ้าครบแล้วไม่ผ่าน PM จะถามคุณว่า
-   continue (ทำต่ออีก 5 รอบ) / accept (รับตามสภาพ) / abort — งาน quick จะมีตัวเลือก full เพิ่ม เพื่อยกระดับกลับไป DESIGN
-   (ถ้างานนี้เคยเป็น full มาก่อน design เดิมจะถูกคืนกลับมาให้ Planning ใช้ต่อ ไม่เริ่มออกแบบใหม่ทั้งหมด)
+   continue (ทำต่ออีก 5 รอบ) / accept (รับตามสภาพ) / abort — งาน quick จะมีตัวเลือก standard/full เพิ่ม เพื่อยกระดับกลับไป DESIGN
+   (ถ้างานนี้เคยเป็น standard/full มาก่อน design เดิมจะถูกคืนกลับมาให้ Planning ใช้ต่อ ไม่เริ่มออกแบบใหม่ทั้งหมด)
 5. DELIVER: PM ส่งมอบ ให้คุณตรวจรับ (accept) หรือขอแก้/เพิ่ม (change) — คำขอแก้ที่ถูก triage เป็น quick จะข้าม
    DESIGN/REVIEW ไป BUILD เลยเหมือนข้อ 1
 

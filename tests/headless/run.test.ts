@@ -162,6 +162,7 @@ describe('runHeadlessJob', () => {
     await answerAll(dir, ['confirm', 'confirm', 'accept']);
     await expect(result).resolves.toBe('done');
     const qa = runner.calls.filter((c) => c.role === 'qa').map((c) => c.input as QaInput);
-    expect(qa[1]!.roundDiff?.diff).toBe('t1..t2');
+    // t1 = startTree ของ task api (ถ่ายก่อน worker รอบแรก ใช้ตัดสิน Security ของ quick/standard) ไม่ใช่ baseline ของ QA
+    expect(qa[1]!.roundDiff?.diff).toBe('t2..t3');
   });
 });

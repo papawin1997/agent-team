@@ -28,6 +28,8 @@ export interface TaskProgress {
   reviewedTree?: string;
   /** รอบก่อนหน้าชนขีดจำกัด SDK (worker หรือ QA) — รอบถัดไปตรวจทั้ง task และ worker ต้องเปิด session ใหม่ ห้าม resume */
   lastRoundLimit?: boolean;
+  /** snapshot ก่อน worker รอบแรกของ task นี้ ใช้หาไฟล์ทั้งหมดที่ task แตะ (ตัดสิน Security ของ quick/standard) */
+  startTree?: string;
 }
 
 export interface State {
