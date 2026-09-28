@@ -6,6 +6,7 @@ import { presentBillingVars } from './env';
 import { JobRepository } from './jobs';
 import { FileLogger } from './logger';
 import { SdkRoleRunner } from './runner';
+import { GitSnapshots, type SnapshotProvider } from './snapshot';
 
 export interface RunContext {
   config: TeamConfig;
@@ -14,6 +15,8 @@ export interface RunContext {
   abortController: AbortController;
   runner: SdkRoleRunner;
   repo: JobRepository;
+  /** snapshot working tree ของโปรเจกต์ (ใช้หา diff รอบแก้ให้ QA) */
+  snapshots: SnapshotProvider;
 }
 
 /** ของที่ทั้งโหมดโต้ตอบและ headless ต้องใช้ในการรันงาน (config, log, runner, repo) */
@@ -35,7 +38,8 @@ export function createRunContext(
     debug: process.env.AGENT_TEAM_DEBUG === '1',
   });
   const repo = new JobRepository(projectDir, { log: logger, headless: opts.headless });
-  return { config, logger, logFile, abortController, runner, repo };
+  const snapshots = new GitSnapshots(projectDir);
+  return { config, logger, logFile, abortController, runner, repo, snapshots };
 }
 
 /** log run.start และแจ้งที่อยู่ log / env ที่ไม่ส่งให้ agent */

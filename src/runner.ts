@@ -2,7 +2,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { agentLabel, describeToolUse, nullStatus, type StatusSink } from './activity';
 import { type RoleName, SKILLS_PLUGIN_DIR, type TeamConfig } from './config';
-import type { PlanInput, PmInput, QaInput, RoleRunner, SecurityDesignInput, WorkInput } from './deps';
+import type { PlanInput, PmInput, QaInput, RoleRunner, SecurityDesignInput, WorkInput, WorkOutput } from './deps';
 import { RoleOutputError, RoleRunError } from './errors';
 import { type Logger, nullLogger } from './logger';
 import { buildQueryOptions } from './options';
@@ -11,6 +11,7 @@ import {
   buildQaPrompt,
   buildSecurityDesignPrompt,
   buildSecurityPrompt,
+  buildWorkFixPrompt,
   buildWorkPrompt,
   SYSTEM_PROMPTS,
 } from './prompts';
@@ -80,9 +81,11 @@ export class SdkRoleRunner implements RoleRunner {
     return (await this.runValidated('planning', agentLabel('planning'), buildPlanPrompt(input), DesignSchema)).data;
   }
 
-  async work(input: WorkInput): Promise<WorkerResult> {
+  async work(input: WorkInput): Promise<WorkOutput> {
     const { owner, id } = input.task;
-    return (await this.runValidated(owner, agentLabel(owner, id), buildWorkPrompt(input), WorkerResultSchema)).data;
+    const prompt = input.resumeSessionId ? buildWorkFixPrompt(input) : buildWorkPrompt(input);
+    const out = await this.runValidated(owner, agentLabel(owner, id), prompt, WorkerResultSchema, input.resumeSessionId);
+    return { result: out.data, sessionId: out.sessionId };
   }
 
   async qa(input: QaInput): Promise<QAReport> {

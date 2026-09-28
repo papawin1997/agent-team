@@ -104,6 +104,8 @@ async function main(): Promise<void> {
       config,
       log: logger,
       levelPreference: args.level,
+      snapshots: ctx.snapshots,
+      abortSignal: abortController.signal,
     });
     console.log(
       final.phase === 'DONE'

@@ -10,6 +10,7 @@ import type {
   StateStore,
   UserIO,
   WorkInput,
+  WorkOutput,
 } from '../../src/deps';
 import type { Design, PmTurn, QAReport, SecurityReport, WorkerResult } from '../../src/schemas';
 import type { State } from '../../src/state';
@@ -92,6 +93,7 @@ export class FakeRunner implements RoleRunner {
   private qaReports: Array<QAReport | Error>;
   private securityDesignScript: Array<string[] | Error>;
   private securityScript: Array<SecurityReport | Error>;
+  private workCalls = 0;
 
   constructor(script: FakeScript) {
     this.pm = [...(script.pm ?? [])];
@@ -116,15 +118,19 @@ export class FakeRunner implements RoleRunner {
     return design;
   }
 
-  async work(input: WorkInput): Promise<WorkerResult> {
+  async work(input: WorkInput): Promise<WorkOutput> {
     this.calls.push({ role: input.task.owner, input });
+    this.workCalls += 1;
     const scripted = this.workScript.shift();
     if (scripted) throw scripted;
     return {
-      taskId: input.task.id,
-      summary: `ทำ ${input.task.id}`,
-      filesChanged: [`src/${input.task.id}.ts`],
-      howToVerify: 'npm test',
+      result: {
+        taskId: input.task.id,
+        summary: `ทำ ${input.task.id}`,
+        filesChanged: [`src/${input.task.id}.ts`],
+        howToVerify: 'npm test',
+      },
+      sessionId: `${input.task.id}-s${this.workCalls}`,
     };
   }
 
