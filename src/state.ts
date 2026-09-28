@@ -28,8 +28,12 @@ export interface TaskProgress {
   reviewedTree?: string;
   /** รอบก่อนหน้าชนขีดจำกัด SDK (worker หรือ QA) — รอบถัดไปตรวจทั้ง task และ worker ต้องเปิด session ใหม่ ห้าม resume */
   lastRoundLimit?: boolean;
-  /** snapshot ก่อน worker รอบแรกของ task นี้ ใช้หาไฟล์ทั้งหมดที่ task แตะ (ตัดสิน Security ของ quick/standard) */
+  /** snapshot ก่อน worker รอบแรกของ task นี้ ใช้หาไฟล์ทั้งหมดที่ task แตะ (ตัดสิน Security ของ quick/standard) — ตั้งเฉพาะระดับ quick/standard */
   startTree?: string;
+  /** ไฟล์ทั้งหมดที่ worker รายงานว่าแก้ สะสมทุกรอบของ task นี้ (normalize \ เป็น /) กันไฟล์เสี่ยงที่แก้ในรอบที่ QA ไม่ผ่านหลุดจากการตัดสิน Security (I2) */
+  touchedFiles?: string[];
+  /** เหตุผลที่ Security ถูกเรียก (หรือไม่ถูกเรียก) ของรอบล่าสุดที่ QA ผ่าน — ใช้อธิบายให้ PM ตอน DELIVER ว่า securityReviewed=false เป็นการข้ามโดยตั้งใจหรือไม่ผ่านจริง */
+  securityTrigger?: 'level' | 'risky-files' | 'none';
 }
 
 export interface State {
