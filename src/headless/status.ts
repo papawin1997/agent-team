@@ -6,6 +6,7 @@ import {
   readEvents,
   readJsonSafe,
   type Activity,
+  type Answer,
   type ExitInfo,
   type ExitStatus,
   type Question,
@@ -50,7 +51,8 @@ export async function readStatus(repo: JobRepository, jobId: string, since?: num
 
   if (await repo.runningLock(jobId)) {
     const question = readJsonSafe<Question>(headlessPath(dir, 'question'));
-    const answered = fs.existsSync(headlessPath(dir, 'answer'));
+    // นับว่าตอบแล้วเฉพาะ answer.json ที่อ่านได้และตรงคำถามนี้ (ไฟล์ค้างของคำถามก่อนต้องไม่บังคำถามใหม่)
+    const answered = question !== undefined && readJsonSafe<Answer>(headlessPath(dir, 'answer'))?.questionId === question.id;
     if (question && !answered) {
       report.status = 'question';
       report.question = question;

@@ -100,6 +100,25 @@ describe('HeadlessIO', () => {
     expect(readEvents(dir).map((e) => e.text).join('\n')).toContain('zzz');
   });
 
+  it('ก่อนเขียนคำถามใหม่ ลบ answer.json ค้าง (เช่นลบไม่สำเร็จจากคำถามก่อน)', async () => {
+    const io = make();
+    writeJsonAtomic(headlessPath(dir, 'answer'), { questionId: 'stale', text: 'เก่า' });
+    const pending = io.ask('?');
+    const q = await question();
+    expect(fs.existsSync(headlessPath(dir, 'answer'))).toBe(false);
+    reply(q, 'ใหม่');
+    await expect(pending).resolves.toBe('ใหม่');
+  });
+
+  it('idle timeout ลบ answer.json ที่ไม่ตรงคำถามทิ้งด้วย', async () => {
+    const io = make(200);
+    const pending = io.ask('?');
+    await question();
+    writeJsonAtomic(headlessPath(dir, 'answer'), { questionId: 'other', text: 'ผิด' });
+    await expect(pending).rejects.toBeInstanceOf(HeadlessIdleError);
+    expect(fs.existsSync(headlessPath(dir, 'answer'))).toBe(false);
+  });
+
   it('ไม่มีคำตอบเกิน idleTimeoutMs → HeadlessIdleError และลบคำถามทิ้ง', async () => {
     const io = make(40);
     await expect(io.ask('?')).rejects.toBeInstanceOf(HeadlessIdleError);

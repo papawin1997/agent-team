@@ -3,7 +3,7 @@ import { parseChoice } from '../cli';
 import { installSkill } from '../install-skill';
 import { JobRepository } from '../jobs';
 import type { HeadlessCommand } from './args';
-import { headlessPath, readJsonSafe, removeQuietly, writeExit, writeJsonAtomic, type Question } from './files';
+import { headlessPath, readJsonSafe, removeQuietly, writeExit, writeJsonAtomic, type Answer, type Question } from './files';
 import { resolveJob, waitForStatus } from './status';
 
 export interface CommandResult {
@@ -67,7 +67,8 @@ async function answer(repo: JobRepository, jobId: string, text: string): Promise
   }
   const question = readJsonSafe<Question>(headlessPath(dir, 'question'));
   if (!question) return fail(`งาน ${jobId} ไม่มีคำถามรอคำตอบอยู่ — ดูสถานะด้วย agent-team status --job ${jobId}`);
-  if (fs.existsSync(headlessPath(dir, 'answer'))) {
+  // answer.json ของคำถามก่อนที่ลบไม่สำเร็จ (id ไม่ตรง/พัง) เขียนทับได้ ปฏิเสธเฉพาะคำตอบของคำถามนี้ที่ยังไม่ถูกอ่าน
+  if (readJsonSafe<Answer>(headlessPath(dir, 'answer'))?.questionId === question.id) {
     return fail('มีคำตอบที่ส่งไปแล้วรอ process อ่านอยู่ — เรียก wait เพื่อดูสถานะล่าสุด');
   }
   const options = question.options ?? [];

@@ -51,6 +51,15 @@ describe('answer', () => {
     expect((await runHeadlessCommand({ command: 'answer', projectDir, job: id, text: 'x' })).stderr).toContain('รอ process อ่าน');
   });
 
+  it('answer.json ค้างที่ questionId ไม่ตรงคำถามปัจจุบัน → เขียนทับได้', async () => {
+    const { id, dir } = await runningJob();
+    ask(dir, 'text');
+    writeJsonAtomic(headlessPath(dir, 'answer'), { questionId: 'q0', text: 'ค้าง' });
+    const result = await runHeadlessCommand({ command: 'answer', projectDir, job: id, text: 'ใหม่' });
+    expect(result.exitCode).toBe(0);
+    expect(readJsonSafe<Answer>(headlessPath(dir, 'answer'))).toEqual({ questionId: 'q1', text: 'ใหม่' });
+  });
+
   it('process ไม่ได้รันอยู่ → exit 1 พร้อมวิธีทำต่อ', async () => {
     const { id, dir, repo } = await runningJob();
     ask(dir, 'text');

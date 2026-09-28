@@ -47,6 +47,15 @@ describe('readStatus', () => {
     expect(report.activity?.label).toBe('[qa] ตรวจ api');
   });
 
+  it('answer.json ค้างของคำถามก่อน (questionId ไม่ตรง) หรือ JSON พัง → ยังเป็น question', async () => {
+    const { id, dir } = await headlessJob();
+    writeJsonAtomic(headlessPath(dir, 'question'), { id: 'q2', kind: 'text', prompt: '?', askedAt: 't' });
+    writeJsonAtomic(headlessPath(dir, 'answer'), { questionId: 'q1', text: 'เก่า' });
+    expect((await readStatus(viewer(), id, 0)).status).toBe('question');
+    fs.writeFileSync(headlessPath(dir, 'answer'), '{พัง', 'utf8');
+    expect((await readStatus(viewer(), id, 0)).status).toBe('question');
+  });
+
   it('since กรองข้อความ และ lastSeq ไม่ต่ำกว่า since เมื่อไม่มีข้อความใหม่', async () => {
     const { id, dir } = await headlessJob();
     appendEvent(dir, { seq: 1, at: 't', text: 'a' });

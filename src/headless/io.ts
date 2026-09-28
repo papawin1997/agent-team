@@ -92,6 +92,8 @@ export class HeadlessIO implements UserIO {
     const answerFile = headlessPath(dir, 'answer');
     const question: Question = { id: this.newId(), kind, prompt, askedAt: this.now().toISOString() };
     if (options) question.options = [...options];
+    // answer.json ค้าง (ลบไม่สำเร็จจากรอบก่อน) ต้องไม่อยู่ตอนคำถามใหม่ปรากฏ ไม่งั้นคำสั่ง answer/status สับสน
+    removeQuietly(answerFile);
     writeJsonAtomic(questionFile, question);
     const deadline = this.now().getTime() + idleTimeoutMs;
     for (;;) {
@@ -104,6 +106,7 @@ export class HeadlessIO implements UserIO {
       }
       if (this.now().getTime() >= deadline) {
         removeQuietly(questionFile);
+        removeQuietly(answerFile);
         throw new HeadlessIdleError(Math.round(idleTimeoutMs / 60_000));
       }
       await this.sleep(this.pollMs);
