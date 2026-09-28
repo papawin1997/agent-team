@@ -73,6 +73,7 @@ PM จะจัดระดับงานให้ตอนเสนอ require
 คำเสี่ยงที่พิมพ์เองสะสมเฉพาะรอบรันปัจจุบัน (ถ้า resume งานกลางการคุยกับ PM คนละ process ข้อความเสี่ยงที่พิมพ์รอบก่อนจะไม่ถูกนับซ้ำ) และไม่ลดลงเมื่อคุณถอนคำขอ (เช่นพิมพ์ "ไม่เอา login แล้ว" ก็ยังถูกเตือนเรื่อง auth ต่อในรอบรันนั้น) ผลกระทบต่ำเพราะเป็นแค่คำเตือน ไม่ใช่การบล็อก
 
 Security ใน quick/standard: หลัง QA ผ่าน ถ้า task แตะไฟล์เสี่ยง (auth/session/permission, .env/secret/key, payment, migration/sql/schema, upload, cors/webhook/proxy, Dockerfile/compose/CI, dependency manifest) หรือ diff มีคำเสี่ยง (เช่น child_process, raw SQL) จะเรียก Security ตรวจ task นั้นพร้อมบอกเหตุผล ไฟล์เทสต์ไม่นับ (ดูใน log: security.trigger)
+โปรเจกต์ที่ไม่ใช่ git repo (หรือ snapshot ล้ม): ไม่มี diff ให้ตรวจ จึงอาศัยแค่รายชื่อไฟล์ที่ worker รายงานว่าแก้สะสมทุกรอบเท่านั้น ไม่มีการตรวจเนื้อหา diff ว่ามีคำเสี่ยงหรือไม่
 
 ยกระดับ (คุณเป็นคนเลือกเสมอ ไม่มีการลดระดับเอง):
 - quick ไม่ผ่าน QA ครบรอบ → เลือก standard (แนะนำ) หรือ full ได้ นอกจาก continue/accept/abort
@@ -117,15 +118,17 @@ Security ใน quick/standard: หลัง QA ผ่าน ถ้า task แ�
           └─ เลือกงาน (r<เลข> ทำต่อ / n งานใหม่ / d<เลข> ลบ)   ← ข้ามได้ด้วย -r
               └─ REQUIREMENTS → DESIGN → REVIEW → BUILD → DELIVER → เสร็จ
                     |________________quick: ข้าม DESIGN/REVIEW________↑    |
-                                  ↑__ขอแก้__|      ↑__escalate เป็น full__|
+                                  ↑__ขอแก้__|      ↑__escalate เป็น standard/full__|
                                   ↑__________ขอแก้/เพิ่ม_________________|
 
 1. REQUIREMENTS: คุยกับ PM (ถามตอบ/เสนอไอเดีย) จนคุณกด confirm requirements — ถ้า PM เสนอ quick และคุณเลือก quick
    จะข้าม DESIGN/REVIEW ไป BUILD เลย (ดูหัวข้อ "ระดับงาน: quick / standard / full" ด้านบน)
 2. DESIGN: Planning ออกแบบและแตก task (frontend / backend) จากนั้น Security ตรวจ design ครั้งเดียว
    (แบบ advisory เท่านั้น — ถ้า Security ตรวจไม่สำเร็จก็ไม่ทำให้ทั้งรอบล้ม แค่ไม่มี securityNotes) แล้วแนบ securityNotes เข้า design
+   ระดับ standard ข้ามขั้นนี้ (ไม่มี Security ตรวจ design เลย) เว้นแต่ตอน REVIEW คุณเลือกยกเป็น full
 3. REVIEW: PM สรุปแบบ (รวม securityNotes จาก Security) ให้คุณ confirm หรือขอแก้ (ขอแก้ = วนกลับข้อ 1-3 โดยข้อความที่ขอแก้จะส่งให้ทั้ง PM และ Planning)
 4. BUILD: worker ทำทีละ task ตามลำดับ dependency แล้ว QA ตรวจ และเมื่อ QA ผ่านแล้ว Security ตรวจต่ออีกรอบ (เฉพาะตอน QA ผ่านเท่านั้น เพื่อประหยัด API call)
+   ระดับ full ตรวจทุก task เสมอ ส่วนระดับ quick/standard ตรวจเฉพาะ task ที่แตะไฟล์เสี่ยงหรือเนื้อหาเสี่ยง (ดูหัวข้อ "ระดับงาน" ด้านบน)
    QA ไม่ผ่าน หรือ Security เจอ blocker/major ให้ worker แก้ใหม่ (Security ไม่ผ่าน = เสียรอบเหมือน QA ไม่ผ่าน)
    สูงสุด 5 รอบต่อ task (โหมด quick สูงสุด `quickMaxQaRounds` รอบ) ถ้าครบแล้วไม่ผ่าน PM จะถามคุณว่า
    continue (ทำต่ออีก 5 รอบ) / accept (รับตามสภาพ) / abort — งาน quick จะมีตัวเลือก standard/full เพิ่ม เพื่อยกระดับกลับไป DESIGN
