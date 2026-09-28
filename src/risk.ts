@@ -39,14 +39,15 @@ const RULES: readonly Rule[] = [
     category: 'delete',
     en: /\b(drop table|drop database|truncate|purge|wipe|rm -rf|delete all|delete everything|remove all|bulk delete)\b/i,
     th: [],
-    // ไทย: ต้องมีทั้ง "ลบ" และ ("ทั้งหมด" หรือ "ทุก") เป็น substring แยกกัน (ไม่ต้องติดกัน) เพื่อไม่ให้ "ลบ" เดี่ยว ๆ
-    // (เช่น เพิ่ม/ลบ todo) เข้าเงื่อนไข; "ล้างข้อมูล" ยังนับเป็น delete เสมอ
-    // แก้ false positive จาก review: "ลบ" + "ทุก"/"ทั้งหมด" อย่างเดียวจับงานแก้ไขทั่วไปเยอะเกิน
-    // (เช่น "ลบ console.log ทุกไฟล์", "ลบ todo ได้ทุกรายการ") ต้องมีคำที่หมายถึงข้อมูลร่วมด้วยจึงจะถือว่าเสี่ยงจริง
+    // ไทย: ต้องมี "ทั้งหมด"/"ทุก" ตามหลัง "ลบ" แบบใกล้กัน (ไม่เกิน ~15 ตัวอักษร) และมีคำที่หมายถึงข้อมูลร่วมด้วย
+    // "ล้างข้อมูล" ยังนับเป็น delete เสมอ
+    // แก้ false positive จาก review รอบ 2: เดิมเช็คแค่ "ลบ" และ "ทั้งหมด"/"ทุก" เป็น substring แยกกันที่ไหนก็ได้ในข้อความ
+    // ทำให้ประโยคที่ "ลบ" กับ "ทั้งหมด"/"ทุก" อยู่คนละบริบท/คนละประโยคย่อย เช่น
+    // "เพิ่มปุ่มลบในหน้าผู้ใช้ ให้แสดงทุกหน้า" หรือ "แก้ปุ่มให้ทุกหน้าลบเงาออก" (ทุกอยู่ก่อนลบ) ถูกจับผิด
+    // จึงเพิ่มเงื่อนไข proximity: "ทั้งหมด"/"ทุก" ต้องอยู่ "หลัง" ลบ และห่างไม่เกิน ~15 ตัวอักษร ถึงจะถือว่าพูดถึงสิ่งเดียวกัน
+    // ("ลบ console.log ทุกไฟล์", "ลบ todo ได้ทุกรายการ" ยังไม่จับเพราะไม่มีคำที่หมายถึงข้อมูลอยู่ดี)
     thMatch: (text) =>
-      (text.includes('ลบ') &&
-        (text.includes('ทั้งหมด') || text.includes('ทุก')) &&
-        DATA_NOUNS_TH.some((w) => text.includes(w))) ||
+      (/ลบ[^\n]{0,15}?(?:ทั้งหมด|ทุก)/.test(text) && DATA_NOUNS_TH.some((w) => text.includes(w))) ||
       text.includes('ล้างข้อมูล'),
   },
   {
@@ -58,11 +59,18 @@ const RULES: readonly Rule[] = [
     category: 'sql',
     // แก้ false negative จาก review: จำกัดความยาวช่องว่างระหว่าง select/update กับ from/set (เดิม <=8 ตัวอักษร)
     // ทำให้ query จริงที่มีรายชื่อคอลัมน์/ชื่อตารางยาวหลุด (เช่น "SELECT id, name, email FROM users") เปลี่ยนมาใช้
-    // รูปแบบ token ของ SQL แทน: select ต้องตามด้วย "*" หรือรายชื่อคอลัมน์แบบ comma (>=2 คอลัมน์) แล้วค่อย from+ชื่อตาราง,
-    // update ต้องตามด้วยชื่อตารางคำเดียวแล้ว set แล้วมี "=" (เพื่อแยกจาก "update the header text and set color")
-    // ตัดสินใจ: "select a from b" (คอลัมน์เดี่ยว ไม่มี comma/*) ยังก้ำกึ่งเกินกว่าจะแยกจากประโยคภาษาอังกฤษทั่วไปได้
-    // (เช่น "select a color from the palette") จึงไม่จับ — ดูเทสต์ tests/risk.test.ts
-    en: /\b(sql|raw query)\b|\bselect\s+(\*|[\w.]+(?:\s*,\s*[\w.]+)+)\s+from\s+[\w.]+|\binsert\s+into\b|\bupdate\s+[\w.]+\s+set\s+[\w.]+\s*=|\bdelete\s+from\b/i,
+    // รูปแบบ token ของ SQL แทน: select ต้องตามด้วย "*" หรือรายชื่อคอลัมน์แบบ comma (>=2 คอลัมน์) หรือ aggregate
+    // function (count/sum/avg/min/max ตามด้วย "(") แล้วค่อย from+ชื่อตาราง,
+    // update ต้องตามด้วยชื่อตาราง (รองรับ identifier แบบ `backtick` และ "double-quote") แล้ว set แล้วมี "="
+    // (เพื่อแยกจาก "update the header text and set color")
+    // แก้ false negative จาก review รอบ 2: เพิ่มเคสคอลัมน์เดี่ยว (ไม่มี comma/*) ที่ตามด้วยชื่อตาราง +
+    // where/join/order by/group by/limit เช่น "select name from users where id = 1" เพราะมี clause ต่อท้ายที่
+    // บ่งชัดว่าเป็น SQL จริง ต่างจาก "select a color from the palette" ที่ column เป็นวลีหลายคำ (ไม่ใช่ token เดียว
+    // ติดกับ from) จึงไม่เข้า pattern นี้อยู่แล้ว — เคสก้ำกึ่ง "select the best one from the list and order by price"
+    // ก็ไม่จับด้วยเหตุผลเดียวกัน (คอลัมน์เป็นวลีหลายคำ) ตัดสินใจไม่จับเพื่อกันประโยคภาษาอังกฤษทั่วไปหลุดมาเป็น false positive
+    // ตัดสินใจ: "select a from b" (คอลัมน์เดี่ยว ไม่มี comma/*, ไม่มี clause ต่อท้าย) ยังก้ำกึ่งเกินกว่าจะแยกจาก
+    // ประโยคภาษาอังกฤษทั่วไปได้ จึงไม่จับ — ดูเทสต์ tests/risk.test.ts
+    en: /\b(sql|raw query)\b|\bselect\s+(?:\*|(?:count|sum|avg|min|max)\s*\([^)]*\)|[\w.]+(?:\s*,\s*[\w.]+)+)\s+from\s+[\w.]+|\bselect\s+[\w.]+\s+from\s+[\w.]+\s+(?:where|join|order\s+by|group\s+by|limit)\b|\binsert\s+into\b|\bupdate\s+(?:`[^`]+`|"[^"]+"|[\w.]+)\s+set\s+(?:`[^`]+`|"[^"]+"|[\w.]+)\s*=|\bdelete\s+from\b/i,
     th: [],
   },
   { category: 'upload', en: /\b(upload\w*|multipart)\b/i, th: ['อัปโหลด', 'อัพโหลด'] },

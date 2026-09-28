@@ -95,6 +95,23 @@ describe('riskFlags - แก้ false negative/positive จาก review', () =>
     expect(riskFlags('ลบข้อมูลลูกค้าทั้งหมด')).toEqual(['delete']);
   });
 
+  it('delete: round 2 nit — ต้องมี proximity ระหว่าง "ลบ" กับ "ทั้งหมด"/"ทุก" ไม่ใช่แค่ substring ที่ไหนก็ได้ในข้อความ', () => {
+    // "ทุก" อยู่ห่างจาก "ลบ" เกินระยะ (คนละบริบท: ลบปุ่ม vs แสดงทุกหน้า) ต้องไม่จับ แม้จะมีคำว่า "ผู้ใช้" อยู่ในข้อความด้วยก็ตาม
+    expect(riskFlags('เพิ่มปุ่มลบในหน้าผู้ใช้ ให้แสดงทุกหน้า')).toEqual([]);
+    // "ทุก" อยู่ก่อน "ลบ" (ไม่ใช่หลัง) ต้องไม่จับ
+    expect(riskFlags('แก้ปุ่มให้ทุกหน้าลบเงาออก')).toEqual([]);
+    // "ทุก" อยู่ใกล้ "ลบ" แต่ไม่มีคำที่หมายถึงข้อมูล (DATA_NOUNS_TH) ต้องไม่จับ
+    expect(riskFlags('ลบ console.log ทุกไฟล์')).toEqual([]);
+    expect(riskFlags('ลบ todo ได้ทุกรายการ')).toEqual([]);
+  });
+
+  it('delete: round 2 nit — "ทั้งหมด"/"ทุก" อยู่ใกล้ "ลบ" (หลัง) และมีคำข้อมูลด้วย ต้องยังจับเหมือนเดิม', () => {
+    expect(riskFlags('ปุ่มลบข้อมูลทั้งหมดของผู้ใช้')).toEqual(['delete']);
+    expect(riskFlags('ลบผู้ใช้ทั้งหมด')).toEqual(['delete']);
+    expect(riskFlags('ลบข้อมูลลูกค้าทั้งหมด')).toEqual(['delete']);
+    expect(riskFlags('ลบบัญชีทุกบัญชีที่ไม่ได้ใช้')).toEqual(['delete']);
+  });
+
   it('shell: false negatives ที่ต้องจับ', () => {
     expect(riskFlags('use os.system to run a command')).toEqual(['shell']);
     expect(riskFlags('subprocess.run(["ls"])')).toEqual(['shell']);
@@ -169,6 +186,37 @@ describe('riskFlags - sql: ต้องไม่ข้าม field/บรรท�
 
   it('เคสก้ำกึ่ง "select a from b" (คอลัมน์เดี่ยว ไม่มี comma/*): ตัดสินใจไม่จับ เพราะแยกจากประโยคภาษาอังกฤษทั่วไปไม่ได้', () => {
     expect(riskFlags('select a from b')).toEqual([]);
+  });
+});
+
+describe('riskFlags - sql: round 2 nits', () => {
+  it('aggregate function ตามด้วย ( เช่น COUNT(*) ต้องจับ', () => {
+    expect(riskFlags('SELECT COUNT(*) FROM orders')).toEqual(['sql']);
+    expect(riskFlags('select sum(total) from orders')).toEqual(['sql']);
+  });
+
+  it('คอลัมน์เดี่ยว แต่ตามด้วยชื่อตาราง + where/join/order by/group by/limit ต้องจับ', () => {
+    expect(riskFlags('select name from users where id = 1')).toEqual(['sql']);
+    expect(riskFlags('select id from orders join shipments')).toEqual(['sql']);
+    expect(riskFlags('select id from orders order by created_at')).toEqual(['sql']);
+    expect(riskFlags('select id from orders group by status')).toEqual(['sql']);
+    expect(riskFlags('select id from orders limit 10')).toEqual(['sql']);
+  });
+
+  it('UPDATE กับ identifier แบบ double-quote/backtick ต้องจับ', () => {
+    expect(riskFlags('UPDATE "users" SET name = 1')).toEqual(['sql']);
+    expect(riskFlags('UPDATE `users` SET name = 1')).toEqual(['sql']);
+  });
+
+  it('เทสต์เดิมต้องยังไม่จับ (ประโยคทั่วไป ไม่ใช่ SQL จริง)', () => {
+    expect(riskFlags('select a color from the palette')).toEqual([]);
+    expect(riskFlags('update the header text and set color')).toEqual([]);
+  });
+
+  it('เคสก้ำกึ่ง "select the best one from the list and order by price": ตัดสินใจไม่จับ ' +
+    'เพราะคอลัมน์เป็นวลีหลายคำ ("the best one") ไม่ใช่ชื่อคอลัมน์คำเดียวติดกับ from ' +
+    'เหมือนกับเหตุผลที่ไม่จับ "select a color from the palette" — ถ้าจับ จะ false positive กับประโยคภาษาอังกฤษทั่วไปที่มี order by ปนอยู่ได้ง่าย', () => {
+    expect(riskFlags('select the best one from the list and order by price')).toEqual([]);
   });
 });
 
