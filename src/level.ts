@@ -118,7 +118,6 @@ export async function acceptDesignLevel(
   turn: PmTurn,
   level: 'standard' | 'full',
   flags: readonly RiskCategory[] = [],
-  by?: 'pm' | 'user',
 ): Promise<void> {
   const { store, levelPreference } = deps;
   clearStaleQuickDesign(state);
@@ -129,7 +128,7 @@ export async function acceptDesignLevel(
   await store.saveArtifact('requirements.json', turn.requirements!);
   // turn.level ที่ไม่มีค่า (proposal เปล่า ๆ ไม่ได้ระบุระดับ) ถือว่า PM เสนอ full โดยปริยายเหมือนที่ show() ใช้ t.level ?? 'full'
   // ไม่งั้น full ที่มาจาก confirmAsFull ปกติ (ไม่ผ่าน decideLevel เลย, turn.level เป็น undefined เสมอ) จะถูกนับเป็น 'user' ผิด ๆ
-  const decidedBy = by ?? (levelPreference === level || (turn.level ?? 'full') === level ? 'pm' : 'user');
+  const decidedBy = levelPreference === level || (turn.level ?? 'full') === level ? 'pm' : 'user';
   logLevelDecided(deps, level, levelPreference === level ? 'user' : decidedBy, turn.levelReason, flags);
   await store.save(state);
 }
@@ -144,6 +143,9 @@ export async function decideLevel(
   state: State,
   first: PmTurn,
   userRisk: readonly RiskCategory[] = [],
+  // internal: true เมื่อ re-enter จาก decideLevel เอง (PM เปลี่ยนข้อเสนอเป็น standard กลางทาง) — turn นี้ถูก
+  // io.say(formatRequirements(...))/show()/warn() ไปแล้วตอน onTurn ของรอบก่อน ไม่ต้องพิมพ์ซ้ำ
+  alreadyShown = false,
 ): Promise<boolean> {
   const { io, store, config } = deps;
   let turn = first;
@@ -156,9 +158,9 @@ export async function decideLevel(
   };
   const computeFlags = (t: PmTurn): RiskCategory[] =>
     mergeRiskFlags(riskFlags(riskText(t.requirements!, t.quickTask)), userRisk);
-  show(turn);
+  if (!alreadyShown) show(turn);
   let flags = computeFlags(turn);
-  warn(flags);
+  if (!alreadyShown) warn(flags);
   let options = levelOptions(deps, turn, flags);
 
   // true เฉพาะเมื่อความเสี่ยงโผล่ขึ้นมาใหม่ระหว่างตัดสินใจ (onTurn ปรับ flags จากไม่เสี่ยง/หมวดอื่นเป็นเสี่ยง)
@@ -199,7 +201,7 @@ export async function decideLevel(
     if (offersStandard(deps, turn)) {
       // PM เปลี่ยนไปเสนอ standard แทน (เช่น --standard บังคับ) — ถามใหม่ด้วยตัวเลือกของ turn นั้นแทนที่จะรับ quick เงียบ ๆ
       io.say('PM เปลี่ยนข้อเสนอเป็น standard แล้ว');
-      return decideLevel(deps, state, turn, userRisk);
+      return decideLevel(deps, state, turn, userRisk, true);
     }
     // ไม่เสนอ standard ด้วย (เหลือแค่ full) — บอก user แล้วถามยืนยันแบบ full ตามปกติ
     io.say('PM เปลี่ยนข้อเสนอเป็น full แล้ว');

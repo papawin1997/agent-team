@@ -306,6 +306,24 @@ describe('runRequirements', () => {
     expect(events.find((e) => e.event === 'level.decided')?.data).toMatchObject({ level: 'full', by: 'pm' });
   });
 
+  it('PM เปลี่ยนข้อเสนอเป็น standard ระหว่างตัดสินใจ quick: ไม่รับ quick แบบเงียบ ๆ ถามใหม่ด้วยตัวเลือก standard ไม่พิมพ์ข้อความซ้ำ', async () => {
+    const events: { event: string; data?: Record<string, unknown> }[] = [];
+    const { deps, io } = makeDeps(
+      { pm: [quickProposal(), standardProposal()] },
+      ['แก้คำผิด', 'ทำไมถึงเสนอ quick', 'quick', 'standard'],
+    );
+    deps.log = { log: (_level, event, data) => events.push({ event, data }) };
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(io.said.join('\n')).toContain('PM เปลี่ยนข้อเสนอเป็น standard แล้ว');
+    expect(state.phase).toBe('DESIGN');
+    expect(state.level).toBe('standard');
+    expect(state.quickTask).toBeUndefined();
+    expect(events.find((e) => e.event === 'level.decided')?.data).toMatchObject({ level: 'standard', by: 'pm' });
+    expect(io.said.filter((s) => s.includes('ระดับที่ PM เสนอ: standard')).length).toBe(1);
+  });
+
   it('risk flags เปลี่ยนระหว่างตัดสินใจ quick (ยังเสนอ quick อยู่): เตือนใหม่และ log flags ล่าสุด', async () => {
     const events: { event: string; data?: Record<string, unknown> }[] = [];
     const risky = { ...makeRequirements(), goal: 'เพิ่มปุ่ม login' };
