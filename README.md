@@ -78,6 +78,27 @@ PM จะจัดระดับงานให้ตอนเสนอ require
 
 ทั้งสองแฟล็กจะถูกบอก PM ในข้อความแรกที่คุยกับ PM ของการรันครั้งนี้เสมอ แม้เป็นการทำต่องานค้างที่เคยคุยกับ PM มาก่อนแล้วก็ตาม
 
+## ใช้ผ่าน Claude Code (headless)
+
+ให้ Claude Code สั่ง agent-team แทนการเปิด terminal เอง Claude จะส่งทุกคำถามของทีมกลับมาให้คุณตอบในแชต
+
+ติดตั้ง skill ครั้งเดียว (copy ไปที่ `~/.claude/skills/agent-team/SKILL.md` รันซ้ำเพื่ออัปเดต):
+
+    agent-team install-skill
+
+แล้วบอก Claude Code เช่น "ให้ agent-team ทำหน้า login ในโปรเจกต์ C:/work/my/app"
+
+คำสั่งที่ skill ใช้ (เรียกเองก็ได้):
+
+- `agent-team run --headless --project <path> --request "..." [--quick|--full]` เริ่มงานใหม่ (ทำต่อ: `--resume` หรือ `--job <id>`) ไม่มีเมนูและไม่อ่าน stdin
+- `agent-team wait [--job <id>] [--since <seq>] [--timeout <วินาที>]` รอจนมีคำถาม/งานจบ (ค่าเริ่มต้น 540 วินาที) พิมพ์ JSON สถานะ
+- `agent-team status [--job <id>] [--since <seq>]` เหมือน wait แต่ตอบทันที
+- `agent-team answer [--job <id>] -- "<คำตอบ>"` ตอบคำถามที่รออยู่
+- `agent-team stop [--job <id>]` หยุดงาน (process ไม่หยุดใน 10 วินาทีจะถูก kill)
+
+ทุกคำสั่งรับ `--project <path>` (ไม่ใส่ = โฟลเดอร์ปัจจุบัน) ไฟล์สื่อสารอยู่ใน `.agent-team/jobs/<id>/` (`events.jsonl`, `question.json`, `answer.json`, `activity.json`, `exit.json`, `stop.json`)
+ถ้าไม่มีใครตอบคำถามเกิน `headlessIdleMinutes` (ค่าเริ่มต้น 120 นาที) งานจะหยุดแบบ resume ต่อได้ด้วย `--job <id>`
+
 ## flow การทำงาน
 ภาพรวมตั้งแต่พิมพ์คำสั่งจนส่งมอบงาน:
 
@@ -170,6 +191,7 @@ Security ถูกเรียกเฉพาะรอบที่ QA ผ่า�
 ปรับได้: model, maxTurns, maxBudgetUsd, skills ต่อ role (เครื่องมือและสิทธิ์แก้ในโค้ด `src/config.ts`)
 `security` override ได้เหมือน role อื่นทุกประการ (รวม model/maxTurns/maxBudgetUsd/skills)
 Security เพิ่มการเรียก Sonnet 1 ครั้งต่อ design (ตรวจครั้งเดียว) และ 1 ครั้งต่อรอบ build ที่ QA ผ่านแล้ว (ต่อ task)
+`headlessIdleMinutes` — เวลาที่รอการตอบคำถามเป็นนาที ก่อนจะยกเลิกงาน headless (ค่าเริ่มต้น 120, ต้องเป็นจำนวนเต็มบวก)
 
 ## Skills
 วาง skill ที่ `skills/skills/<ชื่อ>/SKILL.md` แล้วเปิดให้ role ผ่าน config ด้านบน (ชื่อ `team:<ชื่อ>`)
