@@ -69,8 +69,8 @@ const DATA = {
   ],
 } as unknown as ViewData;
 
-function load() {
-  const dom = createDom(embedJson(DATA));
+function load(data: ViewData = DATA) {
+  const dom = createDom(embedJson(data));
   dom.window.AgentTeamList = new Function(`${LIST_JS}\nreturn AgentTeamList;`)();
   // setTimeout ทำงานทันที (sync) เพื่อข้ามดีเลย์ 150ms ของช่องค้นหา
   new Function('window', 'document', 'fetch', 'setInterval', 'setTimeout', 'clearTimeout', PAGE_JS)(
@@ -328,6 +328,23 @@ describe('หน้า logs (DOM จำลอง)', () => {
 
     choose(d.document.getElementById('ev-size')!, '10');
     expect(region.textContent).toBe('หน้า 1/5 · แสดง 1–10 จาก 45');
+  });
+
+  it('run.level: แสดง "ระดับงาน" ใน summary พร้อมค่า "quick (แบบย่อ)" หรือ "full (แบบเต็ม)" หรือ "-"', () => {
+    const withLevel = { ...DATA, runs: [{ ...DATA.runs[0]!, level: 'quick' }, ...DATA.runs.slice(1)] } as unknown as ViewData;
+    const d = load(withLevel);
+    const stats = find(d.app, (n) => n.className === 'stat');
+    const levelStat = stats.find((s) => s.textContent?.includes('ระดับงาน'));
+    expect(levelStat).toBeDefined();
+    expect(levelStat!.textContent).toContain('quick (แบบย่อ)');
+
+    // fixture เดิมที่ไม่มี level ต้องแสดง "-"
+    const d2 = load();
+    const stats2 = find(d2.app, (n) => n.className === 'stat');
+    const levelStat2 = stats2.find((s) => s.textContent?.includes('ระดับงาน'));
+    expect(levelStat2).toBeDefined();
+    expect(levelStat2!.textContent).toContain('ระดับงาน');
+    expect(levelStat2!.textContent).toContain('-');
   });
 
   describe('live poll', () => {

@@ -64,6 +64,7 @@
  * @property {string} [jobId]
  * @property {'done'|'aborted'|'error'|'interrupted'|'unfinished'} status
  * @property {string} [errorMessage]
+ * @property {'quick'|'full'} [level]
  * @property {LogEvent[]} events
  * @property {AgentCall[]} calls
  * @property {number} totalCostUsd
@@ -473,6 +474,7 @@
     grid.appendChild(stat('ค่าใช้จ่ายรวม (คิดตามราคา API)', fmtCost(run.totalCostUsd)));
     grid.appendChild(stat('เรียก agent', run.calls.length + ' ครั้ง' + (failed ? ' (ไม่สำเร็จ ' + failed + ')' : '')));
     grid.appendChild(stat('งาน (jobId)', run.jobId || '-'));
+    grid.appendChild(stat('ระดับงาน', run.level === 'quick' ? 'quick (แบบย่อ)' : run.level === 'full' ? 'full (แบบเต็ม)' : '-'));
     sec.appendChild(grid);
     if (run.errorMessage) sec.appendChild(el('pre', 'bad', run.errorMessage));
     return sec;

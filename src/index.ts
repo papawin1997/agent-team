@@ -106,7 +106,7 @@ async function main(): Promise<void> {
     const job = await selectJob(repo, io, { resume: args.resume });
     jobId = job.id;
     logger.log('INFO', 'job.selected', { jobId, resume: args.resume });
-    const final = await runTeam({ runner, io, store: job.store, config, log: logger });
+    const final = await runTeam({ runner, io, store: job.store, config, log: logger, levelPreference: args.level });
     console.log(
       final.phase === 'DONE'
         ? '\nเสร็จสมบูรณ์'

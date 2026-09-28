@@ -1,6 +1,6 @@
 import type { TeamConfig } from './config';
 import type { Logger } from './logger';
-import type { Design, PmTurn, QAReport, Requirements, SecurityReport, Task, WorkerResult } from './schemas';
+import type { Design, Level, PmTurn, QAReport, Requirements, SecurityReport, Task, WorkerResult } from './schemas';
 import type { State } from './state';
 
 export interface PmInput {
@@ -61,4 +61,16 @@ export interface Deps {
   store: StateStore;
   config: TeamConfig;
   log?: Logger;
+  /** จาก --quick / --full: บอก PM ว่าผู้ใช้อยากได้ระดับไหน (full = ไม่เสนอ quick) */
+  levelPreference?: Level;
+}
+
+/**
+ * ถือ flag "บอก PM เรื่อง levelPreference ไปแล้วหรือยังในการรันนี้" เป็นตัวแปรของการรันแต่ละครั้ง
+ * (ไม่ใช่ field ใน Deps ซึ่งเป็นของที่ส่งเข้ามาจากข้างนอกและอาจถูกใช้ซ้ำข้ามการรัน เช่นในเทสต์หรือ headless runner)
+ * runTeam สร้างอันใหม่ทุกครั้งที่เรียก แล้วส่งเข้า runRequirements — กันไม่ให้บอกซ้ำทุกครั้งที่กลับเข้า
+ * REQUIREMENTS ในรอบรันเดียวกัน (เช่น ขอแก้ requirements หรือ change ตอน DELIVER)
+ */
+export interface LevelHintState {
+  sent: boolean;
 }

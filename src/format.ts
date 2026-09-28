@@ -1,5 +1,5 @@
 import type { JobInfo } from './jobs';
-import type { Design, Requirements } from './schemas';
+import type { Design, QuickTask, Requirements } from './schemas';
 import type { Phase, State } from './state';
 
 const list = (items: string[]): string =>
@@ -42,6 +42,17 @@ export function formatDesign(d: Design): string {
   ].join('\n');
 }
 
+export function formatQuickTask(task: QuickTask): string {
+  return [
+    '--- งานแบบ quick (1 task) ---',
+    `ชื่องาน: ${task.title}`,
+    `ผู้ทำ: ${task.owner}`,
+    `รายละเอียด: ${task.description}`,
+    'เกณฑ์ตรวจรับ:',
+    ...task.acceptanceCriteria.map((c) => `  - ${c}`),
+  ].join('\n');
+}
+
 const PHASE_LABELS: Record<Phase, string> = {
   REQUIREMENTS: 'คุย requirements กับ PM',
   DESIGN: 'ออกแบบ',
@@ -81,9 +92,10 @@ export function formatJobSummary(job: JobInfo, n: number, warning?: string): str
   const lock = job.lock
     ? ` (กำลังรันอยู่ pid ${job.lock.pid} ตั้งแต่ ${hhmm(new Date(job.lock.startedAt))})`
     : '';
+  const quickTag = state.level === 'quick' ? ' · quick' : '';
   const line =
     `  ${n}) "${jobTitle(state)}" — เฟส ${state.phase} (${PHASE_LABELS[state.phase]})` +
-    `${progress ? `, ${progress}` : ''} · รันล่าสุด ${localDateTime(job.updatedAt)}${lock}`;
+    `${progress ? `, ${progress}` : ''}${quickTag} · รันล่าสุด ${localDateTime(job.updatedAt)}${lock}`;
   return warning ? `${line}\n     ${warning}` : line;
 }
 

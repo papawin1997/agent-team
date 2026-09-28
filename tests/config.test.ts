@@ -127,3 +127,12 @@ describe('loadConfig', () => {
     expect(loadConfig(file).roles.qa.maxTurns).toBe(10);
   });
 });
+
+describe('quickMaxQaRounds', () => {
+  it('ค่าเริ่มต้น 2, override ได้, ต้องเป็นจำนวนเต็มบวก', () => {
+    expect(DEFAULT_CONFIG.quickMaxQaRounds).toBe(2);
+    expect(mergeConfig(DEFAULT_CONFIG, {}).quickMaxQaRounds).toBe(2);
+    expect(mergeConfig(DEFAULT_CONFIG, { quickMaxQaRounds: 3 }).quickMaxQaRounds).toBe(3);
+    expect(() => mergeConfig(DEFAULT_CONFIG, { quickMaxQaRounds: 0 })).toThrow();
+  });
+});

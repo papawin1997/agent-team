@@ -41,6 +41,8 @@ export interface Run {
   jobId?: string;
   status: RunStatus;
   errorMessage?: string;
+  /** ระดับงานล่าสุดที่ตัดสินในรอบนี้ (event level.decided) */
+  level?: 'quick' | 'full';
   events: LogEvent[];
   calls: AgentCall[];
   totalCostUsd: number;
@@ -170,5 +172,17 @@ function apply(run: Run, ev: LogEvent, open: Map<string, AgentCall>): void {
     case 'run.interrupted':
       run.status = 'interrupted';
       break;
+    case 'team.start': {
+      // fallback ตอนงานค้างถูก resume: รอบรันนี้อาจไม่มี level.decided เลย (ตัดสินใจไปแล้วในรอบก่อนหน้า)
+      // level.decided ที่มาทีหลัง (ถ้ามี) จะเขียนทับค่านี้อีกที เพราะเป็นค่าล่าสุดจริง ๆ ของรอบรันนี้
+      const level = str(d.level);
+      if (level === 'quick' || level === 'full') run.level = level;
+      break;
+    }
+    case 'level.decided': {
+      const level = str(d.level);
+      if (level === 'quick' || level === 'full') run.level = level;
+      break;
+    }
   }
 }

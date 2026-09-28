@@ -1,0 +1,214 @@
+import type { Deps } from './deps';
+import { initProgress, quickDesign, QUICK_TASK_ID } from './domain';
+import { formatQuickTask, formatRequirements } from './format';
+import { decide } from './io-util';
+import { nullLogger } from './logger';
+import { mergeRiskFlags, riskFlags, riskText, type RiskCategory } from './risk';
+import type { Level, PmTurn, Task } from './schemas';
+import type { State, TaskProgress } from './state';
+
+/**
+ * โมดูลรวม logic ตัดสิน/เปลี่ยนระดับงาน (quick/full) ที่แต่เดิมกระจายอยู่ใน phases/requirements.ts และ
+ * phases/build.ts (ดู nit สุดท้ายใน docs/check/2026-09-27-quick-mode-tb-scrutinize.html) — ย้ายมารวมที่นี่
+ * ก่อนเริ่มโปรเจกต์ย่อย D (ระดับ standard + ยกระดับอัตโนมัติ) เป็น pure move ไม่เปลี่ยนพฤติกรรม
+ */
+
+const LEVEL_PROMPT = 'ทำแบบไหน? (quick = ทำเลยแบบย่อ 1 task, full = ออกแบบก่อนแบบเต็ม, revise = แก้ requirements)';
+
+/** บันทึก log เดียวกันทุกจุดที่ตัดสินระดับงาน (quick/full) — ใช้ร่วมกันระหว่าง requirements.ts และ build.ts */
+export function logLevelDecided(
+  deps: Deps,
+  level: Level,
+  by: 'pm' | 'user',
+  reason: string | undefined,
+  flags: readonly RiskCategory[],
+): void {
+  (deps.log ?? nullLogger).log('INFO', 'level.decided', { level, by, reason, riskFlags: flags });
+}
+
+export function offersQuick(deps: Deps, turn: PmTurn): boolean {
+  return deps.levelPreference !== 'full' && turn.level === 'quick' && turn.quickTask !== undefined;
+}
+
+/**
+ * คืนค่า design/progress ของงาน full เดิม (ก่อนถูก triage เป็น quick) ถ้าเคยเก็บไว้ใน baseDesign/baseProgress
+ * แล้วล้าง base ทิ้ง — ใช้ตอนงาน quick ถูกยกระดับกลับเป็น full (PM เสนอ full ใหม่ หรือ escalate ตอน BUILD)
+ * ถ้าไม่เคยมี baseDesign (เช่น เริ่มจาก quick มาแต่แรก) พฤติกรรมเดิมคือล้าง design/progress ให้ Planning เริ่มใหม่
+ */
+export function restoreBaseDesign(state: State): void {
+  if (state.baseDesign) {
+    state.design = state.baseDesign;
+    state.progress = state.baseProgress ?? {};
+  } else {
+    state.design = undefined;
+    state.progress = {};
+  }
+  delete state.baseDesign;
+  delete state.baseProgress;
+}
+
+/**
+ * ล้าง design สังเคราะห์ของโหมด quick (ถ้ามี) ก่อนตัดสินว่างานนี้เป็น full
+ * เพื่อให้ Planning เริ่มออกแบบใหม่จริง ๆ ไม่เห็น design 1 task ของโหมด quick เป็น previousDesign
+ * แต่ถ้าเคยเก็บ design จริงของงาน full เดิมไว้ใน baseDesign (ก่อนถูก triage เป็น quick) ให้คืนค่านั้นกลับมาแทน
+ * ที่จะล้างทิ้งเฉย ๆ — Planning จะได้เห็นเป็น previousDesign และคง task id เดิมไว้ ไม่เสีย design เดิมที่ทำไปแล้ว
+ */
+function clearStaleQuickDesign(state: State): void {
+  const hadQuickDesign =
+    state.level === 'quick' ||
+    (state.design !== undefined && state.design.tasks.length === 1 && state.design.tasks[0]?.id === QUICK_TASK_ID);
+  if (hadQuickDesign) restoreBaseDesign(state);
+}
+
+/** ยอมรับ turn นี้เป็นงาน full: confirm = ไป DESIGN, revise = คุยต่อ (false ให้ผู้เรียกไปถาม "อยากปรับอะไร?") */
+export async function confirmAsFull(
+  deps: Deps,
+  state: State,
+  turn: PmTurn,
+  flags: readonly RiskCategory[] = [],
+): Promise<boolean> {
+  const { io } = deps;
+  let current = turn;
+  const decision = await decide(deps, state, 'ยืนยัน requirements นี้ไหม?', ['confirm', 'revise'] as const, (newTurn) => {
+    if (newTurn.status === 'proposal' && newTurn.requirements) {
+      current = newTurn;
+      io.say(formatRequirements(newTurn.requirements));
+    }
+  });
+  if (decision !== 'confirm') return false;
+  await acceptFull(deps, state, current, flags);
+  return true;
+}
+
+export async function acceptFull(
+  deps: Deps,
+  state: State,
+  turn: PmTurn,
+  flags: readonly RiskCategory[] = [],
+): Promise<void> {
+  const { store, levelPreference } = deps;
+  clearStaleQuickDesign(state);
+  state.requirements = turn.requirements!;
+  state.level = 'full';
+  state.quickTask = undefined;
+  state.phase = 'DESIGN';
+  await store.saveArtifact('requirements.json', turn.requirements!);
+  logLevelDecided(deps, 'full', levelPreference === 'full' ? 'user' : 'pm', turn.levelReason, flags);
+  await store.save(state);
+}
+
+/** PM เสนอ quick: ให้ user เลือก quick/full/revise — true = ตัดสินแล้ว (ไป BUILD หรือ DESIGN), false = revise */
+export async function decideLevel(
+  deps: Deps,
+  state: State,
+  first: PmTurn,
+  userRisk: readonly RiskCategory[] = [],
+): Promise<boolean> {
+  const { io, store, config } = deps;
+  let turn = first;
+  const show = (t: PmTurn): void => {
+    if (t.quickTask) io.say(formatQuickTask(t.quickTask));
+    if (t.levelReason) io.say(`ระดับที่ PM เสนอ: ${t.level ?? 'full'} — ${t.levelReason}`);
+  };
+  const warn = (f: readonly RiskCategory[]): void => {
+    if (f.length) io.say(`⚠ งานนี้แตะเรื่อง ${f.join(', ')} — แนะนำ full (มีขั้นออกแบบและตรวจ Security)`);
+  };
+  const computeFlags = (t: PmTurn): RiskCategory[] =>
+    mergeRiskFlags(riskFlags(riskText(t.requirements!, t.quickTask)), userRisk);
+  show(turn);
+  let flags = computeFlags(turn);
+  warn(flags);
+  const options: readonly ('quick' | 'full' | 'revise')[] = flags.length
+    ? ['full', 'quick', 'revise']
+    : ['quick', 'full', 'revise'];
+
+  // true เฉพาะเมื่อความเสี่ยงโผล่ขึ้นมาใหม่ระหว่างตัดสินใจ (onTurn ปรับ flags จากไม่เสี่ยง/หมวดอื่นเป็นเสี่ยง)
+  // ไม่ใช่กรณีที่ turn แรกเสี่ยงอยู่แล้วตั้งแต่ต้น (ตัวเลือกถูกเรียง full ก่อนให้ user เห็นแต่แรกแล้ว ไม่ต้องถามซ้ำ)
+  // ถ้า proposal รอบหลังกลับไม่เสี่ยงแล้ว (newFlags ว่าง) reset กลับเป็น false — ไม่ต้องถามซ้ำเพราะความเสี่ยงหายไปแล้วจริง ๆ
+  let riskAppearedMidDecision = false;
+  const onTurn = (newTurn: PmTurn): void => {
+    if (newTurn.status !== 'proposal' || !newTurn.requirements) return;
+    turn = newTurn;
+    io.say(formatRequirements(newTurn.requirements));
+    show(newTurn);
+    const newFlags = computeFlags(newTurn);
+    const changed = newFlags.length !== flags.length || newFlags.some((f, i) => f !== flags[i]);
+    if (offersQuick(deps, newTurn) && changed) warn(newFlags);
+    if (newFlags.length === 0) {
+      riskAppearedMidDecision = false;
+    } else if (changed) {
+      riskAppearedMidDecision = true;
+    }
+    flags = newFlags;
+  };
+
+  let decision = await decide(deps, state, LEVEL_PROMPT, options, onTurn);
+  if (decision === 'revise') return false;
+
+  if (decision === 'quick' && offersQuick(deps, turn) && riskAppearedMidDecision) {
+    // user เลือก quick จากตัวเลือกที่เห็นก่อนความเสี่ยงจะโผล่มา (options ยังไม่ได้เรียง full ก่อน): ห้ามรับทันที
+    // เตือนอีกครั้งแล้วถามซ้ำด้วยตัวเลือกที่เรียง full ก่อน ยึดคำตอบรอบสองเป็นที่สุด (ไม่ถามวนซ้ำไม่รู้จบ)
+    warn(flags);
+    decision = await decide(deps, state, LEVEL_PROMPT, ['full', 'quick', 'revise'] as const, onTurn);
+    if (decision === 'revise') return false;
+  }
+
+  if (decision === 'quick' && !offersQuick(deps, turn)) {
+    // PM เปลี่ยนข้อเสนอระหว่างที่ user กำลังตัดสินใจ (ไม่เสนอ quick แล้ว): quick ที่เลือกไว้ใช้ไม่ได้กับ turn ล่าสุด
+    // ห้ามยอมรับ quick แบบเงียบ ๆ — บอก user แล้วถามยืนยันแบบ full ตามปกติ
+    io.say('PM เปลี่ยนข้อเสนอเป็น full แล้ว');
+    return confirmAsFull(deps, state, turn, flags);
+  }
+
+  const requirements = turn.requirements!;
+  state.requirements = requirements;
+  await store.saveArtifact('requirements.json', requirements);
+  if (decision === 'quick' && turn.quickTask) {
+    // งานนี้เคยมี design จริง (ไม่ใช่ design สังเคราะห์ของ quick เอง) มาก่อน แล้วเพิ่งถูก triage เป็น quick รอบนี้:
+    // เก็บ design/progress เดิมไว้ใน baseDesign/baseProgress ก่อนสร้าง design สังเคราะห์ทับ จะได้ไม่เสีย design เดิม
+    // (ไม่เขียนทับ baseDesign ที่เก็บไว้แล้วจากรอบก่อน — ให้ full ดั้งเดิมสุดชนะเสมอ)
+    const hadRealDesign =
+      state.design !== undefined &&
+      state.level !== 'quick' &&
+      !(state.design.tasks.length === 1 && state.design.tasks[0]?.id === QUICK_TASK_ID);
+    if (hadRealDesign && state.baseDesign === undefined) {
+      state.baseDesign = state.design;
+      state.baseProgress = state.progress;
+    }
+    const design = quickDesign(requirements, turn.quickTask, state.baseDesign);
+    state.level = 'quick';
+    state.quickTask = turn.quickTask;
+    state.design = design;
+    state.progress = initProgress(design, state.progress, config.quickMaxQaRounds);
+    state.phase = 'BUILD';
+    delete state.designFeedback;
+    await store.saveArtifact('design.json', design);
+  } else {
+    clearStaleQuickDesign(state);
+    state.level = 'full';
+    state.quickTask = undefined;
+    state.phase = 'DESIGN';
+  }
+  logLevelDecided(deps, state.level, turn.level === state.level ? 'pm' : 'user', turn.levelReason, flags);
+  await store.save(state);
+  return true;
+}
+
+/**
+ * ยกระดับงาน quick กลับเป็น full ตอน escalate ระหว่าง BUILD (QA ไม่ผ่านครบรอบ แล้ว user เลือก full)
+ * คืน design/progress ของงาน full เดิมถ้าเคยเก็บไว้ใน baseDesign (ก่อนถูก triage เป็น quick) แทนการล้างทิ้ง
+ * เฉย ๆ — ไม่มี baseDesign (เริ่มจาก quick มาแต่แรก) ยังล้างเหมือนเดิมเพื่อไม่ให้ Planning เห็น design
+ * สังเคราะห์ของ quick เป็น previousDesign โค้ดที่ worker ทำไปแล้วยังอยู่ในโปรเจกต์ ไม่ได้ถูกลบ แค่บอก
+ * Planning ผ่าน designFeedback แทนให้ออกแบบใหม่ตามสมควร
+ */
+export function escalateToFull(deps: Deps, state: State, task: Task, progress: TaskProgress): void {
+  state.level = 'full';
+  state.quickTask = undefined;
+  state.phase = 'DESIGN';
+  restoreBaseDesign(state);
+  state.designFeedback =
+    `ลองทำแบบ quick (task "${task.title}") แล้วไม่ผ่าน QA ครบ ${progress.rounds} รอบ ` +
+    `ปัญหาที่ค้าง: ${JSON.stringify(progress.lastReport?.issues ?? [])} — ` +
+    'โค้ดที่ worker ทำไปแล้วยังอยู่ในโปรเจกต์ ให้ออกแบบใหม่โดยใช้หรือแก้โค้ดนั้นตามสมควร';
+  logLevelDecided(deps, 'full', 'user', `QA ไม่ผ่านครบ ${progress.rounds} รอบในโหมด quick`, []);
+}

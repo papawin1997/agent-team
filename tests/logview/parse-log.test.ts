@@ -195,4 +195,29 @@ describe('parseLog', () => {
     const [r] = parseLog(log);
     expect(r!.calls[0]).toMatchObject({ sessionId: 's-resume', status: 'unfinished', resumed: true });
   });
+
+  it('level.decided -> run.level ใช้ค่าล่าสุดในรอบ', () => {
+    const r = parseLog(
+      `${T} INFO  run.start {}\n${T} INFO  level.decided {"level":"quick","by":"pm","riskFlags":[]}\n${T} INFO  level.decided {"level":"full","by":"user","riskFlags":[]}`,
+    );
+    expect(r[0]!.level).toBe('full');
+    expect(parseLog(`${T} INFO  run.start {}`)[0]!.level).toBeUndefined();
+  });
+
+  it('team.start มี level -> ใช้เป็น fallback ตอน resume ที่รอบนี้ไม่มี level.decided เลย', () => {
+    const r = parseLog(`${T} INFO  run.start {}\n${T} INFO  team.start {"phase":"BUILD","level":"quick"}`);
+    expect(r[0]!.level).toBe('quick');
+  });
+
+  it('team.start มี level แต่รอบนี้มี level.decided ตามมา -> level.decided ชนะ (ค่าล่าสุดจริง ๆ ของรอบนี้)', () => {
+    const r = parseLog(
+      `${T} INFO  run.start {}\n${T} INFO  team.start {"phase":"BUILD","level":"quick"}\n${T} INFO  level.decided {"level":"full","by":"user","riskFlags":[]}`,
+    );
+    expect(r[0]!.level).toBe('full');
+  });
+
+  it('team.start ไม่มี level (level: undefined จาก state ใหม่) -> ไม่ตั้ง run.level', () => {
+    const r = parseLog(`${T} INFO  run.start {}\n${T} INFO  team.start {"phase":"REQUIREMENTS"}`);
+    expect(r[0]!.level).toBeUndefined();
+  });
 });

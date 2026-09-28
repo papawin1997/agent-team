@@ -1,13 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import type { WorkInput } from '../../src/deps';
+import type { PlanInput, WorkInput } from '../../src/deps';
 import { RoleOutputError, RoleRunError } from '../../src/errors';
+import { initProgress, quickDesign } from '../../src/domain';
 import { runBuild } from '../../src/phases/build';
+import { runDesign } from '../../src/phases/design';
 import {
   asking,
   buildState,
   failReport,
   failSecurityReport,
   makeDesign,
+  makeQuickTask,
+  makeRequirements,
   makeTask,
   passReport,
   passSecurityReport,
@@ -324,6 +328,116 @@ describe('runBuild', () => {
       level: 'WARN',
       data: { taskId: 'api', round: 1, reason: 'error_max_turns' },
     });
+  });
+
+  it('งาน quick: ไม่เรียก Security และ securityReviewed = false', async () => {
+    const design = quickDesign(makeRequirements(), makeQuickTask());
+    const state = buildState(design);
+    state.level = 'quick';
+    state.progress = initProgress(design, {}, 2);
+    const { deps, runner } = makeDeps({ qa: [passReport('quick')] }, []);
+    await runBuild(deps, state);
+
+    expect(runner.calls.map((c) => c.role)).toEqual(['frontend', 'qa']);
+    expect(state.progress.quick).toMatchObject({ done: true, securityReviewed: false });
+    expect(state.phase).toBe('DELIVER');
+  });
+
+  it('งาน quick ไม่ผ่านครบรอบ: เลือก full -> ยกระดับไป DESIGN และ log, ล้าง design/progress พร้อม feedback ให้ Planning', async () => {
+    const events: { event: string; data?: Record<string, unknown> }[] = [];
+    const design = quickDesign(makeRequirements(), makeQuickTask());
+    const state = buildState(design);
+    state.level = 'quick';
+    state.quickTask = makeQuickTask();
+    state.progress = initProgress(design, {}, 2);
+    const { deps, io } = makeDeps(
+      { qa: [failReport('quick'), failReport('quick')], pm: [asking('ค้างเรื่อง X')] },
+      ['full'],
+    );
+    deps.log = { log: (_level, event, data) => events.push({ event, data }) };
+    await runBuild(deps, state);
+
+    expect(state.phase).toBe('DESIGN');
+    expect(state.level).toBe('full');
+    expect(state.quickTask).toBeUndefined();
+    expect(state.design).toBeUndefined();
+    expect(state.progress).toEqual({});
+    expect(state.designFeedback).toContain(`ลองทำแบบ quick (task "${makeQuickTask().title}")`);
+    expect(state.designFeedback).toContain('ผิด');
+    expect(io.asked.at(-1)).toContain('full = ยกระดับเป็นแบบเต็ม');
+    expect(events.find((e) => e.event === 'escalate.decision')?.data).toMatchObject({ decision: 'full' });
+    expect(events.find((e) => e.event === 'level.decided')?.data).toMatchObject({ level: 'full', by: 'user' });
+
+    // ต่อ: ไป DESIGN แล้ว Planning ต้องไม่เห็น design สังเคราะห์เดิมเป็น previousDesign แต่เห็น feedback ที่บอกปัญหาที่ค้าง
+    const { deps: designDeps, runner: designRunner } = makeDeps({ plans: [makeDesign()] }, []);
+    await runDesign(designDeps, state);
+
+    const planInput = designRunner.calls[0]!.input as PlanInput;
+    expect(planInput.previousDesign).toBeUndefined();
+    expect(planInput.feedback).toContain('ลองทำแบบ quick');
+  });
+
+  it('งาน quick มี baseDesign (เคยเป็น full มาก่อน) ไม่ผ่านครบรอบ เลือก full: คืน design/progress จาก base แทนล้างทิ้ง', async () => {
+    const fullDesign = makeDesign(); // tasks [api(backend), ui(frontend, depends on api)]
+    const baseProgress = initProgress(fullDesign, {}, 5);
+    baseProgress.api = { ...baseProgress.api!, done: true };
+    baseProgress.ui = { ...baseProgress.ui!, done: true };
+    const quickTask = makeQuickTask();
+    const quickDsn = quickDesign(makeRequirements(), quickTask, fullDesign);
+    const state = buildState(quickDsn);
+    state.level = 'quick';
+    state.quickTask = quickTask;
+    state.progress = initProgress(quickDsn, {}, 2);
+    state.baseDesign = fullDesign;
+    state.baseProgress = baseProgress;
+    const { deps, io } = makeDeps(
+      { qa: [failReport('quick'), failReport('quick')], pm: [asking('ค้างเรื่อง X')] },
+      ['full'],
+    );
+    await runBuild(deps, state);
+
+    expect(state.phase).toBe('DESIGN');
+    expect(state.level).toBe('full');
+    expect(state.design).toEqual(fullDesign);
+    expect(state.progress).toEqual(baseProgress);
+    expect(state.baseDesign).toBeUndefined();
+    expect(state.baseProgress).toBeUndefined();
+    expect(state.designFeedback).toContain('ลองทำแบบ quick');
+    expect(io.asked.at(-1)).toContain('full = ยกระดับเป็นแบบเต็ม');
+
+    // ต่อ: Planning ต้องเห็น design เดิม [api, ui] เป็น previousDesign ไม่ใช่ design สังเคราะห์ของ quick
+    const { deps: designDeps, runner: designRunner } = makeDeps({ plans: [makeDesign()] }, []);
+    await runDesign(designDeps, state);
+
+    const planInput = designRunner.calls[0]!.input as PlanInput;
+    expect(planInput.previousDesign?.tasks.map((t) => t.id)).toEqual(['api', 'ui']);
+  });
+
+  it('งาน quick: continue ที่ escalate เพิ่มรอบตาม quickMaxQaRounds ไม่ใช่ extraRoundsOnContinue', async () => {
+    const design = quickDesign(makeRequirements(), makeQuickTask());
+    const state = buildState(design);
+    state.level = 'quick';
+    state.progress = initProgress(design, {}, 2);
+    const { deps, io } = makeDeps(
+      { qa: [failReport('quick'), failReport('quick'), passReport('quick')], pm: [asking('ค้าง')] },
+      ['continue'],
+    );
+    deps.config = { ...deps.config, extraRoundsOnContinue: 5, quickMaxQaRounds: 3 };
+    await runBuild(deps, state);
+
+    expect(io.asked.at(-1)).toContain('ทำต่ออีก 3 รอบ');
+    expect(state.progress.quick?.maxRounds).toBe(5);
+    expect(state.progress.quick?.done).toBe(true);
+    expect(state.phase).toBe('DELIVER');
+  });
+
+  it('งาน full: ตัวเลือก escalate ไม่มี full', async () => {
+    const state = buildState();
+    state.progress = initProgress(state.design!, {}, 1);
+    const { deps, io } = makeDeps({ qa: [failReport('api')], pm: [asking('ค้าง')] }, ['abort']);
+    await runBuild(deps, state);
+    expect(io.asked.at(-1)).not.toContain('full =');
+    expect(state.phase).toBe('ABORTED');
   });
 });
 

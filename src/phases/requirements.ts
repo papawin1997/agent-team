@@ -1,15 +1,36 @@
-import type { Deps } from '../deps';
-import { askNonEmpty, decide } from '../io-util';
+import type { Deps, LevelHintState } from '../deps';
 import { formatRequirements } from '../format';
+import { askNonEmpty } from '../io-util';
+import { confirmAsFull, decideLevel, offersQuick } from '../level';
+import { mergeRiskFlags, riskFlags, type RiskCategory } from '../risk';
+import type { Level } from '../schemas';
 import type { State } from '../state';
 
-export async function runRequirements(deps: Deps, state: State): Promise<void> {
+const LEVEL_HINT: Record<Level, string> = {
+  quick: '[ผู้ใช้ขอโหมด quick ถ้างานเข้าเกณฑ์]',
+  full: '[ผู้ใช้สั่ง --full: ต้องเป็น full เท่านั้น]',
+};
+
+export async function runRequirements(
+  deps: Deps,
+  state: State,
+  levelHint: LevelHintState = { sent: false },
+): Promise<void> {
   const { io, runner, store } = deps;
+
+  // ความเสี่ยงจากข้อความที่ user พิมพ์เอง (ไม่ใช่แค่ requirements/quickTask ที่ PM สรุป) สะสมตลอด loop นี้
+  // เพื่อกันงานเสี่ยงที่ PM สรุปออกมาดูไม่เสี่ยง (เช่น requirements ยังไม่ครบ) แต่ user พิมพ์คำเสี่ยงไว้ตรง ๆ
+  let userRisk: readonly RiskCategory[] = [];
+  const noteUserText = (text: string): void => {
+    userRisk = mergeRiskFlags(userRisk, riskFlags(text));
+  };
 
   const opening = state.pmSessionId
     ? 'พิมพ์ข้อความถึง PM เพื่อคุยต่อ\n> '
     : 'คุณอยากได้ระบบอะไร? เล่า requirement ให้ PM ฟังได้เลย\n> ';
-  let prompt = state.pendingPrompt ?? (await askNonEmpty(io, opening));
+  const rawPrompt = state.pendingPrompt ?? (await askNonEmpty(io, opening));
+  noteUserText(rawPrompt);
+  let prompt = rawPrompt;
   if (!state.title && !state.pmSessionId) {
     // save ก่อนเรียก PM: ถ้า Ctrl+C ระหว่าง PM ตอบ งานก็ยังมีชื่อ ไม่กลายเป็นงานเปล่า
     state.title = Array.from(prompt).slice(0, 60).join('');
@@ -17,6 +38,11 @@ export async function runRequirements(deps: Deps, state: State): Promise<void> {
   }
   if (state.requirements) {
     prompt = `requirements ปัจจุบัน:\n${JSON.stringify(state.requirements)}\n\nคำขอแก้ไขจาก user: ${prompt}`;
+  }
+  // บอก PM เรื่อง --quick/--full ในข้อความแรกที่คุยกับ PM ของการรันนี้เสมอ (ไม่ว่าจะเป็นงานใหม่หรืองานค้างที่คุยกับ PM มาก่อนแล้ว)
+  if (deps.levelPreference && !levelHint.sent) {
+    prompt = `${LEVEL_HINT[deps.levelPreference]}\n${prompt}`;
+    levelHint.sent = true;
   }
   state.pendingPrompt = undefined;
 
@@ -31,32 +57,34 @@ export async function runRequirements(deps: Deps, state: State): Promise<void> {
           'กด Enter เพื่อส่งข้อความเดิมอีกครั้ง หรือพิมพ์ข้อความใหม่\n',
       );
       const retry = (await io.ask('> ')).trim();
-      if (retry !== '') prompt = retry;
+      if (retry !== '') {
+        noteUserText(retry);
+        prompt = retry;
+      }
       continue;
     }
-    let { turn } = response;
+    const { turn } = response;
     state.pmSessionId = response.sessionId;
     await store.save(state);
     io.say(`\n[PM] ${turn.message}\n`);
 
     if (turn.status === 'proposal' && turn.requirements) {
       io.say(formatRequirements(turn.requirements));
-      const decision = await decide(deps, state, 'ยืนยัน requirements นี้ไหม?', ['confirm', 'revise'] as const, (newTurn) => {
-        if (newTurn.status === 'proposal' && newTurn.requirements) {
-          turn = newTurn;
-          io.say(formatRequirements(newTurn.requirements));
-        }
-      });
-      if (decision === 'confirm') {
-        state.requirements = turn.requirements!;
-        state.phase = 'DESIGN';
-        await store.saveArtifact('requirements.json', turn.requirements!);
-        await store.save(state);
-        return;
+      if (offersQuick(deps, turn)) {
+        if (await decideLevel(deps, state, turn, userRisk)) return;
+        const revise = await askNonEmpty(io, 'อยากปรับอะไร?\n> ');
+        noteUserText(revise);
+        prompt = revise;
+        continue;
       }
-      prompt = await askNonEmpty(io, 'อยากปรับอะไร?\n> ');
+      if (await confirmAsFull(deps, state, turn)) return;
+      const revise = await askNonEmpty(io, 'อยากปรับอะไร?\n> ');
+      noteUserText(revise);
+      prompt = revise;
       continue;
     }
-    prompt = await askNonEmpty(io, '> ');
+    const next = await askNonEmpty(io, '> ');
+    noteUserText(next);
+    prompt = next;
   }
 }

@@ -67,4 +67,12 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['--live'])).toThrow('--live');
     expect(() => parseArgs(['logs', '-r'])).toThrow('--resume');
   });
+
+  it('--quick / --full', () => {
+    expect(parseArgs(['a', '--quick']).level).toBe('quick');
+    expect(parseArgs(['--full']).level).toBe('full');
+    expect(parseArgs([]).level).toBeUndefined();
+    expect(() => parseArgs(['--quick', '--full'])).toThrow('พร้อมกันไม่ได้');
+    expect(() => parseArgs(['logs', '--quick'])).toThrow('logs');
+  });
 });

@@ -1,4 +1,4 @@
-import type { Design, QAReport, SecurityReport, Task } from './schemas';
+import type { Design, QAReport, QuickTask, Requirements, SecurityReport, Task } from './schemas';
 import type { TaskProgress } from './state';
 
 export class DesignError extends Error {
@@ -45,6 +45,34 @@ export function isPass(report: QAReport): boolean {
 
 export function isSecurityPass(report: SecurityReport): boolean {
   return report.verdict === 'PASS' && report.issues.every((i) => i.severity === 'minor');
+}
+
+export const QUICK_TASK_ID = 'quick';
+
+/**
+ * design สังเคราะห์ของโหมด quick: 1 task ไม่มีขั้นออกแบบ ให้ worker ทำตาม convention เดิมของโปรเจกต์
+ * ถ้ามี base (design จริงของงาน full เดิมที่เพิ่งถูก triage เป็น quick) ให้ worker/QA ยังเห็น
+ * architecture/apiContract/dataModel/securityNotes ของ base แทนข้อความ n/a เดิม
+ */
+export function quickDesign(requirements: Requirements, task: QuickTask, base?: Design): Design {
+  return {
+    overview: base?.overview ?? requirements.goal,
+    architecture: base?.architecture ?? 'quick mode: ไม่มีขั้นออกแบบ ทำตาม task และ convention เดิมของโปรเจกต์',
+    apiContract: base?.apiContract ?? 'n/a',
+    dataModel: base?.dataModel ?? 'n/a',
+    securityNotes: base?.securityNotes,
+    tasks: [
+      {
+        id: QUICK_TASK_ID,
+        title: task.title,
+        owner: task.owner,
+        dependsOn: [],
+        description: task.description,
+        acceptanceCriteria: task.acceptanceCriteria,
+        changed: true,
+      },
+    ],
+  };
 }
 
 export function initProgress(

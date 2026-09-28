@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { codeChangedWarning, formatDesign, formatJobSummary, formatRequirements, jobTitle } from '../src/format';
+import { codeChangedWarning, formatDesign, formatJobSummary, formatQuickTask, formatRequirements, jobTitle } from '../src/format';
 import type { JobInfo } from '../src/jobs';
 import { newState, type State } from '../src/state';
 import { buildState, makeDesign, makeRequirements } from './helpers/builders';
@@ -115,6 +115,17 @@ describe('formatJobSummary', () => {
     expect(formatJobSummary(jobOf('a', s), 1)).toContain('เฟส REVIEW (รอยืนยัน design), เสร็จ 0/2 task · รันล่าสุด');
   });
 
+  it('งาน quick: ต่อท้าย · quick', () => {
+    const s = buildState();
+    s.level = 'quick';
+    expect(formatJobSummary(jobOf('a', s), 1)).toContain(', เสร็จ 0/2 task · quick · รันล่าสุด');
+  });
+
+  it('งาน full (level ไม่ใช่ quick หรือไม่มี level): ไม่ต่อท้าย · quick', () => {
+    const s = buildState();
+    expect(formatJobSummary(jobOf('a', s), 1)).not.toContain('· quick');
+  });
+
   it('แสดงสถานะ lock และคำเตือนบรรทัดถัดไป', () => {
     const lock = { pid: 4120, startedAt: new Date(2026, 8, 25, 9, 12).toISOString() };
     const text = formatJobSummary(jobOf('a', buildState(), lastRun, lock), 1, '⚠ เตือน');
@@ -150,5 +161,15 @@ describe('codeChangedWarning', () => {
   it('หลายงาน แสดงงานที่แก้ล่าสุดและจำนวนที่เหลือ', () => {
     const all = [me, other('y', 'ก่อน', new Date(2026, 8, 25, 8, 0)), other('z', 'หลัง', new Date(2026, 8, 25, 9, 0))];
     expect(codeChangedWarning(me, all)).toBe('⚠ งาน "หลัง" และอีก 1 งาน แก้โค้ดหลังจากงานนี้ โค้ดอาจเปลี่ยนไปแล้ว');
+  });
+});
+
+describe('formatQuickTask', () => {
+  it('แสดงชื่องาน ผู้ทำ รายละเอียด และเกณฑ์ตรวจรับ', () => {
+    const text = formatQuickTask({ title: 'แก้คำผิด', owner: 'frontend', description: 'แก้คำ', acceptanceCriteria: ['แสดงถูก', 'เทสต์ผ่าน'] });
+    expect(text).toContain('--- งานแบบ quick (1 task) ---');
+    expect(text).toContain('ชื่องาน: แก้คำผิด');
+    expect(text).toContain('ผู้ทำ: frontend');
+    expect(text).toContain('  - เทสต์ผ่าน');
   });
 });

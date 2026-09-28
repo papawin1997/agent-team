@@ -64,6 +64,23 @@ describe('SYSTEM_PROMPTS', () => {
   });
 });
 
+describe('PM: จัดระดับงาน', () => {
+  it('prompt ของ PM อธิบาย level/quickTask และเกณฑ์งานเสี่ยง', () => {
+    const pm = SYSTEM_PROMPTS.pm;
+    expect(pm).toContain('"level"');
+    expect(pm).toContain('"quickTask"');
+    expect(pm).toContain('levelReason');
+    expect(pm).toContain('at most ONE clarifying question');
+    expect(pm).toContain('authentication');
+  });
+
+  it('prompt ของ PM บอกว่า quickTask ของคำขอแก้ไข requirements เดิม ต้องอธิบายเฉพาะส่วนที่เปลี่ยน ไม่ทำใหม่ทั้งหมด', () => {
+    const pm = SYSTEM_PROMPTS.pm;
+    expect(pm).toContain('change request to already-confirmed requirements');
+    expect(pm).toContain('only the change itself, not re-implement the whole goal');
+  });
+});
+
 describe('prompt builders', () => {
   it('buildPlanPrompt ใส่ requirements และ feedback', () => {
     const prompt = buildPlanPrompt({ requirements, feedback: 'แก้ dependency วน' });

@@ -11,6 +11,7 @@ import {
   WorkerResultSchema,
   toJsonSchema,
 } from '../src/schemas';
+import { makeRequirements } from './helpers/builders';
 
 const validRequirements = {
   goal: 'todo list',
@@ -260,5 +261,20 @@ describe('length caps (M-4 hardening)', () => {
   it('SecurityDesignReview securityNotes รายการเดียวยาว 1000 ตัวอักษรพอดี: ผ่าน', () => {
     const review = { securityNotes: ['x'.repeat(1000)] };
     expect(SecurityDesignReviewSchema.safeParse(review).success).toBe(true);
+  });
+});
+
+describe('PmTurnSchema: ระดับงาน', () => {
+  const quickTask = { title: 'แก้คำผิด', owner: 'frontend', description: 'แก้คำ', acceptanceCriteria: ['แสดงถูก'] };
+  it('รับ level/levelReason/quickTask ที่ถูกต้อง และไม่บังคับ', () => {
+    const base = { message: 'ok', status: 'proposal', requirements: makeRequirements() };
+    expect(PmTurnSchema.parse(base).level).toBeUndefined();
+    expect(PmTurnSchema.parse({ ...base, level: 'quick', levelReason: 'ไฟล์เดียว', quickTask }).quickTask).toEqual(quickTask);
+  });
+  it('ปฏิเสธ level/owner ที่ไม่รู้จัก และ quickTask ที่ไม่มีเกณฑ์ตรวจรับ', () => {
+    const base = { message: 'ok', status: 'proposal', requirements: makeRequirements() };
+    expect(() => PmTurnSchema.parse({ ...base, level: 'medium' })).toThrow();
+    expect(() => PmTurnSchema.parse({ ...base, level: 'quick', quickTask: { ...quickTask, owner: 'qa' } })).toThrow();
+    expect(() => PmTurnSchema.parse({ ...base, level: 'quick', quickTask: { ...quickTask, acceptanceCriteria: [] } })).toThrow();
   });
 });
