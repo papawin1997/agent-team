@@ -1,8 +1,8 @@
 import type { Deps } from '../deps';
 import { decide } from '../io-util';
-import { isPass, isSecurityPass, orderTasks, restoreBaseDesign } from '../domain';
+import { isPass, isSecurityPass, orderTasks } from '../domain';
 import { RoleRunError } from '../errors';
-import { logLevelDecided } from '../level';
+import { escalateToFull } from '../level';
 import { nullLogger } from '../logger';
 import type { Design, QAReport, Requirements, Task } from '../schemas';
 import type { State, TaskProgress } from '../state';
@@ -202,19 +202,9 @@ async function buildTask(
       return 'done';
     }
     if (decision === 'full') {
-      state.level = 'full';
-      state.quickTask = undefined;
-      state.phase = 'DESIGN';
-      // คืน design/progress ของงาน full เดิมถ้าเคยเก็บไว้ใน baseDesign (ก่อนถูก triage เป็น quick) แทนการล้างทิ้ง
-      // เฉย ๆ — ไม่มี baseDesign (เริ่มจาก quick มาแต่แรก) ยังล้างเหมือนเดิมเพื่อไม่ให้ Planning เห็น design
-      // สังเคราะห์ของ quick เป็น previousDesign โค้ดที่ worker ทำไปแล้วยังอยู่ในโปรเจกต์ ไม่ได้ถูกลบ แค่บอก
-      // Planning ผ่าน designFeedback แทนให้ออกแบบใหม่ตามสมควร
-      restoreBaseDesign(state);
-      state.designFeedback =
-        `ลองทำแบบ quick (task "${task.title}") แล้วไม่ผ่าน QA ครบ ${progress.rounds} รอบ ` +
-        `ปัญหาที่ค้าง: ${JSON.stringify(progress.lastReport?.issues ?? [])} — ` +
-        'โค้ดที่ worker ทำไปแล้วยังอยู่ในโปรเจกต์ ให้ออกแบบใหม่โดยใช้หรือแก้โค้ดนั้นตามสมควร';
-      logLevelDecided(deps, 'full', 'user', `QA ไม่ผ่านครบ ${progress.rounds} รอบในโหมด quick`, []);
+      // ยกระดับ quick -> full: คืน design/progress เดิม (ถ้ามี), ตั้ง designFeedback ให้ Planning และ log ระดับที่ตัดสิน
+      // ดู src/level.ts: escalateToFull
+      escalateToFull(deps, state, task, progress);
       return 'escalated';
     }
     progress.maxRounds += quick ? config.quickMaxQaRounds : config.extraRoundsOnContinue;

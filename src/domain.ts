@@ -1,5 +1,5 @@
 import type { Design, QAReport, QuickTask, Requirements, SecurityReport, Task } from './schemas';
-import type { State, TaskProgress } from './state';
+import type { TaskProgress } from './state';
 
 export class DesignError extends Error {
   constructor(message: string) {
@@ -73,23 +73,6 @@ export function quickDesign(requirements: Requirements, task: QuickTask, base?: 
       },
     ],
   };
-}
-
-/**
- * คืนค่า design/progress ของงาน full เดิม (ก่อนถูก triage เป็น quick) ถ้าเคยเก็บไว้ใน baseDesign/baseProgress
- * แล้วล้าง base ทิ้ง — ใช้ตอนงาน quick ถูกยกระดับกลับเป็น full (PM เสนอ full ใหม่ หรือ escalate ตอน BUILD)
- * ถ้าไม่เคยมี baseDesign (เช่น เริ่มจาก quick มาแต่แรก) พฤติกรรมเดิมคือล้าง design/progress ให้ Planning เริ่มใหม่
- */
-export function restoreBaseDesign(state: State): void {
-  if (state.baseDesign) {
-    state.design = state.baseDesign;
-    state.progress = state.baseProgress ?? {};
-  } else {
-    state.design = undefined;
-    state.progress = {};
-  }
-  delete state.baseDesign;
-  delete state.baseProgress;
 }
 
 export function initProgress(
