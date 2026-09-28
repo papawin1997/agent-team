@@ -1,4 +1,4 @@
-import type { Requirements } from './schemas';
+import type { Design, Requirements } from './schemas';
 
 export type RiskCategory = 'auth' | 'secret' | 'payment' | 'delete' | 'migration' | 'sql' | 'upload' | 'shell' | 'network';
 
@@ -110,5 +110,17 @@ export function riskText(
     ...requirements.acceptanceCriteria,
   ];
   if (quickTask) parts.push(quickTask.title, quickTask.description, ...quickTask.acceptanceCriteria);
+  return parts.join('\n');
+}
+
+/**
+ * ข้อความของ design ที่ใช้ตรวจความเสี่ยงตอน REVIEW ของงาน standard (architecture + ทุก task title/description/
+ * acceptanceCriteria + apiContract/dataModel) — apiContract/dataModel เป็น string อยู่แล้วใน DesignSchema
+ * (src/schemas.ts) จึงไม่ต้อง JSON.stringify
+ */
+export function designRiskText(design: Design): string {
+  const parts: string[] = [design.architecture];
+  for (const task of design.tasks) parts.push(task.title, task.description, ...task.acceptanceCriteria);
+  parts.push(design.apiContract, design.dataModel);
   return parts.join('\n');
 }

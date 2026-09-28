@@ -64,7 +64,7 @@
  * @property {string} [jobId]
  * @property {'done'|'aborted'|'error'|'interrupted'|'unfinished'} status
  * @property {string} [errorMessage]
- * @property {'quick'|'full'} [level]
+ * @property {'quick'|'standard'|'full'} [level]
  * @property {LogEvent[]} events
  * @property {AgentCall[]} calls
  * @property {number} totalCostUsd
@@ -147,6 +147,8 @@
     interrupted: 'ถูกหยุด (Ctrl+C)',
     unfinished: 'ยังไม่จบ / process หายไป'
   };
+  /** @type {Record<string, string>} */
+  var LEVEL_TEXT = { quick: 'quick (แบบย่อ)', standard: 'standard (มีออกแบบ ไม่ตรวจ Security design)', full: 'full (แบบเต็ม)' };
   /** @type {Array<[string, string]>} */
   var EVENT_TYPES = [['all', 'ทั้งหมด'], ['problem', 'WARN/ERROR'], ['agent', 'agent'], ['user', 'สิ่งที่คุณพิมพ์'], ['say', 'ข้อความในจอ']];
   /** @type {Array<[string, string]>} */
@@ -474,7 +476,7 @@
     grid.appendChild(stat('ค่าใช้จ่ายรวม (คิดตามราคา API)', fmtCost(run.totalCostUsd)));
     grid.appendChild(stat('เรียก agent', run.calls.length + ' ครั้ง' + (failed ? ' (ไม่สำเร็จ ' + failed + ')' : '')));
     grid.appendChild(stat('งาน (jobId)', run.jobId || '-'));
-    grid.appendChild(stat('ระดับงาน', run.level === 'quick' ? 'quick (แบบย่อ)' : run.level === 'full' ? 'full (แบบเต็ม)' : '-'));
+    grid.appendChild(stat('ระดับงาน', (run.level && LEVEL_TEXT[run.level]) || '-'));
     sec.appendChild(grid);
     if (run.errorMessage) sec.appendChild(el('pre', 'bad', run.errorMessage));
     return sec;

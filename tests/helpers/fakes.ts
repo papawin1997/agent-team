@@ -72,6 +72,8 @@ export interface FakeScript {
   plans?: Design[];
   /** ต่อ call ของ work: Error = โยน error นั้น, undefined/หมด = คืนผลปกติ */
   work?: Array<Error | undefined>;
+  /** ต่อ call ของ work: filesChanged ที่ worker รายงาน (แทนค่า default [`src/<taskId>.ts`]) — ใช้เทสต์ touchedFiles สะสมข้ามรอบ (I2) */
+  workFiles?: string[][];
   /** ต่อ call ของ qa: Error = โยน error นั้น */
   qa?: Array<QAReport | Error>;
   /** ต่อ call ของ securityDesign: Error = โยน error นั้น, undefined/หมด = คืน [] (ไม่มี note) */
@@ -90,6 +92,7 @@ export class FakeRunner implements RoleRunner {
   private pm: PmTurn[];
   private plans: Design[];
   private workScript: Array<Error | undefined>;
+  private workFilesScript: string[][];
   private qaReports: Array<QAReport | Error>;
   private securityDesignScript: Array<string[] | Error>;
   private securityScript: Array<SecurityReport | Error>;
@@ -99,6 +102,7 @@ export class FakeRunner implements RoleRunner {
     this.pm = [...(script.pm ?? [])];
     this.plans = [...(script.plans ?? [])];
     this.workScript = [...(script.work ?? [])];
+    this.workFilesScript = [...(script.workFiles ?? [])];
     this.qaReports = [...(script.qa ?? [])];
     this.securityDesignScript = [...(script.securityDesign ?? [])];
     this.securityScript = [...(script.security ?? [])];
@@ -123,11 +127,12 @@ export class FakeRunner implements RoleRunner {
     this.workCalls += 1;
     const scripted = this.workScript.shift();
     if (scripted) throw scripted;
+    const filesChanged = this.workFilesScript.shift() ?? [`src/${input.task.id}.ts`];
     return {
       result: {
         taskId: input.task.id,
         summary: `ทำ ${input.task.id}`,
-        filesChanged: [`src/${input.task.id}.ts`],
+        filesChanged,
         howToVerify: 'npm test',
       },
       sessionId: `${input.task.id}-s${this.workCalls}`,

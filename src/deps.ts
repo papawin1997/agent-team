@@ -78,6 +78,8 @@ export interface Deps {
   levelPreference?: Level;
   /** snapshot working tree เพื่อหา diff ของรอบแก้ ไม่มี = QA ตรวจทั้ง task ทุกรอบ */
   snapshots?: SnapshotProvider;
+  /** โฟลเดอร์โปรเจกต์ — ใช้ทำ absolute path ให้เป็น relative ก่อนตัดสิน riskyFiles ของ quick/standard (M5) ไม่มี = ใช้ path ตามที่ worker รายงานตรง ๆ */
+  projectDir?: string;
   /** ส่งมาจาก ctx.abortController.signal — ใช้เช็คตอน resume worker ล้ม: กำลังถูก abort อยู่ให้โยนต่อ ไม่ fallback ไปเปิด session ใหม่ */
   abortSignal?: AbortSignal;
 }

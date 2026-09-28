@@ -67,6 +67,18 @@ describe('formatDesign', () => {
       'ข้อควรระวังด้านความปลอดภัย (Security):\n  (Security ตรวจไม่สำเร็จ',
     );
   });
+
+  it('ระดับ standard ไม่มี securityNotes: แสดงข้อความเฉพาะของ standard แทน "ตรวจไม่สำเร็จ"', () => {
+    const formatted = formatDesign(makeDesign(), { level: 'standard' });
+    expect(formatted).toContain('ข้อควรระวังด้านความปลอดภัย (Security):\n  (ระดับ standard ไม่มีการตรวจ Security ของ design)');
+    expect(formatted).not.toContain('ตรวจไม่สำเร็จ');
+  });
+
+  it('ระดับ full ที่ไม่มี securityNotes: ยังแสดงข้อความ "ตรวจไม่สำเร็จ" เหมือนเดิม', () => {
+    expect(formatDesign(makeDesign(), { level: 'full' })).toContain(
+      'ข้อควรระวังด้านความปลอดภัย (Security):\n  (Security ตรวจไม่สำเร็จ',
+    );
+  });
 });
 
 const lastRun = new Date(2026, 8, 24, 14, 10);
@@ -124,6 +136,12 @@ describe('formatJobSummary', () => {
   it('งาน full (level ไม่ใช่ quick หรือไม่มี level): ไม่ต่อท้าย · quick', () => {
     const s = buildState();
     expect(formatJobSummary(jobOf('a', s), 1)).not.toContain('· quick');
+  });
+
+  it('แสดง tag ระดับ standard เหมือน quick', () => {
+    const s = buildState();
+    s.level = 'standard';
+    expect(formatJobSummary(jobOf('a', s), 1)).toContain(', เสร็จ 0/2 task · standard · รันล่าสุด');
   });
 
   it('แสดงสถานะ lock และคำเตือนบรรทัดถัดไป', () => {

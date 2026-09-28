@@ -11,7 +11,7 @@ export type Requirements = z.infer<typeof RequirementsSchema>;
 
 export const OwnerSchema = z.enum(['frontend', 'backend']);
 
-export const LevelSchema = z.enum(['quick', 'full']);
+export const LevelSchema = z.enum(['quick', 'standard', 'full']);
 export type Level = z.infer<typeof LevelSchema>;
 
 /** งานเดียวที่ PM เสนอเมื่อจัดระดับเป็น quick (ไม่มี Planning) */

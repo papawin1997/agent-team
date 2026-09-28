@@ -122,14 +122,66 @@ describe('runDeliver', () => {
     expect(summary.find((t) => t.id === 'ui')?.securityReviewed).toBe(false);
   });
 
-  it('งาน quick: บอก PM ว่าเป็นโหมด quick ที่ไม่มีขั้นออกแบบและ Security โดยตั้งใจ', async () => {
+  it('งาน quick: บอก PM ว่าเป็นโหมด quick ที่ไม่มีขั้นออกแบบ และ Security ตรวจเฉพาะ task ที่แตะไฟล์เสี่ยง', async () => {
     const design = quickDesign(makeRequirements(), makeQuickTask());
     const state = buildState(design);
     state.phase = 'DELIVER';
     state.level = 'quick';
     const { deps, runner } = makeDeps({ pm: [asking('สรุปส่งมอบ')] }, ['accept']);
     await runDeliver(deps, state);
-    expect((runner.calls[0]!.input as { prompt: string }).prompt).toContain('โหมด quick');
+    const prompt = (runner.calls[0]!.input as { prompt: string }).prompt;
+    expect(prompt).toContain('โหมด quick');
+    expect(prompt).toContain('Security ตรวจเฉพาะ task ที่แตะไฟล์เสี่ยงหรือเนื้อหาเสี่ยง');
     expect(state.phase).toBe('DONE');
+  });
+
+  it('งาน standard: บอก PM ว่าไม่มีการตรวจ Security ตอนออกแบบ และ Security ตรวจเฉพาะ task ที่แตะไฟล์เสี่ยง (I3)', async () => {
+    const state = buildState();
+    state.phase = 'DELIVER';
+    state.level = 'standard';
+    const { deps, runner } = makeDeps({ pm: [asking('สรุปส่งมอบ')] }, ['accept']);
+    await runDeliver(deps, state);
+    const prompt = (runner.calls[0]!.input as { prompt: string }).prompt;
+    expect(prompt).toContain('โหมด standard');
+    expect(prompt).toContain('Security ตรวจเฉพาะ task ที่แตะไฟล์เสี่ยงหรือเนื้อหาเสี่ยง');
+  });
+
+  it('I3: securityReviewed=false ที่ securityTrigger="none" ถูกอธิบายว่าข้ามโดยตั้งใจ ไม่ใช่ปัญหา', async () => {
+    const state = buildState();
+    state.phase = 'DELIVER';
+    state.level = 'standard';
+    state.progress.api = {
+      rounds: 2,
+      maxRounds: 5,
+      done: true,
+      acceptedWithIssues: false,
+      securityReviewed: false,
+      securityTrigger: 'none',
+    };
+    const { deps, runner } = makeDeps({ pm: [asking('สรุปส่งมอบ')] }, ['accept']);
+    await runDeliver(deps, state);
+    const prompt = (runner.calls[0]!.input as { prompt: string }).prompt;
+    expect(prompt).toContain("securityTrigger='none' ไม่ต้องแจ้งว่าเป็นปัญหา");
+    const summaryStart = prompt.indexOf('[');
+    const summary = JSON.parse(prompt.slice(summaryStart)) as Array<{ id: string; securityTrigger: string }>;
+    expect(summary.find((t) => t.id === 'api')?.securityTrigger).toBe('none');
+  });
+
+  it('I3: task ที่ไม่มี securityTrigger เก่า (state จาก resume ก่อนมี field นี้) default เป็น none', async () => {
+    const state = buildState();
+    state.phase = 'DELIVER';
+    state.progress.api = {
+      rounds: 5,
+      maxRounds: 5,
+      done: true,
+      acceptedWithIssues: false,
+      securityReviewed: true,
+    };
+    const { deps, runner } = makeDeps({ pm: [asking('สรุปส่งมอบ')] }, ['accept']);
+    await runDeliver(deps, state);
+    const prompt = (runner.calls[0]!.input as { prompt: string }).prompt;
+    const summaryStart = prompt.indexOf('[');
+    const summary = JSON.parse(prompt.slice(summaryStart)) as Array<{ id: string; securityTrigger: string }>;
+    expect(summary.find((t) => t.id === 'api')?.securityTrigger).toBe('none');
   });
 });

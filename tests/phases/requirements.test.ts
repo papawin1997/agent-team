@@ -4,7 +4,15 @@ import { initProgress, quickDesign } from '../../src/domain';
 import { runDesign } from '../../src/phases/design';
 import { runRequirements } from '../../src/phases/requirements';
 import { newState } from '../../src/state';
-import { asking, makeDesign, makeQuickTask, makeRequirements, proposal, quickProposal } from '../helpers/builders';
+import {
+  asking,
+  makeDesign,
+  makeQuickTask,
+  makeRequirements,
+  proposal,
+  quickProposal,
+  standardProposal,
+} from '../helpers/builders';
 import { makeDeps } from '../helpers/fakes';
 
 const pmInput = (runner: { calls: { input: unknown }[] }, i: number) => runner.calls[i]!.input as PmInput;
@@ -253,6 +261,13 @@ describe('runRequirements', () => {
     expect(pmInput(runner, 0).prompt).toBe('[ผู้ใช้ขอโหมด quick ถ้างานเข้าเกณฑ์]\nแก้คำผิด');
   });
 
+  it('--standard: บอก PM ในข้อความแรก', async () => {
+    const { deps, runner } = makeDeps({ pm: [proposal()] }, ['ทำหน้า profile', 'confirm']);
+    deps.levelPreference = 'standard';
+    await runRequirements(deps, newState());
+    expect(pmInput(runner, 0).prompt).toBe('[ผู้ใช้ขอโหมด standard: ไม่ใช้ quick]\nทำหน้า profile');
+  });
+
   it('levelHint เป็น state ต่อการรันหนึ่งครั้ง (ไม่ใช่ของ deps): ส่ง object เดิมซ้ำไม่บอก PM อีก, deps ใช้ซ้ำข้ามการรันไม่ค้าง flag', async () => {
     const levelHint = { sent: false };
     const { deps: deps1, runner: runner1 } = makeDeps({ pm: [quickProposal()] }, ['ขอ A', 'quick']);
@@ -289,6 +304,24 @@ describe('runRequirements', () => {
     expect(state.level).toBe('full');
     expect(state.quickTask).toBeUndefined();
     expect(events.find((e) => e.event === 'level.decided')?.data).toMatchObject({ level: 'full', by: 'pm' });
+  });
+
+  it('PM เปลี่ยนข้อเสนอเป็น standard ระหว่างตัดสินใจ quick: ไม่รับ quick แบบเงียบ ๆ ถามใหม่ด้วยตัวเลือก standard ไม่พิมพ์ข้อความซ้ำ', async () => {
+    const events: { event: string; data?: Record<string, unknown> }[] = [];
+    const { deps, io } = makeDeps(
+      { pm: [quickProposal(), standardProposal()] },
+      ['แก้คำผิด', 'ทำไมถึงเสนอ quick', 'quick', 'standard'],
+    );
+    deps.log = { log: (_level, event, data) => events.push({ event, data }) };
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(io.said.join('\n')).toContain('PM เปลี่ยนข้อเสนอเป็น standard แล้ว');
+    expect(state.phase).toBe('DESIGN');
+    expect(state.level).toBe('standard');
+    expect(state.quickTask).toBeUndefined();
+    expect(events.find((e) => e.event === 'level.decided')?.data).toMatchObject({ level: 'standard', by: 'pm' });
+    expect(io.said.filter((s) => s.includes('ระดับที่ PM เสนอ: standard')).length).toBe(1);
   });
 
   it('risk flags เปลี่ยนระหว่างตัดสินใจ quick (ยังเสนอ quick อยู่): เตือนใหม่และ log flags ล่าสุด', async () => {
@@ -345,7 +378,8 @@ describe('runRequirements', () => {
     const state = newState();
     await runRequirements(deps, state);
 
-    const LEVEL_PROMPT = 'ทำแบบไหน? (quick = ทำเลยแบบย่อ 1 task, full = ออกแบบก่อนแบบเต็ม, revise = แก้ requirements)';
+    const LEVEL_PROMPT =
+      'ทำแบบไหน? (quick = ทำเลยแบบย่อ 1 task, standard = ออกแบบก่อนแต่ไม่ตรวจ Security design, full = ออกแบบก่อนแบบเต็ม, revise = แก้ requirements)';
     // ask#1 (คำถามอิสระ) + ask#2 ('quick' รอบแรก จบ decide() แรก) + ask#3 (ถามซ้ำหลังเจอความเสี่ยง 'quick' รอบสอง) = 3 ครั้ง
     expect(io.asked.filter((p) => p === LEVEL_PROMPT).length).toBe(3);
     expect(io.said.join('\n')).toContain('⚠ งานนี้แตะเรื่อง auth — แนะนำ full (มีขั้นออกแบบและตรวจ Security)');
@@ -482,6 +516,67 @@ describe('runRequirements', () => {
 
     expect(state.phase).toBe('BUILD');
     expect(state.level).toBe('quick');
+  });
+
+  it('PM เสนอ standard แล้ว user เลือก standard -> DESIGN ด้วย level standard, log by pm', async () => {
+    const events: { event: string; data?: Record<string, unknown> }[] = [];
+    const { deps, io } = makeDeps({ pm: [standardProposal()] }, ['ทำหน้า profile', 'standard']);
+    deps.log = { log: (_l, event, data) => void events.push({ event, data }) };
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(state.phase).toBe('DESIGN');
+    expect(state.level).toBe('standard');
+    expect(io.asked.at(-1)).toContain('standard');
+    expect(events.find((e) => e.event === 'level.decided')?.data).toMatchObject({ level: 'standard', by: 'pm' });
+  });
+
+  it('PM เสนอ standard: ตัวเลือกไม่มี quick (พิมพ์ quick = ถาม PM แทนการเลือก)', async () => {
+    const { deps, runner } = makeDeps(
+      { pm: [standardProposal(), asking('ต้องเลือก standard หรือ full')] },
+      ['x', 'quick', 'full'],
+    );
+    const state = newState();
+    await runRequirements(deps, state);
+    expect((runner.calls[1]!.input as PmInput).prompt).toContain('quick');
+    expect(state.level).toBe('full');
+  });
+
+  it('PM เสนอ quick: เลือก standard ได้ -> DESIGN, log by user', async () => {
+    const events: { event: string; data?: Record<string, unknown> }[] = [];
+    const { deps } = makeDeps({ pm: [quickProposal()] }, ['แก้คำผิด', 'standard']);
+    deps.log = { log: (_l, event, data) => void events.push({ event, data }) };
+    const state = newState();
+    await runRequirements(deps, state);
+    expect(state.level).toBe('standard');
+    expect(state.phase).toBe('DESIGN');
+    expect(state.quickTask).toBeUndefined();
+    expect(events.find((e) => e.event === 'level.decided')?.data).toMatchObject({ level: 'standard', by: 'user' });
+  });
+
+  it('PM เสนอ standard แต่เจอคำเสี่ยง: เตือนและ full ขึ้นก่อน', async () => {
+    const risky = { ...makeRequirements(), goal: 'เพิ่มหน้า login' };
+    const { deps, io } = makeDeps({ pm: [standardProposal(risky)] }, ['x', '1']);
+    const state = newState();
+    await runRequirements(deps, state);
+    expect(io.said.join('\n')).toContain('⚠ งานนี้แตะเรื่อง auth');
+    expect(state.level).toBe('full');
+  });
+
+  it('--standard: PM ส่ง quick มาก็ไม่เสนอ quick (ตัวเลือก standard/full/revise)', async () => {
+    const { deps } = makeDeps({ pm: [quickProposal()] }, ['x', '1']);
+    deps.levelPreference = 'standard';
+    const state = newState();
+    await runRequirements(deps, state);
+    expect(state.level).toBe('standard');
+  });
+
+  it('--full: PM ส่ง standard มาก็ถามยืนยันแบบ full เท่านั้น', async () => {
+    const { deps } = makeDeps({ pm: [standardProposal()] }, ['x', 'confirm']);
+    deps.levelPreference = 'full';
+    const state = newState();
+    await runRequirements(deps, state);
+    expect(state.level).toBe('full');
   });
 
   describe('PM ตอบไม่สำเร็จ ไม่ทำให้ทั้ง run หยุด', () => {

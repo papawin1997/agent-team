@@ -2,17 +2,30 @@ import type { Deps } from '../deps';
 import { decide } from '../io-util';
 import { isPass, isSecurityPass, orderTasks } from '../domain';
 import { RoleRunError } from '../errors';
-import { escalateToFull } from '../level';
+import { escalateLevel } from '../level';
 import { nullLogger } from '../logger';
+import { riskFlags } from '../risk';
+import { isTestFile, riskyFiles } from '../risk-files';
 import type { Design, QAReport, Requirements, Task, WorkerResult } from '../schemas';
 import type { RoundDiff } from '../snapshot';
 import type { State, TaskProgress } from '../state';
 
 type Outcome = 'done' | 'aborted' | 'escalated';
-type Decision = 'continue' | 'accept' | 'abort' | 'full';
+type Decision = 'continue' | 'accept' | 'abort' | 'standard' | 'full';
 interface BuildContext {
   design: Design;
   requirements: Requirements;
+}
+
+/** จำนวนไฟล์เสี่ยงสูงสุดที่บอกชื่อใน io.say ก่อนตัดเป็น "..." */
+const MAX_LISTED_FILES = 5;
+
+interface SecurityDecision {
+  run: boolean;
+  reason: 'level' | 'risky-files' | 'none';
+  files: string[];
+  categories: string[];
+  note?: string;
 }
 
 const LIMIT_SUBTYPES: readonly string[] = ['error_max_turns', 'error_max_budget_usd'];
@@ -84,6 +97,73 @@ function updateReviewedTree(progress: TaskProgress, after: string | undefined): 
   else progress.reviewedTree = after;
 }
 
+/**
+ * เนื้อหาบรรทัดที่ถูก "เพิ่ม" ใหม่ (ไม่รวม context/บรรทัดที่ถูกลบ) จากไฟล์ที่ไม่ใช่ไฟล์เทสต์เท่านั้น (M4)
+ * กัน false positive จากโค้ดเดิม/ไฟล์เทสต์ที่มีคำเสี่ยงอยู่แล้วแต่ worker ไม่ได้เพิ่มอะไรใหม่ที่เสี่ยงจริง
+ */
+function addedLinesFromNonTestFiles(diff: string): string {
+  const added: string[] = [];
+  let skipFile = false;
+  for (const line of diff.split('\n')) {
+    const header = /^diff --git a\/.+ b\/(.+)$/.exec(line);
+    if (header) {
+      skipFile = isTestFile(header[1]!.replace(/\\/g, '/'));
+      continue;
+    }
+    if (skipFile || line.startsWith('+++')) continue;
+    if (line.startsWith('+')) added.push(line.slice(1));
+  }
+  return added.join('\n');
+}
+
+/** ข้อความบอกเหตุผลที่ Security ถูกเรียก (M9): มีแค่ไฟล์เสี่ยง = "ตรวจเพราะแตะ ..."; มีแค่เนื้อหาเสี่ยง = "ตรวจเพราะเนื้อหาเกี่ยวกับ ..." (ไม่มี "แตะ"); มีทั้งคู่ = ต่อกันด้วย " / " */
+function securityReason(listed: string, more: string, contentFlags: readonly string[]): string {
+  const filesPart = listed ? `แตะ ${listed}${more}` : '';
+  const contentPart = contentFlags.length ? `เนื้อหาเกี่ยวกับ ${contentFlags.join(', ')}` : '';
+  return [filesPart, contentPart].filter(Boolean).join(' / ');
+}
+
+/**
+ * ตัดสินว่า task นี้ (รอบนี้) ต้องให้ Security ตรวจไหม: full (หรือไม่มี level) = ตรวจทุก task เหมือนเดิม
+ * quick/standard = ตรวจเฉพาะ task ที่แตะไฟล์เสี่ยง (riskyFiles จาก progress.touchedFiles ที่สะสมทุกรอบของ
+ * worker + ไฟล์ที่ diff เจอตั้งแต่ startTree ถึง after ของรอบนี้ ไม่นับไฟล์เทสต์ — I2: กันไฟล์เสี่ยงที่แก้ใน
+ * รอบที่ QA ไม่ผ่านหลุดจากการตัดสิน) หรือเนื้อหาบรรทัดที่เพิ่มใหม่ในไฟล์ไม่ใช่เทสต์มีคำเสี่ยง (riskFlags, M4)
+ */
+async function decideSecurity(
+  deps: Deps,
+  state: State,
+  task: Task,
+  progress: TaskProgress,
+  round: number,
+  after: string | undefined,
+): Promise<SecurityDecision> {
+  if (state.level !== 'quick' && state.level !== 'standard') {
+    return { run: true, reason: 'level', files: [], categories: [] };
+  }
+  const taskDiff =
+    progress.startTree !== undefined && after !== undefined
+      ? await tryDiff(deps, task, round, progress.startTree, after)
+      : undefined;
+  const files = [...new Set([...(progress.touchedFiles ?? []), ...(taskDiff?.files ?? [])])];
+  const risky = riskyFiles(files, deps.projectDir);
+  const contentFlags = riskFlags(addedLinesFromNonTestFiles(taskDiff?.diff ?? ''));
+  if (risky.length === 0 && contentFlags.length === 0) {
+    return { run: false, reason: 'none', files: [], categories: [] };
+  }
+  const listed = risky
+    .slice(0, MAX_LISTED_FILES)
+    .map((r) => `${r.file} (${r.category})`)
+    .join(', ');
+  const more = risky.length > MAX_LISTED_FILES ? ', …' : '';
+  return {
+    run: true,
+    reason: 'risky-files',
+    files: risky.map((r) => r.file),
+    categories: [...new Set([...risky.map((r) => r.category), ...contentFlags])],
+    note: `[Security] ${task.id}: ตรวจเพราะ${securityReason(listed, more, contentFlags)}`,
+  };
+}
+
 /** เรียก worker ตามนโยบาย session: resume ในรอบแก้ได้ติดกัน MAX_WORKER_RESUMES ครั้ง resume ล้ม = เปิดใหม่
  * รอบก่อนหน้าชนขีดจำกัด SDK (lastRoundLimit) ห้าม resume เสมอ (กัน M6: worker resume มาเจอ synthetic limit report เป็น previousReport) */
 async function runWorker(
@@ -126,14 +206,28 @@ async function runRound(
   ctx: BuildContext,
   task: Task,
   progress: TaskProgress,
-  skipSecurity: boolean,
+  state: State,
 ): Promise<{ report: QAReport; limitHit: boolean; securityReviewed: boolean }> {
   const { runner, io } = deps;
   let step: Step = 'work';
   let qaReport: QAReport | undefined;
   try {
     const round = progress.rounds + 1;
+    // tree ก่อน worker แตะ task นี้ครั้งแรก ใช้หาไฟล์ทั้งหมดที่ task แตะตอนตัดสิน Security ของ quick/standard
+    // (ตรวจแค่รอบแรกของ task เท่านั้น — ค่านี้อยู่ยาวตลอดอายุ task ไม่ถูกเลื่อนเหมือน reviewedTree)
+    // เฉพาะ quick/standard เท่านั้น (M6) — full ตรวจ Security ทุก task อยู่แล้วไม่ต้องเสีย snapshot เพิ่ม
+    // I1: save ทันทีหลังตั้งค่า ก่อนเรียก worker — กัน resume หลัง crash/Ctrl+C ระหว่างรอบแรกเจอ startTree ที่
+    // ถ่ายใหม่ตอน resume (มี edit เสี่ยงของ worker ติดมาด้วยแล้ว) ทำให้ diff ตั้งแต่ startTree มองไม่เห็น edit นั้น
+    if ((state.level === 'quick' || state.level === 'standard') && progress.rounds === 0 && progress.startTree === undefined) {
+      progress.startTree = await trySnapshot(deps, task, round);
+      if (progress.startTree !== undefined) await deps.store.save(state);
+    }
     const result = await runWorker(deps, ctx, task, progress, round);
+    // I2: สะสมไฟล์ที่ worker รายงานว่าแก้ทุกรอบ (normalize \ เป็น /) กันไฟล์เสี่ยงที่แก้ในรอบที่ QA ไม่ผ่านหลุดจาก
+    // การตัดสิน Security ตอนรอบที่ผ่านจริงไม่ได้แตะไฟล์นั้นอีกแล้ว — อัปเดตก่อน QA เสมอ ไม่ว่ารอบนี้จะผ่านหรือไม่
+    progress.touchedFiles = [
+      ...new Set([...(progress.touchedFiles ?? []), ...result.filesChanged.map((f) => f.replace(/\\/g, '/'))]),
+    ];
     step = 'qa';
     // baseline คือ tree ล่าสุดที่ QA ตรวจจริง (reviewedTree) ไม่ใช่ snapshot ตอนเริ่มรอบนี้ — กัน edit ที่ QA
     // ไม่เคยเห็นหลุดออกจาก diff (worker ชน limit หลังแก้บางส่วน, QA ชน limit, process ถูกฆ่ากลางคัน,
@@ -166,8 +260,20 @@ async function runRound(
     updateReviewedTree(progress, after);
     if (!isPass(qaReport)) return { report: qaReport, limitHit: false, securityReviewed: false };
 
-    // โหมด quick ไม่มี Security โดยตั้งใจ (งานเสี่ยงถูกกันไม่ให้เข้า quick ตั้งแต่ตอนจัดระดับ)
-    if (skipSecurity) return { report: qaReport, limitHit: false, securityReviewed: false };
+    // full (หรือไม่มี level) ตรวจทุก task เหมือนเดิม; quick/standard ตรวจเฉพาะ task ที่แตะไฟล์เสี่ยง/เนื้อหาเสี่ยง
+    const security = await decideSecurity(deps, state, task, progress, round, after);
+    // I3: เก็บเหตุผลของรอบที่ QA ผ่านล่าสุดไว้บอก PM ตอน DELIVER (securityReviewed=false ที่ trigger='none'
+    // คือข้ามโดยตั้งใจ ไม่ใช่ยังไม่ผ่านจริง)
+    progress.securityTrigger = security.reason;
+    (deps.log ?? nullLogger).log('INFO', 'security.trigger', {
+      taskId: task.id,
+      round,
+      reason: security.reason,
+      files: security.files,
+      categories: security.categories,
+    });
+    if (!security.run) return { report: qaReport, limitHit: false, securityReviewed: false };
+    if (security.note) io.say(security.note);
 
     step = 'security';
     const securityReport = await runner.security({ task, result, ...ctx });
@@ -264,7 +370,7 @@ async function buildTask(
       io.say(
         `[${task.owner}] ทำ task ${task.id}: ${task.title} (รอบที่ ${progress.rounds + 1}/${progress.maxRounds})`,
       );
-      const { report, limitHit, securityReviewed } = await runRound(deps, ctx, task, progress, quick);
+      const { report, limitHit, securityReviewed } = await runRound(deps, ctx, task, progress, state);
       progress.rounds += 1;
       progress.lastReport = report;
       progress.securityReviewed = securityReviewed;
@@ -309,10 +415,10 @@ async function buildTask(
       await store.save(state);
       return 'done';
     }
-    if (decision === 'full') {
-      // ยกระดับ quick -> full: คืน design/progress เดิม (ถ้ามี), ตั้ง designFeedback ให้ Planning และ log ระดับที่ตัดสิน
-      // ดู src/level.ts: escalateToFull
-      escalateToFull(deps, state, task, progress);
+    if (decision === 'standard' || decision === 'full') {
+      // ยกระดับ quick -> standard/full: คืน design/progress เดิม (ถ้ามี), ตั้ง designFeedback ให้ Planning และ log ระดับที่ตัดสิน
+      // ดู src/level.ts: escalateLevel
+      escalateLevel(deps, state, task, progress, decision);
       return 'escalated';
     }
     progress.maxRounds += quick ? config.quickMaxQaRounds : config.extraRoundsOnContinue;
@@ -334,7 +440,8 @@ async function escalate(
       `task ${task.id} (${task.title}) ไม่ผ่าน QA ครบ ${progress.rounds} รอบแล้ว ` +
       `ปัญหาที่ค้าง:\n${JSON.stringify(progress.lastReport?.issues ?? [])}\n` +
       (quick
-        ? 'สรุปให้ user ฟังเป็นภาษาไทยว่าค้างอะไร และอธิบายตัวเลือก: continue / accept / abort / full (ยกระดับเป็นแบบเต็ม: Planning ออกแบบใหม่ + ตรวจ Security)'
+        ? 'สรุปให้ user ฟังเป็นภาษาไทยว่าค้างอะไร และอธิบายตัวเลือก: continue / accept / abort / standard ' +
+          '(ยกระดับเป็น standard: Planning ออกแบบใหม่ ไม่ตรวจ Security design) / full (ยกระดับเป็นแบบเต็ม: Planning ออกแบบใหม่ + ตรวจ Security)'
         : 'สรุปให้ user ฟังเป็นภาษาไทยว่าค้างอะไร และอธิบายตัวเลือก: continue / accept / abort'),
   });
   state.pmSessionId = sessionId;
@@ -343,7 +450,11 @@ async function escalate(
   const extraRounds = quick ? config.quickMaxQaRounds : config.extraRoundsOnContinue;
   const question =
     `task ${task.id} ไม่ผ่านครบ ${progress.rounds} รอบ (continue = ทำต่ออีก ${extraRounds} รอบ, accept = รับตามสภาพ, abort = ยกเลิก` +
-    (quick ? ', full = ยกระดับเป็นแบบเต็ม)' : ')');
-  const options: readonly Decision[] = quick ? ['continue', 'accept', 'abort', 'full'] : ['continue', 'accept', 'abort'];
+    (quick
+      ? ', standard = ยกระดับเป็น standard (แนะนำ: Planning ออกแบบใหม่ ไม่ตรวจ Security design), full = ยกระดับเป็นแบบเต็ม)'
+      : ')');
+  const options: readonly Decision[] = quick
+    ? ['continue', 'accept', 'abort', 'standard', 'full']
+    : ['continue', 'accept', 'abort'];
   return decide(deps, state, question, options);
 }

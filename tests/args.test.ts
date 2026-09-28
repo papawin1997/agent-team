@@ -68,12 +68,18 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['logs', '-r'])).toThrow('--resume');
   });
 
-  it('--quick / --full', () => {
+  it('--quick / --standard / --full ใส่ได้อย่างเดียว', () => {
     expect(parseArgs(['a', '--quick']).level).toBe('quick');
+    expect(parseArgs(['a', '--standard']).level).toBe('standard');
     expect(parseArgs(['--full']).level).toBe('full');
-    expect(parseArgs([]).level).toBeUndefined();
+    expect(parseArgs(['--standard', '--standard']).level).toBe('standard');
     expect(() => parseArgs(['--quick', '--full'])).toThrow('พร้อมกันไม่ได้');
-    expect(() => parseArgs(['logs', '--quick'])).toThrow('logs');
+    expect(() => parseArgs(['--standard', '--full'])).toThrow('พร้อมกันไม่ได้');
+    expect(() => parseArgs(['logs', '--standard'])).toThrow('logs');
+  });
+
+  it('run --headless รับ --standard', () => {
+    expect(parseArgs(['run', '--headless', '--request', 'x', '--standard']).level).toBe('standard');
   });
 });
 

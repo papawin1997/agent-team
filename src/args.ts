@@ -12,7 +12,7 @@ export interface CliArgs {
   resume: boolean;
   /** agent-team logs --live */
   live: boolean;
-  /** --quick / --full */
+  /** --quick / --standard / --full */
   level: Level | undefined;
   /** run --headless: ไม่มีเมนู ไม่อ่าน stdin คุยผ่านไฟล์ใน .agent-team/jobs/<id>/ (มี key นี้เฉพาะตอนใส่ flag) */
   headless?: true;
@@ -48,9 +48,9 @@ export function parseArgs(argv: string[]): CliArgs {
       if (value === undefined || value === '') throw new Error(`ต้องระบุค่าหลัง ${arg}`);
       if (arg === '--request') request = value;
       else job = value;
-    } else if (arg === '--quick' || arg === '--full') {
-      const value = arg === '--quick' ? 'quick' : 'full';
-      if (level !== undefined && level !== value) throw new Error('ใช้ --quick กับ --full พร้อมกันไม่ได้');
+    } else if (arg === '--quick' || arg === '--standard' || arg === '--full') {
+      const value: Level = arg === '--quick' ? 'quick' : arg === '--standard' ? 'standard' : 'full';
+      if (level !== undefined && level !== value) throw new Error('ใช้ --quick / --standard / --full พร้อมกันไม่ได้ (เลือกอย่างเดียว)');
       level = value;
     } else if (arg === '--project') {
       const value = rest[++i];
@@ -65,7 +65,7 @@ export function parseArgs(argv: string[]): CliArgs {
   }
   if (live && command !== 'logs') throw new Error('--live ใช้ได้กับ agent-team logs เท่านั้น');
   if (resume && command === 'logs') throw new Error('-r/--resume ใช้กับ agent-team logs ไม่ได้');
-  if (level && command === 'logs') throw new Error('--quick/--full ใช้กับ agent-team logs ไม่ได้');
+  if (level && command === 'logs') throw new Error('--quick/--standard/--full ใช้กับ agent-team logs ไม่ได้');
   if (headless && command === 'logs') throw new Error('--headless ใช้กับ agent-team logs ไม่ได้');
   if ((request !== undefined || job !== undefined) && !headless) {
     throw new Error('--request/--job ใช้คู่กับ --headless เท่านั้น');

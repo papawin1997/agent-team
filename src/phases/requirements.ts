@@ -1,13 +1,14 @@
 import type { Deps, LevelHintState } from '../deps';
 import { formatRequirements } from '../format';
 import { askNonEmpty } from '../io-util';
-import { confirmAsFull, decideLevel, offersQuick } from '../level';
+import { confirmAsFull, decideLevel, offersChoice } from '../level';
 import { mergeRiskFlags, riskFlags, type RiskCategory } from '../risk';
 import type { Level } from '../schemas';
 import type { State } from '../state';
 
 const LEVEL_HINT: Record<Level, string> = {
   quick: '[ผู้ใช้ขอโหมด quick ถ้างานเข้าเกณฑ์]',
+  standard: '[ผู้ใช้ขอโหมด standard: ไม่ใช้ quick]',
   full: '[ผู้ใช้สั่ง --full: ต้องเป็น full เท่านั้น]',
 };
 
@@ -70,7 +71,7 @@ export async function runRequirements(
 
     if (turn.status === 'proposal' && turn.requirements) {
       io.say(formatRequirements(turn.requirements));
-      if (offersQuick(deps, turn)) {
+      if (offersChoice(deps, turn)) {
         if (await decideLevel(deps, state, turn, userRisk)) return;
         const revise = await askNonEmpty(io, 'อยากปรับอะไร?\n> ');
         noteUserText(revise);

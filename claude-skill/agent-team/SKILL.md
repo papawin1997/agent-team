@@ -9,10 +9,10 @@ agent-team เรียกโมเดลที่มีค่าใช้จ่
 
 ## เริ่มงาน
 
-1. ยืนยันกับผู้ใช้ก่อน: โฟลเดอร์โปรเจกต์ (absolute path), คำขอ (ข้อความแรกถึง PM) และระดับถ้าผู้ใช้ระบุ (`--quick` / `--full`)
+1. ยืนยันกับผู้ใช้ก่อน: โฟลเดอร์โปรเจกต์ (absolute path), คำขอ (ข้อความแรกถึง PM) และระดับถ้าผู้ใช้ระบุ (`--quick` / `--standard` / `--full`)
 2. รันด้วย Bash tool แบบ `run_in_background: true`:
 
-   agent-team run --headless --project "<path>" --request "<คำขอ>" [--quick|--full]
+   agent-team run --headless --project "<path>" --request "<คำขอ>" [--quick|--standard|--full]
 
    ทำต่องานเดิมใช้ `--resume` (งานค้างล่าสุด) หรือ `--job <jobId>` แทน `--request`
 3. อ่าน output ของ background task (ผลของ Bash tool บอกพาธไฟล์ output — อ่านไฟล์นั้น) บรรทัดแรกต้องเป็น JSON `{"jobId", "since", "projectDir"}`

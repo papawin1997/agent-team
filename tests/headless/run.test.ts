@@ -162,6 +162,7 @@ describe('runHeadlessJob', () => {
     await answerAll(dir, ['confirm', 'confirm', 'accept']);
     await expect(result).resolves.toBe('done');
     const qa = runner.calls.filter((c) => c.role === 'qa').map((c) => c.input as QaInput);
+    // full ไม่ถ่าย startTree (M6: startTree เฉพาะ quick/standard) — t1 คือ "after" ของรอบแรก (baseline ของ QA รอบแก้)
     expect(qa[1]!.roundDiff?.diff).toBe('t1..t2');
   });
 });

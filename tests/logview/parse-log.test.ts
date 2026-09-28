@@ -216,6 +216,11 @@ describe('parseLog', () => {
     expect(r[0]!.level).toBe('full');
   });
 
+  it('level.decided ค่า standard ถูกเก็บเป็น run.level', () => {
+    const r = parseLog(`${T} INFO  run.start {}\n${T} INFO  level.decided {"level":"standard","by":"pm","riskFlags":[]}`);
+    expect(r[0]!.level).toBe('standard');
+  });
+
   it('team.start ไม่มี level (level: undefined จาก state ใหม่) -> ไม่ตั้ง run.level', () => {
     const r = parseLog(`${T} INFO  run.start {}\n${T} INFO  team.start {"phase":"REQUIREMENTS"}`);
     expect(r[0]!.level).toBeUndefined();
