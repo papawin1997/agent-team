@@ -96,6 +96,39 @@ describe('parseArgs --headless', () => {
     expect(parseArgs(['--headless', '-r'])).toMatchObject({ headless: true, resume: true });
   });
 
+  // บรรทัดคำสั่งเดียวกับใน claude-skill/agent-team/SKILL.md และ README
+  it('คำสั่ง run นำหน้า (ตาม SKILL.md/README): งานใหม่, --resume, --job', () => {
+    expect(
+      parseArgs(['run', '--headless', '--project', 'C:/work/my/app', '--request', 'ทำหน้า login', '--quick']),
+    ).toMatchObject({
+      command: 'run',
+      headless: true,
+      request: 'ทำหน้า login',
+      level: 'quick',
+      projectDir: path.resolve('C:/work/my/app'),
+    });
+    expect(parseArgs(['run', '--headless', '--project', 'C:/work/my/app', '--resume'])).toMatchObject({
+      command: 'run',
+      headless: true,
+      resume: true,
+      projectDir: path.resolve('C:/work/my/app'),
+    });
+    expect(parseArgs(['run', '--headless', '--project', 'C:/work/my/app', '--job', '20260928-101500'])).toMatchObject({
+      command: 'run',
+      headless: true,
+      job: '20260928-101500',
+      projectDir: path.resolve('C:/work/my/app'),
+    });
+    // ไม่ระบุ --project = cwd (ไม่ใช่ <cwd>/run)
+    expect(parseArgs(['run', '--headless', '--request', 'x']).projectDir).toBe(path.resolve('.'));
+  });
+
+  it('ไม่มี run นำหน้ายังใช้ได้เหมือนเดิม และโฟลเดอร์ชื่อ run ต้องพิมพ์ ./run', () => {
+    expect(parseArgs(['C:/work/my/app'])).toMatchObject({ command: 'run', projectDir: path.resolve('C:/work/my/app') });
+    expect(parseArgs(['--project', 'x'])).toMatchObject({ command: 'run', projectDir: path.resolve('x') });
+    expect(parseArgs(['./run'])).toMatchObject({ command: 'run', projectDir: path.resolve('run') });
+  });
+
   it('ไม่ใส่ --headless ไม่มี key headless', () => {
     expect(parseArgs(['--project', 'a'])).not.toHaveProperty('headless');
   });

@@ -23,9 +23,10 @@ export interface CliArgs {
 }
 
 export function parseArgs(argv: string[]): CliArgs {
-  // logs เป็นคำสั่งย่อยเฉพาะตำแหน่งแรก (โฟลเดอร์ชื่อ logs ให้พิมพ์ ./logs)
+  // logs/run เป็นคำสั่งย่อยเฉพาะตำแหน่งแรก (โฟลเดอร์ชื่อ logs/run ให้พิมพ์ ./logs, ./run)
+  // run เขียนหรือไม่เขียนก็ได้ (agent-team run --headless ... เท่ากับ agent-team --headless ...)
   const command: Command = argv[0] === 'logs' ? 'logs' : 'run';
-  const rest = command === 'logs' ? argv.slice(1) : argv;
+  const rest = argv[0] === 'logs' || argv[0] === 'run' ? argv.slice(1) : argv;
   let projectDir: string | undefined;
   let resume = false;
   let live = false;

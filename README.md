@@ -96,6 +96,8 @@ PM จะจัดระดับงานให้ตอนเสนอ require
 - `agent-team answer [--job <id>] -- "<คำตอบ>"` ตอบคำถามที่รออยู่
 - `agent-team stop [--job <id>]` หยุดงาน (process ไม่หยุดใน 10 วินาทีจะถูก kill)
 
+`run` เป็นคำสั่งย่อยเมื่ออยู่คำแรก (ใส่หรือไม่ใส่ก็ได้: `agent-team run --headless ...` = `agent-team --headless ...`) ถ้าโฟลเดอร์โปรเจกต์ชื่อ `run` ให้พิมพ์ `agent-team ./run` (เหมือน `logs`)
+
 ทุกคำสั่งรับ `--project <path>` (ไม่ใส่ = โฟลเดอร์ปัจจุบัน) ไฟล์สื่อสารอยู่ใน `.agent-team/jobs/<id>/` (`events.jsonl`, `question.json`, `answer.json`, `activity.json`, `exit.json`, `stop.json`)
 ถ้าไม่มีใครตอบคำถามเกิน `headlessIdleMinutes` (ค่าเริ่มต้น 120 นาที) งานจะหยุดแบบ resume ต่อได้ด้วย `--job <id>`
 
