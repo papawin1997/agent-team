@@ -66,6 +66,7 @@ export async function runReview(deps: Deps, state: State): Promise<void> {
   const { runner, io, store, config } = deps;
   const { design } = state;
   if (!design) throw new Error('REVIEW ต้องมี design');
+  const requirements = state.requirements!;
 
   const { turn, sessionId } = await runner.pmTurn({
     sessionId: state.pmSessionId,
@@ -78,8 +79,8 @@ export async function runReview(deps: Deps, state: State): Promise<void> {
 
   let options: readonly ('full' | 'confirm' | 'revise')[] = ['confirm', 'revise'];
   const flags =
-    state.level === 'standard' && state.requirements
-      ? mergeRiskFlags(riskFlags(riskText(state.requirements)), riskFlags(designRiskText(design)))
+    state.level === 'standard' && requirements
+      ? mergeRiskFlags(riskFlags(riskText(requirements)), riskFlags(designRiskText(design)))
       : [];
   if (flags.length) {
     io.say(`⚠ requirements/design แตะเรื่อง ${flags.join(', ')} — แนะนำ full (Security ตรวจ design และทุก task)`);
@@ -87,7 +88,7 @@ export async function runReview(deps: Deps, state: State): Promise<void> {
   }
   let decision = await decide(deps, state, 'ยืนยันแบบนี้ไหม?', options);
   if (decision === 'full') {
-    const securityNotes = await reviewDesignSecurity(deps, design, state.requirements!);
+    const securityNotes = await reviewDesignSecurity(deps, design, requirements);
     state.level = 'full';
     state.design = { ...design, securityNotes };
     await store.saveArtifact('design.json', state.design);
