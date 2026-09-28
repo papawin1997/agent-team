@@ -195,7 +195,9 @@ describe('buildQaPrompt โหมด diff', () => {
     expect(prompt).toContain('Previous QA report');
     expect(prompt).toMatch(/<untrusted-round-diff-[0-9a-f]+>[\s\S]*\+const fixed = true;[\s\S]*<\/untrusted-round-diff-[0-9a-f]+>/);
     expect(prompt).toContain('FULL build, lint and test');
-    expect(prompt).toContain('src/api.ts');
+    // ชื่อไฟล์มาจาก worker จึงต้องอยู่ในบล็อก untrusted ด้วย
+    expect(prompt).toMatch(/<untrusted-round-diff-[0-9a-f]+>[\s\S]*src\/api\.ts[\s\S]*<\/untrusted-round-diff-[0-9a-f]+>/);
+    expect(prompt.slice(prompt.search(/<\/untrusted-round-diff-/))).not.toContain('src/api.ts');
   });
 
   it('diff ว่าง → บอกว่า worker ไม่ได้เปลี่ยนอะไร', () => {
@@ -214,6 +216,6 @@ describe('buildQaPrompt โหมด diff', () => {
       roundDiff: { diff: '+a', files: ['src/a.ts', 'src/b.ts'], truncated: true },
     });
     expect(prompt).toContain('truncated');
-    expect(prompt).toContain('src/b.ts');
+    expect(prompt).toMatch(/<untrusted-round-diff-[0-9a-f]+>[\s\S]*src\/b\.ts[\s\S]*<\/untrusted-round-diff-[0-9a-f]+>/);
   });
 });

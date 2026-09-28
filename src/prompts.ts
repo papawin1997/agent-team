@@ -144,10 +144,12 @@ function roundDiffSection(diff: RoundDiff): string {
   if (diff.diff === '' && diff.files.length === 0) {
     return 'Changes in this round: the worker made NO file changes in this round.';
   }
+  // รายชื่อไฟล์มาจาก worker (ตั้งชื่อไฟล์เองได้) จึงอยู่ในบล็อก untrusted เดียวกับ diff
+  const content = `Changed files in this round: ${diff.files.join(', ')}\n\n${diff.diff}`;
   const note = diff.truncated
-    ? `\n\nThe diff above is truncated. All changed files in this round: ${diff.files.join(', ')} — read them directly for the parts that are cut off.`
-    : `\n\nChanged files in this round: ${diff.files.join(', ')}`;
-  return `Changes in this round (git diff):\n${untrusted('round-diff', 'the diff of this round', diff.diff)}${note}`;
+    ? '\n\nThe diff above is truncated. The list of changed files at the top of the block is complete — read those files directly for the parts that are cut off.'
+    : '';
+  return `Changes in this round (git diff):\n${untrusted('round-diff', 'the changed files and diff of this round', content)}${note}`;
 }
 
 export function buildQaPrompt(input: QaInput): string {
