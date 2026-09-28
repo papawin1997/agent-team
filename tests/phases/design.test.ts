@@ -4,7 +4,7 @@ import { DesignError } from '../../src/domain';
 import { RoleRunError } from '../../src/errors';
 import { runDesign, runReview } from '../../src/phases/design';
 import { newState, type State } from '../../src/state';
-import { asking, makeDesign, makeRequirements, makeTask } from '../helpers/builders';
+import { asking, buildState, makeDesign, makeRequirements, makeTask } from '../helpers/builders';
 import { makeDeps } from '../helpers/fakes';
 
 const stateAt = (phase: State['phase']): State => {
@@ -233,5 +233,63 @@ describe('runReview', () => {
     expect(runner.calls).toHaveLength(2);
     expect((runner.calls[1]!.input as { prompt: string }).prompt).toContain('ทำไม backend ต้องทำก่อน');
     expect(io.said.join('\n')).toContain('เพราะ backend ต้องเสร็จก่อน');
+  });
+});
+
+describe('ระดับ standard', () => {
+  it('runDesign ไม่เรียก securityDesign และ design ไม่มี securityNotes', async () => {
+    const { deps, runner } = makeDeps({ plans: [makeDesign()] }, []);
+    const state = { ...newState(), requirements: makeRequirements(), level: 'standard' as const, phase: 'DESIGN' as const };
+    await runDesign(deps, state);
+    expect(runner.calls.map((c) => c.role)).toEqual(['planning']);
+    expect(state.design).not.toHaveProperty('securityNotes');
+    expect(state.phase).toBe('REVIEW');
+  });
+
+  it('REVIEW ไม่มีคำเสี่ยง: ตัวเลือก confirm/revise เหมือนเดิม', async () => {
+    const { deps, io } = makeDeps({ pm: [asking('สรุป design')] }, ['confirm']);
+    const state = { ...buildState(), level: 'standard' as const, phase: 'REVIEW' as const };
+    await runReview(deps, state);
+    expect(state.phase).toBe('BUILD');
+    expect(io.said.join('\n')).not.toContain('⚠');
+  });
+
+  it('REVIEW เจอคำเสี่ยง: เตือน เสนอ full ก่อน เลือก full → เรียก Security ตรวจ design, level full, แล้ว confirm', async () => {
+    const events: { event: string; data?: Record<string, unknown> }[] = [];
+    // ScriptedIO.chooseOrText (tests/helpers/fakes.ts) ไม่ได้ต่อรายชื่อตัวเลือกเข้าไปในข้อความ prompt
+    // เหมือน CliIO จริง (src/cli.ts) จึงตรวจว่า full ถูกเลื่อนมาเป็นตัวเลือกแรกด้วยการตอบ '1' แทนการพิมพ์ 'full'
+    const { deps, runner, io } = makeDeps(
+      { pm: [asking('สรุป design')], securityDesign: [['hash password']] },
+      ['1', 'confirm'],
+    );
+    deps.log = { log: (_l, event, data) => void events.push({ event, data }) };
+    const state = {
+      ...buildState(),
+      requirements: { ...makeRequirements(), goal: 'ระบบ login' },
+      level: 'standard' as const,
+      phase: 'REVIEW' as const,
+    };
+    await runReview(deps, state);
+
+    expect(io.said.join('\n')).toContain('แนะนำ full');
+    expect(runner.calls.filter((c) => c.role === 'security')).toHaveLength(1);
+    expect(state.level).toBe('full');
+    expect(state.design?.securityNotes).toEqual(['hash password']);
+    expect(state.phase).toBe('BUILD');
+    expect(events.find((e) => e.event === 'level.decided')?.data).toMatchObject({ level: 'full', by: 'user' });
+  });
+
+  it('REVIEW เจอคำเสี่ยงแต่ user confirm แบบ standard ได้', async () => {
+    const { deps, runner } = makeDeps({ pm: [asking('สรุป design')] }, ['confirm']);
+    const state = {
+      ...buildState(),
+      requirements: { ...makeRequirements(), goal: 'ระบบ login' },
+      level: 'standard' as const,
+      phase: 'REVIEW' as const,
+    };
+    await runReview(deps, state);
+    expect(state.level).toBe('standard');
+    expect(state.phase).toBe('BUILD');
+    expect(runner.calls.filter((c) => c.role === 'security')).toHaveLength(0);
   });
 });

@@ -1,5 +1,5 @@
 import type { JobInfo } from './jobs';
-import type { Design, QuickTask, Requirements } from './schemas';
+import type { Design, Level, QuickTask, Requirements } from './schemas';
 import type { Phase, State } from './state';
 
 const list = (items: string[]): string =>
@@ -21,7 +21,14 @@ export function formatRequirements(r: Requirements): string {
   ].join('\n');
 }
 
-export function formatDesign(d: Design): string {
+/** ข้อความ (Security) เมื่อไม่มี securityNotes: ระดับ standard ไม่เคยตรวจตั้งแต่แรก ต่างจากระดับอื่นที่ตรวจไม่สำเร็จ */
+const securityNotesText = (d: Design, level: Level | undefined): string => {
+  if (d.securityNotes !== undefined) return list(d.securityNotes);
+  if (level === 'standard') return '  (ระดับ standard ไม่มีการตรวจ Security ของ design)';
+  return '  (Security ตรวจไม่สำเร็จ — ยังไม่มีผลตรวจ)';
+};
+
+export function formatDesign(d: Design, opts?: { level?: Level }): string {
   const tasks = d.tasks
     .map((t) => {
       const after = t.dependsOn.length > 0 ? ` (ต้องทำหลัง ${t.dependsOn.join(', ')})` : '';
@@ -37,7 +44,7 @@ export function formatDesign(d: Design): string {
     'Tasks:',
     tasks,
     'ข้อควรระวังด้านความปลอดภัย (Security):',
-    d.securityNotes === undefined ? '  (Security ตรวจไม่สำเร็จ — ยังไม่มีผลตรวจ)' : list(d.securityNotes),
+    securityNotesText(d, opts?.level),
     '',
   ].join('\n');
 }

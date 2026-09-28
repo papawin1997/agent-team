@@ -67,6 +67,18 @@ describe('formatDesign', () => {
       'ข้อควรระวังด้านความปลอดภัย (Security):\n  (Security ตรวจไม่สำเร็จ',
     );
   });
+
+  it('ระดับ standard ไม่มี securityNotes: แสดงข้อความเฉพาะของ standard แทน "ตรวจไม่สำเร็จ"', () => {
+    const formatted = formatDesign(makeDesign(), { level: 'standard' });
+    expect(formatted).toContain('ข้อควรระวังด้านความปลอดภัย (Security):\n  (ระดับ standard ไม่มีการตรวจ Security ของ design)');
+    expect(formatted).not.toContain('ตรวจไม่สำเร็จ');
+  });
+
+  it('ระดับ full ที่ไม่มี securityNotes: ยังแสดงข้อความ "ตรวจไม่สำเร็จ" เหมือนเดิม', () => {
+    expect(formatDesign(makeDesign(), { level: 'full' })).toContain(
+      'ข้อควรระวังด้านความปลอดภัย (Security):\n  (Security ตรวจไม่สำเร็จ',
+    );
+  });
 });
 
 const lastRun = new Date(2026, 8, 24, 14, 10);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { mergeRiskFlags, riskFlags, riskText } from '../src/risk';
-import { makeRequirements } from './helpers/builders';
+import { designRiskText, mergeRiskFlags, riskFlags, riskText } from '../src/risk';
+import { makeDesign, makeRequirements, makeTask } from './helpers/builders';
 
 describe('riskFlags', () => {
   it('งานทั่วไปไม่มีหมวดเสี่ยง', () => {
@@ -237,5 +237,15 @@ describe('riskText', () => {
     expect(text).toContain('ปุ่มเป็นสีเขียว');
     expect(text).not.toContain('login');
     expect(riskFlags(text)).toEqual([]);
+  });
+});
+
+describe('designRiskText', () => {
+  it('รวม architecture และข้อความของทุก task', () => {
+    const design = makeDesign([makeTask('api'), { ...makeTask('login'), title: 'หน้า login', description: 'เพิ่ม session' }]);
+    const text = designRiskText({ ...design, architecture: 'ใช้ Express' });
+    expect(text).toContain('ใช้ Express');
+    expect(text).toContain('หน้า login');
+    expect(riskFlags(text)).toContain('auth');
   });
 });
