@@ -59,7 +59,7 @@ async function runRound(
   let step: Step = 'work';
   let qaReport: QAReport | undefined;
   try {
-    const result = await runner.work({ task, ...ctx, previousReport: progress.lastReport });
+    const result = (await runner.work({ task, ...ctx, previousReport: progress.lastReport })).result;
     step = 'qa';
     qaReport = await runner.qa({ task, result, ...ctx });
     if (!isPass(qaReport)) return { report: qaReport, limitHit: false, securityReviewed: false };

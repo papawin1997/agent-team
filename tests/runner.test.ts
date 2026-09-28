@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CONFIG } from '../src/config';
 import { RoleOutputError, RoleRunError, SdkRoleRunner } from '../src/runner';
-import { makeDesign, makeRequirements, makeTask } from './helpers/builders';
+import { failReport, makeDesign, makeRequirements, makeTask } from './helpers/builders';
 
 type Msg = Record<string, unknown>;
 type Call = { prompt: string; options: Record<string, any> };
@@ -322,17 +322,36 @@ describe('SdkRoleRunner', () => {
     expect(calls[0]!.prompt).toContain('todo list');
   });
 
-  it('worker เลือก role ตาม task.owner', async () => {
+  it('worker เลือก role ตาม task.owner และคืน result พร้อม sessionId', async () => {
     const result = { taskId: 'ui', summary: 'เสร็จ', filesChanged: [], howToVerify: '' };
     const { runner, calls } = makeRunner([[initMsg(), okResult(result)]]);
-    await runner.work({
+    const out = await runner.work({
       task: makeTask('ui', 'frontend'),
       design: makeDesign(),
       requirements: makeRequirements(),
     });
 
+    expect(out.result).toEqual(result);
+    expect(typeof out.sessionId).toBe('string');
     expect(calls[0]!.options.tools).toContain('Edit');
     expect(calls[0]!.options.systemPrompt).toContain('frontend worker');
+    expect(calls[0]!.options.resume).toBeUndefined();
+  });
+
+  it('worker resume: ส่ง resume = resumeSessionId และใช้ prompt รอบแก้ (ไม่มี Design)', async () => {
+    const result = { taskId: 'api', summary: 'แก้แล้ว', filesChanged: [], howToVerify: '' };
+    const { runner, calls } = makeRunner([[initMsg(), okResult(result)]]);
+    await runner.work({
+      task: makeTask('api'),
+      design: makeDesign(),
+      requirements: makeRequirements(),
+      previousReport: failReport('api'),
+      resumeSessionId: 'worker-session-1',
+    });
+
+    expect(calls[0]!.options.resume).toBe('worker-session-1');
+    expect(calls[0]!.prompt).toContain('Fix every blocker and major issue');
+    expect(calls[0]!.prompt).not.toContain('Design:');
   });
 
   it('securityDesign คืน securityNotes จาก structured output', async () => {

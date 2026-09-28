@@ -2,6 +2,7 @@ import type { TeamConfig } from './config';
 import type { Logger } from './logger';
 import type { Design, Level, PmTurn, QAReport, Requirements, SecurityReport, Task, WorkerResult } from './schemas';
 import type { State } from './state';
+import type { RoundDiff, SnapshotProvider } from './snapshot';
 
 export interface PmInput {
   prompt: string;
@@ -19,6 +20,14 @@ export interface WorkInput {
   design: Design;
   requirements: Requirements;
   previousReport?: QAReport;
+  /** มีค่า = ทำต่อใน session เดิมของ worker (รอบแก้) ด้วย prompt สั้นที่มีแค่ผล QA */
+  resumeSessionId?: string;
+}
+
+export interface WorkOutput {
+  result: WorkerResult;
+  /** session ของ worker รอบนี้ (ใช้ resume รอบแก้ถัดไป) */
+  sessionId: string;
 }
 
 export interface QaInput {
@@ -26,6 +35,10 @@ export interface QaInput {
   result: WorkerResult;
   design: Design;
   requirements: Requirements;
+  /** รอบแก้: สิ่งที่ worker เปลี่ยนในรอบนี้ — มีค่า = QA ตรวจเฉพาะ diff + ปัญหาเดิม */
+  roundDiff?: RoundDiff;
+  /** รอบแก้: ผล QA รอบก่อน (ใช้คู่กับ roundDiff) */
+  previousReport?: QAReport;
 }
 
 export interface SecurityDesignInput {
@@ -36,7 +49,7 @@ export interface SecurityDesignInput {
 export interface RoleRunner {
   pmTurn(input: PmInput): Promise<{ turn: PmTurn; sessionId: string }>;
   plan(input: PlanInput): Promise<Design>;
-  work(input: WorkInput): Promise<WorkerResult>;
+  work(input: WorkInput): Promise<WorkOutput>;
   qa(input: QaInput): Promise<QAReport>;
   securityDesign(input: SecurityDesignInput): Promise<string[]>;
   security(input: QaInput): Promise<SecurityReport>;
@@ -63,6 +76,8 @@ export interface Deps {
   log?: Logger;
   /** จาก --quick / --full: บอก PM ว่าผู้ใช้อยากได้ระดับไหน (full = ไม่เสนอ quick) */
   levelPreference?: Level;
+  /** snapshot working tree เพื่อหา diff ของรอบแก้ ไม่มี = QA ตรวจทั้ง task ทุกรอบ */
+  snapshots?: SnapshotProvider;
 }
 
 /**
