@@ -76,3 +76,41 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['logs', '--quick'])).toThrow('logs');
   });
 });
+
+describe('parseArgs --headless', () => {
+  it('--headless --request: งานใหม่ ใช้ cwd เมื่อไม่ระบุโปรเจกต์', () => {
+    expect(parseArgs(['--headless', '--request', 'อยากได้ todo'])).toMatchObject({
+      command: 'run',
+      projectDir: path.resolve('.'),
+      headless: true,
+      request: 'อยากได้ todo',
+    });
+  });
+
+  it('--headless --job และ --headless --resume', () => {
+    expect(parseArgs(['--headless', '--project', 'a', '--job', '20260928-101500'])).toMatchObject({
+      headless: true,
+      job: '20260928-101500',
+      projectDir: path.resolve('a'),
+    });
+    expect(parseArgs(['--headless', '-r'])).toMatchObject({ headless: true, resume: true });
+  });
+
+  it('ไม่ใส่ --headless ไม่มี key headless', () => {
+    expect(parseArgs(['--project', 'a'])).not.toHaveProperty('headless');
+  });
+
+  it.each([
+    [['--headless'], 'อย่างใดอย่างหนึ่ง'],
+    [['--headless', '--request', 'x', '--resume'], 'อย่างใดอย่างหนึ่ง'],
+    [['--headless', '--request', 'x', '--job', '20260928-101500'], 'อย่างใดอย่างหนึ่ง'],
+    [['--request', 'x'], 'ใช้คู่กับ --headless'],
+    [['--job', '20260928-101500'], 'ใช้คู่กับ --headless'],
+    [['--headless', '--request'], 'ต้องระบุค่าหลัง --request'],
+    [['--headless', '--request', '   '], 'ห้ามว่าง'],
+    [['--headless', '--job', '../x'], 'jobId ไม่ถูกรูปแบบ'],
+    [['logs', '--headless'], 'agent-team logs ไม่ได้'],
+  ])('%j → error', (argv, message) => {
+    expect(() => parseArgs(argv)).toThrow(message);
+  });
+});
