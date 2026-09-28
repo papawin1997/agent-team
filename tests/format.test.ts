@@ -126,6 +126,12 @@ describe('formatJobSummary', () => {
     expect(formatJobSummary(jobOf('a', s), 1)).not.toContain('· quick');
   });
 
+  it('แสดง tag ระดับ standard เหมือน quick', () => {
+    const s = buildState();
+    s.level = 'standard';
+    expect(formatJobSummary(jobOf('a', s), 1)).toContain(', เสร็จ 0/2 task · standard · รันล่าสุด');
+  });
+
   it('แสดงสถานะ lock และคำเตือนบรรทัดถัดไป', () => {
     const lock = { pid: 4120, startedAt: new Date(2026, 8, 25, 9, 12).toISOString() };
     const text = formatJobSummary(jobOf('a', buildState(), lastRun, lock), 1, '⚠ เตือน');

@@ -80,6 +80,11 @@ describe('PM: จัดระดับงาน', () => {
     expect(pm).toContain('change request to already-confirmed requirements');
     expect(pm).toContain('only the change itself, not re-implement the whole goal');
   });
+
+  it('PM prompt อธิบายระดับ standard', () => {
+    expect(SYSTEM_PROMPTS.pm).toContain('"standard"');
+    expect(SYSTEM_PROMPTS.pm).toContain('"quick", "standard" or "full"');
+  });
 });
 
 describe('prompt builders', () => {

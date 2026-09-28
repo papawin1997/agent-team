@@ -8,6 +8,7 @@ import type { State } from '../state';
 
 const LEVEL_HINT: Record<Level, string> = {
   quick: '[ผู้ใช้ขอโหมด quick ถ้างานเข้าเกณฑ์]',
+  standard: '[ผู้ใช้ขอโหมด standard: ไม่ใช้ quick]',
   full: '[ผู้ใช้สั่ง --full: ต้องเป็น full เท่านั้น]',
 };
 

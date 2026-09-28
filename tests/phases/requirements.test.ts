@@ -253,6 +253,13 @@ describe('runRequirements', () => {
     expect(pmInput(runner, 0).prompt).toBe('[ผู้ใช้ขอโหมด quick ถ้างานเข้าเกณฑ์]\nแก้คำผิด');
   });
 
+  it('--standard: บอก PM ในข้อความแรก', async () => {
+    const { deps, runner } = makeDeps({ pm: [proposal()] }, ['ทำหน้า profile', 'confirm']);
+    deps.levelPreference = 'standard';
+    await runRequirements(deps, newState());
+    expect(pmInput(runner, 0).prompt).toBe('[ผู้ใช้ขอโหมด standard: ไม่ใช้ quick]\nทำหน้า profile');
+  });
+
   it('levelHint เป็น state ต่อการรันหนึ่งครั้ง (ไม่ใช่ของ deps): ส่ง object เดิมซ้ำไม่บอก PM อีก, deps ใช้ซ้ำข้ามการรันไม่ค้าง flag', async () => {
     const levelHint = { sent: false };
     const { deps: deps1, runner: runner1 } = makeDeps({ pm: [quickProposal()] }, ['ขอ A', 'quick']);
