@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { runHeadlessCommand } from '../../src/headless/commands';
+import { defaultKill, runHeadlessCommand } from '../../src/headless/commands';
 import { headlessPath, readJsonSafe, writeJsonAtomic, type Answer, type ExitInfo } from '../../src/headless/files';
 import { JobRepository } from '../../src/jobs';
 
@@ -154,6 +154,28 @@ describe('stop', () => {
     const result = await runHeadlessCommand({ command: 'stop', projectDir, job: id });
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain('headless');
+  });
+});
+
+describe('defaultKill', () => {
+  it('win32 ใช้ taskkill /T /F ฆ่าทั้ง tree (รวม process ลูกของ SDK) และไม่ throw ถ้า taskkill ล้ม', () => {
+    const run = vi.fn(() => {
+      throw new Error('taskkill ไม่มี');
+    });
+    expect(() => defaultKill('win32', run as never)(4120)).not.toThrow();
+    expect(run).toHaveBeenCalledWith('taskkill', ['/T', '/F', '/PID', '4120'], expect.objectContaining({ windowsHide: true }));
+  });
+
+  it('platform อื่นใช้ process.kill', () => {
+    const run = vi.fn();
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    try {
+      defaultKill('linux', run as never)(4120);
+      expect(kill).toHaveBeenCalledWith(4120);
+      expect(run).not.toHaveBeenCalled();
+    } finally {
+      kill.mockRestore();
+    }
   });
 });
 

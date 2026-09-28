@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import { parseChoice } from '../cli';
 import { installSkill } from '../install-skill';
@@ -23,6 +24,23 @@ export interface CommandDeps {
 }
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * วิธี kill ของ stop เมื่อ process ไม่หยุดเอง
+ * Windows: process.kill ฆ่าแค่ node ตัวนั้น process ลูกของ SDK (claude) จะค้าง จึงใช้ taskkill /T /F ฆ่าทั้ง tree
+ */
+export function defaultKill(platform: NodeJS.Platform = process.platform, run: typeof spawnSync = spawnSync): (pid: number) => void {
+  if (platform === 'win32') {
+    return (pid) => {
+      try {
+        run('taskkill', ['/T', '/F', '/PID', String(pid)], { stdio: 'ignore', windowsHide: true });
+      } catch {
+        // taskkill ล้ม (process ตายไปแล้ว ฯลฯ) — stop เก็บกวาดต่อเอง
+      }
+    };
+  }
+  return (pid) => void process.kill(pid);
+}
 const json = (data: unknown): string => JSON.stringify(data, null, 2);
 const fail = (message: string): CommandResult => ({ exitCode: 1, stderr: message });
 const interactiveMessage = (jobId: string): string =>
@@ -105,7 +123,7 @@ async function stop(
   }
   // process ไม่ตอบสนอง (เช่น node ลูกค้างหลัง shim ถูก kill บน Windows): kill ตรง pid ที่ถือ lock แล้วเก็บกวาดแทน
   try {
-    (deps.kill ?? ((pid: number) => void process.kill(pid)))(lock.pid);
+    (deps.kill ?? defaultKill())(lock.pid);
   } catch {
     // ตายไปแล้วระหว่างรอ
   }
