@@ -28,7 +28,7 @@ export type TaskScopedDesign = Omit<Design, 'tasks'> & {
  */
 export function taskScopedDesign(design: Design, task: Task): TaskScopedDesign {
   const { tasks, ...rest } = design;
-  const relatedTasks = task.dependsOn.flatMap((id) => {
+  const relatedTasks = [...new Set(task.dependsOn)].flatMap((id) => {
     const dep = tasks.find((t) => t.id === id);
     return dep ? [{ id: dep.id, title: dep.title, description: dep.description }] : [];
   });
@@ -37,7 +37,8 @@ export function taskScopedDesign(design: Design, task: Task): TaskScopedDesign {
 
 const scopedDesignSection = (design: Design, task: Task): string =>
   `Design (scoped to this task; relatedTasks = the tasks it depends on, other tasks are omitted):
-${json(taskScopedDesign(design, task))}`;
+${json(taskScopedDesign(design, task))}
+The requirements describe the whole project; other tasks (omitted here) implement the parts outside this task. Implement or judge only this task and its acceptance criteria — never treat features owned by other tasks as missing.`;
 
 const PM_PROMPT = [
   'You are the Project Manager (PM) of a software agent team. You are the ONLY agent that talks to the human user. Always talk to the user in Thai.',

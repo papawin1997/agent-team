@@ -255,6 +255,12 @@ describe('ตัด context ต่อ task', () => {
     expect(taskScopedDesign(big, ghost).relatedTasks.map((t) => t.id)).toEqual(['db']);
   });
 
+  it('taskScopedDesign: dependsOn ว่าง → relatedTasks ว่าง, dependsOn ซ้ำ → ไม่ซ้ำ', () => {
+    expect(taskScopedDesign(big, makeTask('solo')).relatedTasks).toEqual([]);
+    const dup = makeTask('x', 'backend', ['db', 'db']);
+    expect(taskScopedDesign(big, dup).relatedTasks.map((t) => t.id)).toEqual(['db']);
+  });
+
   it('taskScopedDesign: ไม่มี securityNotes ใน design → ไม่มี key securityNotes', () => {
     expect(taskScopedDesign(makeDesign(tasks), ui)).not.toHaveProperty('securityNotes');
   });
@@ -291,6 +297,28 @@ describe('ตัด context ต่อ task', () => {
     const prompt = buildSecurityPrompt({ task: ui, design: big, requirements, result });
     for (const s of others) expect(prompt).not.toContain(s);
     expect(prompt).toContain('hash password');
+  });
+
+  it('prompt ต่อ task บอกว่าอย่าถือว่า feature ของ task อื่นขาด (plan/security-design ไม่มี)', () => {
+    const note = 'never treat features owned by other tasks as missing';
+    const fix = buildQaPrompt({
+      task: ui,
+      design: big,
+      requirements,
+      result,
+      previousReport: failReport('ui'),
+      roundDiff: { diff: '+x', files: ['src/ui.ts'], truncated: false },
+    });
+    for (const prompt of [
+      buildWorkPrompt({ task: ui, design: big, requirements }),
+      buildQaPrompt({ task: ui, design: big, requirements, result }),
+      fix,
+      buildSecurityPrompt({ task: ui, design: big, requirements, result }),
+    ]) {
+      expect(prompt).toContain(note);
+    }
+    expect(buildPlanPrompt({ requirements, previousDesign: big })).not.toContain(note);
+    expect(buildSecurityDesignPrompt({ design: big, requirements })).not.toContain(note);
   });
 
   it('buildSecurityDesignPrompt และ buildPlanPrompt ยังเห็นทุก task', () => {

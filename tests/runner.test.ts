@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_CONFIG } from '../src/config';
+import { DEFAULT_CONFIG, type TeamConfig } from '../src/config';
 import { RoleOutputError, RoleRunError, SdkRoleRunner } from '../src/runner';
 import { failReport, makeDesign, makeRequirements, makeTask, passReport as passReportFor } from './helpers/builders';
 
@@ -36,7 +36,7 @@ const apiRetryMsg = (over: Partial<Msg> = {}): Msg => ({
 
 const validTurn = { message: 'สวัสดี', status: 'asking' };
 
-function makeRunner(scripts: Array<Msg[] | Error>) {
+function makeRunner(scripts: Array<Msg[] | Error>, config: TeamConfig = DEFAULT_CONFIG) {
   const calls: Call[] = [];
   const sleeps: number[] = [];
   const queryFn = ((args: Call) => {
@@ -50,7 +50,7 @@ function makeRunner(scripts: Array<Msg[] | Error>) {
   }) as never;
   const runner = new SdkRoleRunner({
     projectDir: 'proj',
-    config: DEFAULT_CONFIG,
+    config,
     queryFn,
     sleep: async (ms) => {
       sleeps.push(ms);
@@ -503,6 +503,22 @@ describe('SdkRoleRunner: เลือกโมเดลตามระดับ�
     await runner.security({ task, design, requirements, result: workerResult });
     await runner.securityDesign({ design, requirements, level: 'full' });
     expect(calls.map((c) => c.options.model)).toEqual(['m-backend-quick', 'm-qa-quick', 'm-sec-full', 'm-sec-full']);
+  });
+
+  it('work รอบแก้ (resume) ยังใช้ modelByLevel ของ level และส่ง resume', async () => {
+    const { runner, calls } = makeRunner(
+      [[initMsg('s0'), okResult(workerResult, 's0')]],
+      { ...DEFAULT_CONFIG, roles: { ...DEFAULT_CONFIG.roles, backend: { ...DEFAULT_CONFIG.roles.backend, modelByLevel: { quick: 'm-q' } } } },
+    );
+    await runner.work({ task, design, requirements, previousReport: failReport('api'), resumeSessionId: 's0', level: 'quick' });
+    expect(calls[0]!.options.model).toBe('m-q');
+    expect(calls[0]!.options.resume).toBe('s0');
+  });
+
+  it('pmTurn ใช้ model ของ pm เสมอ แม้ role อื่นมี modelByLevel', async () => {
+    const { runner, calls } = makeRunner([[initMsg(), okResult(validTurn)]]);
+    await runner.pmTurn({ prompt: 'hi' });
+    expect(calls[0]!.options.model).toBe('claude-sonnet-5');
   });
 
   it('log agent.start บันทึกโมเดลที่ resolve แล้วและ level', async () => {

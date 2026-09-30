@@ -18,6 +18,7 @@ import {
 import {
   type Design,
   DesignSchema,
+  type Level,
   type PmTurn,
   PmTurnSchema,
   type QAReport,
@@ -25,7 +26,6 @@ import {
   SecurityDesignReviewSchema,
   type SecurityReport,
   SecurityReportSchema,
-  type Level,
   type WorkerResult,
   WorkerResultSchema,
   toJsonSchema,
@@ -79,7 +79,9 @@ export class SdkRoleRunner implements RoleRunner {
   }
 
   async plan(input: PlanInput): Promise<Design> {
-    return (await this.runValidated('planning', agentLabel('planning'), buildPlanPrompt(input), DesignSchema, undefined, input.level)).data;
+    const prompt = buildPlanPrompt(input);
+    const out = await this.runValidated('planning', agentLabel('planning'), prompt, DesignSchema, undefined, input.level);
+    return out.data;
   }
 
   async work(input: WorkInput): Promise<WorkOutput> {
@@ -90,7 +92,9 @@ export class SdkRoleRunner implements RoleRunner {
   }
 
   async qa(input: QaInput): Promise<QAReport> {
-    return (await this.runValidated('qa', agentLabel('qa', input.task.id), buildQaPrompt(input), QAReportSchema, undefined, input.level)).data;
+    const label = agentLabel('qa', input.task.id);
+    const out = await this.runValidated('qa', label, buildQaPrompt(input), QAReportSchema, undefined, input.level);
+    return out.data;
   }
 
   async securityDesign(input: SecurityDesignInput): Promise<string[]> {
@@ -107,7 +111,8 @@ export class SdkRoleRunner implements RoleRunner {
 
   async security(input: QaInput): Promise<SecurityReport> {
     const label = agentLabel('security', input.task.id);
-    return (await this.runValidated('security', label, buildSecurityPrompt(input), SecurityReportSchema, undefined, input.level)).data;
+    const out = await this.runValidated('security', label, buildSecurityPrompt(input), SecurityReportSchema, undefined, input.level);
+    return out.data;
   }
 
   private async runValidated<T>(

@@ -183,6 +183,31 @@ describe('modelByLevel', () => {
     expect(() => mergeConfig(DEFAULT_CONFIG, { roles: { qa: { modelByLevel: { huge: 'x' } } } })).toThrow();
   });
 
+  it('override model อย่างเดียว: ทิ้ง modelByLevel ที่สืบมา ใช้ model กับทุกระดับ', () => {
+    const merged = mergeConfig(DEFAULT_CONFIG, { roles: { planning: { model: 'x' } } });
+    expect(resolveModel(merged.roles.planning, 'standard')).toBe('x');
+    expect(resolveModel(merged.roles.planning, 'full')).toBe('x');
+    expect(merged.roles.planning.modelByLevel).toBeUndefined();
+  });
+
+  it('override model พร้อม modelByLevel: merge รายระดับตามเดิม', () => {
+    const merged = mergeConfig(DEFAULT_CONFIG, { roles: { planning: { model: 'x', modelByLevel: { quick: 'q' } } } });
+    expect(merged.roles.planning.modelByLevel).toEqual({ standard: 'claude-sonnet-5', quick: 'q' });
+    expect(resolveModel(merged.roles.planning, 'full')).toBe('x');
+  });
+
+  it('override field อื่น (maxTurns) ไม่แตะ modelByLevel ของ default', () => {
+    const merged = mergeConfig(DEFAULT_CONFIG, { roles: { planning: { maxTurns: 5 } } });
+    expect(merged.roles.planning.modelByLevel).toEqual({ standard: 'claude-sonnet-5' });
+  });
+
+  it('pm ยังรับ model, maxTurns, maxBudgetUsd, skills', () => {
+    const merged = mergeConfig(DEFAULT_CONFIG, {
+      roles: { pm: { model: 'pm-m', maxTurns: 7, maxBudgetUsd: 1.5, skills: ['team:x'] } },
+    });
+    expect(merged.roles.pm).toMatchObject({ model: 'pm-m', maxTurns: 7, maxBudgetUsd: 1.5, skills: ['team:x'] });
+  });
+
   it('mergeConfig ไม่แก้ modelByLevel ของ DEFAULT_CONFIG (ไม่ share object)', () => {
     mergeConfig(DEFAULT_CONFIG, { roles: { planning: { modelByLevel: { full: 'x-full' } } } });
     expect(DEFAULT_CONFIG.roles.planning.modelByLevel).toEqual({ standard: 'claude-sonnet-5' });

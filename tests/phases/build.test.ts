@@ -37,6 +37,7 @@ describe('runBuild', () => {
   it('state เก่าไม่มี level: ส่ง level undefined (runner ถือเป็น full)', async () => {
     const { deps, runner } = makeDeps({ qa: [passReport('api')] }, []);
     await runBuild(deps, buildState(single()));
+    expect(roles(runner.calls)).toEqual(['backend', 'qa', 'security']);
     for (const call of runner.calls) expect((call.input as WorkInput | QaInput).level).toBeUndefined();
   });
 

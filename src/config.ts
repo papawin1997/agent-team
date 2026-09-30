@@ -136,9 +136,15 @@ export function mergeConfig(base: TeamConfig, override: unknown): TeamConfig {
       Object.entries(patch).filter(([key, value]) => value !== undefined && key !== 'modelByLevel'),
     );
     const next: RoleConfig = { ...roles[name], ...defined };
-    // merge รายระดับ: override แค่ full แล้วค่า default ของ standard ยังอยู่
+    // 'in' ใช้ narrow type ของ patch: schema ของ pm ไม่มี modelByLevel
     const levelPatch = 'modelByLevel' in patch ? patch.modelByLevel : undefined;
-    if (levelPatch) next.modelByLevel = { ...roles[name].modelByLevel, ...levelPatch };
+    if (levelPatch) {
+      // merge รายระดับ: override แค่ full แล้วค่า default ของ standard ยังอยู่
+      next.modelByLevel = { ...roles[name].modelByLevel, ...levelPatch };
+    } else if (defined.model !== undefined) {
+      // ตั้ง model อย่างเดียว = ใช้กับทุกระดับ จึงทิ้ง modelByLevel ที่สืบมา
+      delete next.modelByLevel;
+    }
     roles[name] = next;
   }
   return {
