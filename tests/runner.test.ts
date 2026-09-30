@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_CONFIG } from '../src/config';
+import { DEFAULT_CONFIG, type TeamConfig } from '../src/config';
 import { RoleOutputError, RoleRunError, SdkRoleRunner } from '../src/runner';
-import { failReport, makeDesign, makeRequirements, makeTask } from './helpers/builders';
+import { failReport, makeDesign, makeRequirements, makeTask, passReport as passReportFor } from './helpers/builders';
 
 type Msg = Record<string, unknown>;
 type Call = { prompt: string; options: Record<string, any> };
@@ -36,7 +36,7 @@ const apiRetryMsg = (over: Partial<Msg> = {}): Msg => ({
 
 const validTurn = { message: 'สวัสดี', status: 'asking' };
 
-function makeRunner(scripts: Array<Msg[] | Error>) {
+function makeRunner(scripts: Array<Msg[] | Error>, config: TeamConfig = DEFAULT_CONFIG) {
   const calls: Call[] = [];
   const sleeps: number[] = [];
   const queryFn = ((args: Call) => {
@@ -50,7 +50,7 @@ function makeRunner(scripts: Array<Msg[] | Error>) {
   }) as never;
   const runner = new SdkRoleRunner({
     projectDir: 'proj',
-    config: DEFAULT_CONFIG,
+    config,
     queryFn,
     sleep: async (ms) => {
       sleeps.push(ms);
@@ -453,5 +453,98 @@ describe('SdkRoleRunner: สถานะระหว่าง agent ทำงา
     await expect(runner.pmTurn({ prompt: 'hi' })).rejects.toThrow('error_max_turns');
 
     expect(events).toEqual(['start [PM] กำลังคิด', 'stop', 'start [PM] กำลังคิด', 'stop']);
+  });
+});
+
+describe('SdkRoleRunner: เลือกโมเดลตามระดับงาน', () => {
+  const requirements = makeRequirements();
+  const design = makeDesign();
+  const task = makeTask('api');
+  const workerResult = { taskId: 'api', summary: 'เสร็จ', filesChanged: ['src/api.ts'], howToVerify: 'npm test' };
+
+  it('Planning: standard ใช้ Sonnet, full และไม่มี level ใช้ Opus', async () => {
+    const { runner, calls } = makeRunner([
+      [initMsg(), okResult(design)],
+      [initMsg(), okResult(design)],
+      [initMsg(), okResult(design)],
+    ]);
+    await runner.plan({ requirements, level: 'standard' });
+    await runner.plan({ requirements, level: 'full' });
+    await runner.plan({ requirements });
+    expect(calls.map((c) => c.options.model)).toEqual(['claude-sonnet-5', 'claude-opus-5', 'claude-opus-5']);
+  });
+
+  it('worker/QA/Security ใช้ modelByLevel ของ role ตัวเอง', async () => {
+    const calls: Array<{ options: Record<string, any> }> = [];
+    const outputs: unknown[] = [workerResult, passReportFor('api'), { taskId: 'api', verdict: 'PASS', issues: [] }, { securityNotes: [] }];
+    const runner = new SdkRoleRunner({
+      projectDir: 'proj',
+      config: {
+        ...DEFAULT_CONFIG,
+        roles: {
+          ...DEFAULT_CONFIG.roles,
+          backend: { ...DEFAULT_CONFIG.roles.backend, modelByLevel: { quick: 'm-backend-quick' } },
+          qa: { ...DEFAULT_CONFIG.roles.qa, modelByLevel: { quick: 'm-qa-quick' } },
+          security: { ...DEFAULT_CONFIG.roles.security, modelByLevel: { full: 'm-sec-full' } },
+        },
+      },
+      queryFn: ((args: { options: Record<string, any> }) => {
+        calls.push(args);
+        const output = outputs.shift();
+        return (async function* () {
+          yield initMsg();
+          yield okResult(output);
+        })();
+      }) as never,
+      sleep: async () => {},
+    });
+    await runner.work({ task, design, requirements, level: 'quick' });
+    await runner.qa({ task, design, requirements, result: workerResult, level: 'quick' });
+    await runner.security({ task, design, requirements, result: workerResult });
+    await runner.securityDesign({ design, requirements, level: 'full' });
+    expect(calls.map((c) => c.options.model)).toEqual(['m-backend-quick', 'm-qa-quick', 'm-sec-full', 'm-sec-full']);
+  });
+
+  it('work รอบแก้ (resume) ยังใช้ modelByLevel ของ level และส่ง resume', async () => {
+    const { runner, calls } = makeRunner(
+      [[initMsg('s0'), okResult(workerResult, 's0')]],
+      { ...DEFAULT_CONFIG, roles: { ...DEFAULT_CONFIG.roles, backend: { ...DEFAULT_CONFIG.roles.backend, modelByLevel: { quick: 'm-q' } } } },
+    );
+    await runner.work({ task, design, requirements, previousReport: failReport('api'), resumeSessionId: 's0', level: 'quick' });
+    expect(calls[0]!.options.model).toBe('m-q');
+    expect(calls[0]!.options.resume).toBe('s0');
+  });
+
+  it('pmTurn ใช้ model ของ pm เสมอ แม้ role อื่นมี modelByLevel', async () => {
+    const { runner, calls } = makeRunner([[initMsg(), okResult(validTurn)]]);
+    await runner.pmTurn({ prompt: 'hi' });
+    expect(calls[0]!.options.model).toBe('claude-sonnet-5');
+  });
+
+  it('log agent.start บันทึกโมเดลที่ resolve แล้วและ level', async () => {
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const runner = new SdkRoleRunner({
+      projectDir: 'proj',
+      config: DEFAULT_CONFIG,
+      queryFn: (() =>
+        (async function* () {
+          yield initMsg();
+          yield okResult(design);
+        })()) as never,
+      sleep: async () => {},
+      logger: { log: (_level, event, data) => void events.push({ event, data: data as never }) },
+    });
+    await runner.plan({ requirements, level: 'standard' });
+    const start = events.find((e) => e.event === 'agent.start')!;
+    expect(start.data).toMatchObject({ role: 'planning', model: 'claude-sonnet-5', level: 'standard' });
+  });
+
+  it('รอบ re-ask เมื่อ output ผิด schema ยังใช้โมเดลตามระดับเดิม', async () => {
+    const { runner, calls } = makeRunner([
+      [initMsg(), okResult({ nope: true })],
+      [initMsg(), okResult(design)],
+    ]);
+    await runner.plan({ requirements, level: 'standard' });
+    expect(calls.map((c) => c.options.model)).toEqual(['claude-sonnet-5', 'claude-sonnet-5']);
   });
 });

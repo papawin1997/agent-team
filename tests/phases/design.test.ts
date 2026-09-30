@@ -77,6 +77,24 @@ describe('runDesign', () => {
     expect(state.design).toEqual({ ...design, securityNotes: undefined });
     expect(io.said.some((s) => s.includes('[Security]') && s.includes('ตรวจ design ไม่สำเร็จ'))).toBe(true);
   });
+
+  it('ส่ง level ของ state ให้ Planning และ Security ตรวจ design', async () => {
+    const { deps, runner } = makeDeps({ plans: [makeDesign()], securityDesign: [[]] }, []);
+    const state = stateAt('DESIGN');
+    state.level = 'full';
+    await runDesign(deps, state);
+    expect((runner.calls[0]!.input as PlanInput).level).toBe('full');
+    const sec = runner.calls.find((c) => c.role === 'security')!;
+    expect((sec.input as SecurityDesignInput).level).toBe('full');
+  });
+
+  it('standard: Planning ได้ level standard', async () => {
+    const { deps, runner } = makeDeps({ plans: [makeDesign()] }, []);
+    const state = stateAt('DESIGN');
+    state.level = 'standard';
+    await runDesign(deps, state);
+    expect((runner.calls[0]!.input as PlanInput).level).toBe('standard');
+  });
 });
 
 describe('runDesign: designFeedback (คำขอแก้ design จาก user)', () => {
@@ -273,6 +291,9 @@ describe('ระดับ standard', () => {
 
     expect(io.said.join('\n')).toContain('แนะนำ full');
     expect(runner.calls.filter((c) => c.role === 'security')).toHaveLength(1);
+    // ยกเป็น full แล้ว Security ตรวจ design ด้วยโมเดลของระดับ full (state.level ยังเป็น standard ตอนเรียก)
+    const sec = runner.calls.find((c) => c.role === 'security')!;
+    expect((sec.input as SecurityDesignInput).level).toBe('full');
     expect(state.level).toBe('full');
     expect(state.design?.securityNotes).toEqual(['hash password']);
     expect(state.phase).toBe('BUILD');
