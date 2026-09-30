@@ -13,6 +13,8 @@ export interface PlanInput {
   requirements: Requirements;
   previousDesign?: Design;
   feedback?: string;
+  /** ระดับงานตอนเรียก — runner ใช้เลือกโมเดล (undefined = full) */
+  level?: Level;
 }
 
 export interface WorkInput {
@@ -22,6 +24,8 @@ export interface WorkInput {
   previousReport?: QAReport;
   /** มีค่า = ทำต่อใน session เดิมของ worker (รอบแก้) ด้วย prompt สั้นที่มีแค่ผล QA */
   resumeSessionId?: string;
+  /** ระดับงานตอนเรียก — runner ใช้เลือกโมเดล (undefined = full) */
+  level?: Level;
 }
 
 export interface WorkOutput {
@@ -39,11 +43,15 @@ export interface QaInput {
   roundDiff?: RoundDiff;
   /** รอบแก้: ผล QA รอบก่อน (ใช้คู่กับ roundDiff) */
   previousReport?: QAReport;
+  /** ระดับงานตอนเรียก — runner ใช้เลือกโมเดล (undefined = full) */
+  level?: Level;
 }
 
 export interface SecurityDesignInput {
   design: Design;
   requirements: Requirements;
+  /** ระดับงานตอนเรียก — runner ใช้เลือกโมเดล (undefined = full) */
+  level?: Level;
 }
 
 export interface RoleRunner {

@@ -1,7 +1,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { agentLabel, describeToolUse, nullStatus, type StatusSink } from './activity';
-import { type RoleName, SKILLS_PLUGIN_DIR, type TeamConfig } from './config';
+import { resolveModel, type RoleName, SKILLS_PLUGIN_DIR, type TeamConfig } from './config';
 import type { PlanInput, PmInput, QaInput, RoleRunner, SecurityDesignInput, WorkInput, WorkOutput } from './deps';
 import { RoleOutputError, RoleRunError } from './errors';
 import { type Logger, nullLogger } from './logger';
@@ -25,6 +25,7 @@ import {
   SecurityDesignReviewSchema,
   type SecurityReport,
   SecurityReportSchema,
+  type Level,
   type WorkerResult,
   WorkerResultSchema,
   toJsonSchema,
@@ -78,18 +79,18 @@ export class SdkRoleRunner implements RoleRunner {
   }
 
   async plan(input: PlanInput): Promise<Design> {
-    return (await this.runValidated('planning', agentLabel('planning'), buildPlanPrompt(input), DesignSchema)).data;
+    return (await this.runValidated('planning', agentLabel('planning'), buildPlanPrompt(input), DesignSchema, undefined, input.level)).data;
   }
 
   async work(input: WorkInput): Promise<WorkOutput> {
     const { owner, id } = input.task;
     const prompt = input.resumeSessionId ? buildWorkFixPrompt(input) : buildWorkPrompt(input);
-    const out = await this.runValidated(owner, agentLabel(owner, id), prompt, WorkerResultSchema, input.resumeSessionId);
+    const out = await this.runValidated(owner, agentLabel(owner, id), prompt, WorkerResultSchema, input.resumeSessionId, input.level);
     return { result: out.data, sessionId: out.sessionId };
   }
 
   async qa(input: QaInput): Promise<QAReport> {
-    return (await this.runValidated('qa', agentLabel('qa', input.task.id), buildQaPrompt(input), QAReportSchema)).data;
+    return (await this.runValidated('qa', agentLabel('qa', input.task.id), buildQaPrompt(input), QAReportSchema, undefined, input.level)).data;
   }
 
   async securityDesign(input: SecurityDesignInput): Promise<string[]> {
@@ -98,13 +99,15 @@ export class SdkRoleRunner implements RoleRunner {
       agentLabel('security'),
       buildSecurityDesignPrompt(input),
       SecurityDesignReviewSchema,
+      undefined,
+      input.level,
     );
     return out.data.securityNotes;
   }
 
   async security(input: QaInput): Promise<SecurityReport> {
     const label = agentLabel('security', input.task.id);
-    return (await this.runValidated('security', label, buildSecurityPrompt(input), SecurityReportSchema)).data;
+    return (await this.runValidated('security', label, buildSecurityPrompt(input), SecurityReportSchema, undefined, input.level)).data;
   }
 
   private async runValidated<T>(
@@ -113,16 +116,17 @@ export class SdkRoleRunner implements RoleRunner {
     prompt: string,
     schema: z.ZodType<T>,
     resume?: string,
+    level?: Level,
   ): Promise<{ data: T; sessionId: string }> {
     const jsonSchema = toJsonSchema(schema);
-    const first = await this.withRecovery(role, label, prompt, jsonSchema, resume);
+    const first = await this.withRecovery(role, label, prompt, jsonSchema, resume, level);
     const parsed = schema.safeParse(first.output);
     if (parsed.success) return { data: parsed.data, sessionId: first.sessionId };
 
     const reask =
       `ผลลัพธ์ก่อนหน้าไม่ผ่านการตรวจ schema:\n${z.prettifyError(parsed.error)}\n` +
       'ส่งผลลัพธ์ใหม่ให้ตรง schema';
-    const second = await this.withRecovery(role, label, reask, jsonSchema, first.sessionId);
+    const second = await this.withRecovery(role, label, reask, jsonSchema, first.sessionId, level);
     const reparsed = schema.safeParse(second.output);
     if (reparsed.success) return { data: reparsed.data, sessionId: second.sessionId };
     throw new RoleOutputError(`${role}: output ผิด schema ซ้ำ:\n${z.prettifyError(reparsed.error)}`);
@@ -135,14 +139,15 @@ export class SdkRoleRunner implements RoleRunner {
     prompt: string,
     jsonSchema: Record<string, unknown>,
     resume?: string,
+    level?: Level,
   ): Promise<{ output: unknown; sessionId: string }> {
     try {
-      return await this.withRetry(role, label, prompt, jsonSchema, resume);
+      return await this.withRetry(role, label, prompt, jsonSchema, resume, level);
     } catch (e) {
       const aborted = this.deps.abortController?.signal.aborted ?? false;
       if (aborted || !(e instanceof RoleRunError) || e.subtype !== STRUCTURED_OUTPUT_EXHAUSTED || !e.sessionId) throw e;
       this.log(`[${role}] ส่ง JSON ไม่ผ่าน — ขอให้ส่งใหม่อีกครั้ง`);
-      return this.withRetry(role, label, STRUCTURED_OUTPUT_RECOVERY, jsonSchema, e.sessionId);
+      return this.withRetry(role, label, STRUCTURED_OUTPUT_RECOVERY, jsonSchema, e.sessionId, level);
     }
   }
 
@@ -152,10 +157,11 @@ export class SdkRoleRunner implements RoleRunner {
     prompt: string,
     jsonSchema: Record<string, unknown>,
     resume?: string,
+    level?: Level,
   ): Promise<{ output: unknown; sessionId: string }> {
     for (let attempt = 0; ; attempt++) {
       try {
-        return await this.once(role, label, prompt, jsonSchema, resume);
+        return await this.once(role, label, prompt, jsonSchema, resume, level);
       } catch (e) {
         const retryable = !(e instanceof RoleRunError) || e.retryable;
         const aborted = this.deps.abortController?.signal.aborted ?? false;
@@ -173,12 +179,16 @@ export class SdkRoleRunner implements RoleRunner {
     prompt: string,
     jsonSchema: Record<string, unknown>,
     resume?: string,
+    level?: Level,
   ): Promise<{ output: unknown; sessionId: string }> {
     let sessionId = resume ?? '';
     let sessionLogged = false;
+    const base = this.deps.config.roles[role];
+    const roleConfig = { ...base, model: resolveModel(base, level) };
     this.logger.log('INFO', 'agent.start', {
       role,
-      model: this.deps.config.roles[role].model,
+      model: roleConfig.model,
+      level,
       resumed: resume !== undefined,
       promptChars: prompt.length,
       sessionId: resume,
@@ -189,7 +199,7 @@ export class SdkRoleRunner implements RoleRunner {
         prompt,
         options: buildQueryOptions({
           role,
-          config: this.deps.config.roles[role],
+          config: roleConfig,
           projectDir: this.deps.projectDir,
           skillsPluginDir: this.deps.skillsPluginDir ?? SKILLS_PLUGIN_DIR,
           systemPrompt: SYSTEM_PROMPTS[role],
