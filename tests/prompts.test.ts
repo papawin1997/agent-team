@@ -8,6 +8,7 @@ import {
   buildWorkFixPrompt,
   buildWorkPrompt,
   SYSTEM_PROMPTS,
+  taskScopedDesign,
 } from '../src/prompts';
 import { failReport, makeDesign, makeRequirements, makeTask } from './helpers/builders';
 
@@ -222,5 +223,78 @@ describe('buildQaPrompt โหมด diff', () => {
     });
     expect(prompt).toContain('truncated');
     expect(prompt).toMatch(/<untrusted-round-diff-[0-9a-f]+>[\s\S]*src\/b\.ts[\s\S]*<\/untrusted-round-diff-[0-9a-f]+>/);
+  });
+});
+
+describe('ตัด context ต่อ task', () => {
+  const tasks = [
+    makeTask('db'),
+    makeTask('api', 'backend', ['db']),
+    makeTask('ui', 'frontend', ['api']),
+    makeTask('docs-other'),
+  ];
+  const big = { ...makeDesign(tasks), securityNotes: ['hash password'] };
+  const ui = tasks[2]!;
+  const result = { taskId: 'ui', summary: 'เสร็จ', filesChanged: ['src/ui.ts'], howToVerify: 'npm test' };
+
+  it('taskScopedDesign: ไม่มี tasks, มี relatedTasks เฉพาะ dependsOn (id/title/description) และ field อื่นครบ', () => {
+    const scoped = taskScopedDesign(big, ui);
+    expect(scoped).not.toHaveProperty('tasks');
+    expect(scoped.relatedTasks).toEqual([{ id: 'api', title: 'task api', description: 'ทำ api' }]);
+    expect(scoped).toMatchObject({
+      overview: big.overview,
+      architecture: big.architecture,
+      apiContract: big.apiContract,
+      dataModel: big.dataModel,
+      securityNotes: ['hash password'],
+    });
+  });
+
+  it('taskScopedDesign: dependsOn ที่อ้าง id ไม่มีอยู่จริงถูกข้าม', () => {
+    const ghost = makeTask('x', 'backend', ['nope', 'db']);
+    expect(taskScopedDesign(big, ghost).relatedTasks.map((t) => t.id)).toEqual(['db']);
+  });
+
+  it('taskScopedDesign: ไม่มี securityNotes ใน design → ไม่มี key securityNotes', () => {
+    expect(taskScopedDesign(makeDesign(tasks), ui)).not.toHaveProperty('securityNotes');
+  });
+
+  const others = ['"db"', '"docs-other"', 'ทำ docs-other', 'ทำ db'];
+
+  it('buildWorkPrompt ไม่มี task อื่นที่ไม่เกี่ยว แต่มี relatedTasks และ securityNotes', () => {
+    const prompt = buildWorkPrompt({ task: ui, design: big, requirements });
+    for (const s of others) expect(prompt).not.toContain(s);
+    expect(prompt).toContain('"relatedTasks"');
+    expect(prompt).toContain('ทำ api');
+    expect(prompt).toContain('hash password');
+    expect(prompt).toContain('todo list');
+  });
+
+  it('buildQaPrompt (รอบแรกและรอบแก้) ไม่มี task อื่นที่ไม่เกี่ยว', () => {
+    const first = buildQaPrompt({ task: ui, design: big, requirements, result });
+    const fix = buildQaPrompt({
+      task: ui,
+      design: big,
+      requirements,
+      result,
+      previousReport: failReport('ui'),
+      roundDiff: { diff: '+x', files: ['src/ui.ts'], truncated: false },
+    });
+    for (const prompt of [first, fix]) {
+      for (const s of others) expect(prompt).not.toContain(s);
+      expect(prompt).toContain('"relatedTasks"');
+      expect(prompt).toContain('hash password');
+    }
+  });
+
+  it('buildSecurityPrompt ไม่มี task อื่นที่ไม่เกี่ยว', () => {
+    const prompt = buildSecurityPrompt({ task: ui, design: big, requirements, result });
+    for (const s of others) expect(prompt).not.toContain(s);
+    expect(prompt).toContain('hash password');
+  });
+
+  it('buildSecurityDesignPrompt และ buildPlanPrompt ยังเห็นทุก task', () => {
+    expect(buildSecurityDesignPrompt({ design: big, requirements })).toContain('ทำ docs-other');
+    expect(buildPlanPrompt({ requirements, previousDesign: big })).toContain('ทำ docs-other');
   });
 });

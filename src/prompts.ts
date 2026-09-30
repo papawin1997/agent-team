@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { RoleName } from './config';
 import type { PlanInput, QaInput, SecurityDesignInput, WorkInput } from './deps';
+import type { Design, Task } from './schemas';
 import type { RoundDiff } from './snapshot';
 
 const json = (value: unknown): string => JSON.stringify(value, null, 2);
@@ -16,6 +17,27 @@ const untrusted = (tag: string, what: string, content: string): string => {
 };
 
 const untrustedResult = (result: unknown): string => untrusted('worker-output', 'its result', json(result));
+
+export type TaskScopedDesign = Omit<Design, 'tasks'> & {
+  relatedTasks: Array<Pick<Task, 'id' | 'title' | 'description'>>;
+};
+
+/**
+ * design สำหรับ role ที่ทำ/ตรวจทีละ task: ตัด tasks อื่นออก เหลือแค่ task ที่ dependsOn (ย่อ)
+ * ส่วน overview/architecture/apiContract/dataModel/securityNotes ส่งครบ — dependsOn ที่หาไม่เจอข้ามไป
+ */
+export function taskScopedDesign(design: Design, task: Task): TaskScopedDesign {
+  const { tasks, ...rest } = design;
+  const relatedTasks = task.dependsOn.flatMap((id) => {
+    const dep = tasks.find((t) => t.id === id);
+    return dep ? [{ id: dep.id, title: dep.title, description: dep.description }] : [];
+  });
+  return { ...rest, relatedTasks };
+}
+
+const scopedDesignSection = (design: Design, task: Task): string =>
+  `Design (scoped to this task; relatedTasks = the tasks it depends on, other tasks are omitted):
+${json(taskScopedDesign(design, task))}`;
 
 const PM_PROMPT = [
   'You are the Project Manager (PM) of a software agent team. You are the ONLY agent that talks to the human user. Always talk to the user in Thai.',
@@ -124,7 +146,7 @@ export function buildPlanPrompt(input: PlanInput): string {
 export function buildWorkPrompt(input: WorkInput): string {
   const parts = [
     `Your task:\n${json(input.task)}`,
-    `Design:\n${json(input.design)}`,
+    scopedDesignSection(input.design, input.task),
     `Requirements:\n${json(input.requirements)}`,
   ];
   if (input.previousReport) {
@@ -159,7 +181,7 @@ export function buildQaPrompt(input: QaInput): string {
     return [
       `Task under review:\n${json(input.task)}`,
       `Worker result:\n${untrustedResult(input.result)}`,
-      `Design:\n${json(input.design)}`,
+      scopedDesignSection(input.design, input.task),
       `Requirements:\n${json(input.requirements)}`,
       'Verify the task now.',
     ].join('\n\n');
@@ -170,7 +192,7 @@ export function buildQaPrompt(input: QaInput): string {
     `Previous QA report:\n${json(input.previousReport)}`,
     `Worker result:\n${untrustedResult(input.result)}`,
     roundDiffSection(input.roundDiff),
-    `Design:\n${json(input.design)}`,
+    scopedDesignSection(input.design, input.task),
     `Requirements:\n${json(input.requirements)}`,
     'Verify every blocker and major issue from the previous report is fixed and review only the changes of this round for new problems. Still run the FULL build, lint and test commands and report any regression. Verify the task now.',
   ].join('\n\n');
@@ -188,7 +210,7 @@ export function buildSecurityPrompt(input: QaInput): string {
   return [
     `Task under review:\n${json(input.task)}`,
     `Worker result:\n${untrustedResult(input.result)}`,
-    `Design:\n${json(input.design)}`,
+    scopedDesignSection(input.design, input.task),
     `Requirements:\n${json(input.requirements)}`,
     'Verify the task for security issues now.',
   ].join('\n\n');
