@@ -6,7 +6,7 @@ import { escalateLevel } from '../level';
 import { nullLogger } from '../logger';
 import { riskFlags } from '../risk';
 import { isTestFile, riskyFiles } from '../risk-files';
-import type { Design, QAReport, Requirements, Task, WorkerResult } from '../schemas';
+import type { Design, Level, QAReport, Requirements, Task, WorkerResult } from '../schemas';
 import type { RoundDiff } from '../snapshot';
 import type { State, TaskProgress } from '../state';
 
@@ -15,6 +15,8 @@ type Decision = 'continue' | 'accept' | 'abort' | 'standard' | 'full';
 interface BuildContext {
   design: Design;
   requirements: Requirements;
+  /** ระดับงาน ส่งต่อให้ runner เลือกโมเดล (undefined = full) */
+  level: Level | undefined;
 }
 
 /** จำนวนไฟล์เสี่ยงสูงสุดที่บอกชื่อใน io.say ก่อนตัดเป็น "..." */
@@ -334,7 +336,7 @@ async function runRound(
 export async function runBuild(deps: Deps, state: State): Promise<void> {
   const { design, requirements } = state;
   if (!design || !requirements) throw new Error('BUILD ต้องมี requirements และ design');
-  const ctx: BuildContext = { design, requirements };
+  const ctx: BuildContext = { design, requirements, level: state.level };
   const quick = state.level === 'quick';
 
   for (const task of orderTasks(design.tasks)) {

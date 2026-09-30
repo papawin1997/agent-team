@@ -5,7 +5,7 @@ import { formatDesign } from '../format';
 import { logLevelDecided } from '../level';
 import { nullLogger } from '../logger';
 import { designRiskText, mergeRiskFlags, riskFlags, riskText } from '../risk';
-import type { Design, Requirements } from '../schemas';
+import type { Design, Level, Requirements } from '../schemas';
 import type { State } from '../state';
 
 /**
@@ -16,9 +16,10 @@ async function reviewDesignSecurity(
   deps: Deps,
   design: Design,
   requirements: Requirements,
+  level: Level | undefined,
 ): Promise<string[] | undefined> {
   try {
-    return await deps.runner.securityDesign({ design, requirements });
+    return await deps.runner.securityDesign({ design, requirements, level });
   } catch (e) {
     (deps.log ?? nullLogger).log('WARN', 'security.design_failed', { reason: String(e) });
     deps.io.say(`[Security] ตรวจ design ไม่สำเร็จ (${String(e)}) — ยังไม่มีผลตรวจความปลอดภัยของ design นี้`);
@@ -37,6 +38,7 @@ export async function runDesign(deps: Deps, state: State): Promise<void> {
       requirements: state.requirements,
       previousDesign: state.design,
       feedback,
+      level: state.level,
     });
     try {
       orderTasks(design.tasks);
@@ -50,7 +52,7 @@ export async function runDesign(deps: Deps, state: State): Promise<void> {
       state.design = { ...design };
       delete state.design.securityNotes;
     } else {
-      const securityNotes = await reviewDesignSecurity(deps, design, state.requirements);
+      const securityNotes = await reviewDesignSecurity(deps, design, state.requirements, state.level);
       state.design = { ...design, securityNotes };
     }
     delete state.designFeedback;
@@ -88,7 +90,7 @@ export async function runReview(deps: Deps, state: State): Promise<void> {
   }
   let decision = await decide(deps, state, 'ยืนยันแบบนี้ไหม?', options);
   if (decision === 'full') {
-    const securityNotes = await reviewDesignSecurity(deps, design, requirements);
+    const securityNotes = await reviewDesignSecurity(deps, design, requirements, 'full');
     state.level = 'full';
     state.design = { ...design, securityNotes };
     await store.saveArtifact('design.json', state.design);

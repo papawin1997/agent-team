@@ -25,6 +25,21 @@ const roles = (calls: { role: string }[]) => calls.map((c) => c.role);
 const fails = (taskId: string, n: number) => Array.from({ length: n }, () => failReport(taskId));
 
 describe('runBuild', () => {
+  it('ส่ง level ของ state ให้ worker, QA และ Security', async () => {
+    const { deps, runner } = makeDeps({ qa: [passReport('api')] }, []);
+    const state = buildState(single());
+    state.level = 'full';
+    await runBuild(deps, state);
+    expect(roles(runner.calls)).toEqual(['backend', 'qa', 'security']);
+    for (const call of runner.calls) expect((call.input as WorkInput | QaInput).level).toBe('full');
+  });
+
+  it('state เก่าไม่มี level: ส่ง level undefined (runner ถือเป็น full)', async () => {
+    const { deps, runner } = makeDeps({ qa: [passReport('api')] }, []);
+    await runBuild(deps, buildState(single()));
+    for (const call of runner.calls) expect((call.input as WorkInput | QaInput).level).toBeUndefined();
+  });
+
   it('ทำทีละ task ตาม dependsOn (backend ก่อน frontend) แล้วไป DELIVER', async () => {
     const { deps, runner, store } = makeDeps({ qa: [passReport('api'), passReport('ui')] }, []);
     const state = buildState();
