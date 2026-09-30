@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scrutinize: quick fixes</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --fg:#1f2933; --muted:#616e7c; --border:#d9dee5; --code:#eef1f5;
+          --blocker:#c62828; --major:#d97706; --nit:#7b8794; --fts:#b58900; --ship:#2e7d32; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#12161c; --card:#1b2129; --fg:#e4e8ee; --muted:#9aa5b1; --border:#2e3742; --code:#232b35; } }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.7 -apple-system,"Segoe UI","Noto Sans Thai",sans-serif; }
+  main { max-width:900px; margin:0 auto; padding:24px 16px; }
+  h1 { font-size:22px; margin:0 0 4px; line-height:1.35; } h2 { font-size:17px; margin:28px 0 10px; }
+  .muted { color:var(--muted); }
+  code { background:var(--code); padding:1px 5px; border-radius:4px; font-size:13px; }
+  pre { background:var(--code); padding:8px 10px; border-radius:6px; font-size:13px; overflow-x:auto; }
+  .card { background:var(--card); border:1px solid var(--border); border-left:6px solid var(--nit); border-radius:8px; padding:12px 16px; margin:12px 0; }
+  .card.major { border-left-color:var(--major); } .card.blocker { border-left-color:var(--blocker); }
+  .card h3 { margin:0 0 6px; font-size:15px; line-height:1.5; }
+  .sev { display:inline-block; font-size:11px; font-weight:bold; color:#fff; padding:1px 8px; border-radius:10px; margin-right:6px; background:var(--nit); }
+  .major .sev { background:var(--major); } .blocker .sev { background:var(--blocker); }
+  dt { font-weight:bold; font-size:13px; color:var(--muted); margin-top:6px; } dd { margin:0; }
+  .verdict { display:inline-block; background:var(--fts); color:#fff; font-weight:bold; padding:6px 14px; border-radius:16px; }
+  ul { padding-left:20px; }
+</style>
+</head>
+<body>
+<main>
+<h1>Scrutinize รอบ 2: แก้ findings ของโหมด quick</h1>
+<div class="muted">2026-09-28 · branch feat/quick-mode · aac3c2c..8bf45e6 (ทั้ง branch: 36ae4bd..8bf45e6) · รอบก่อน: docs/check/2026-09-27-quick-mode-tb-scrutinize.html</div>
+
+<h2>เจตนา</h2>
+<p>ปิด 5 findings จากรอบก่อน ได้แก่ SQL regex หลุด query จริง, หมวด delete ภาษาไทยจับกว้างเกิน, <code>deps.levelHintSent</code> เป็น state ที่ผูกกับ Deps, ข้อจำกัดของ <code>userRisk</code> และการแยก logic ระดับงานไปไว้ใน <code>src/level.ts</code> โดยต้องไม่เปลี่ยนพฤติกรรม</p>
+<p><b>มีวิธีง่ายกว่านี้ไหม?</b> ไม่มีเลย ทุกข้อแก้แบบเล็กที่สุดแล้ว ข้อ 4 ก็เลือกแค่เขียนเอกสาร เพราะ userRisk เป็นแค่คำเตือนที่ไม่บล็อกอะไร ไม่คุ้มจะไปแตะ schema ของ state</p>
+
+<h2>สิ่งที่ไล่และตรวจแล้ว</h2>
+<ul>
+<li><b>ข้อ 5 เป็น pure move จริง:</b> เทียบบรรทัดที่ลบออกจาก <code>requirements.ts</code>/<code>build.ts</code>/<code>domain.ts</code> กับบรรทัดที่เพิ่มใน <code>level.ts</code> แล้ว ส่วนที่ต่างมีแค่ <code>export</code>, path ของ import และ comment ส่วน <code>escalateToFull</code> ใน <code>build.ts</code> ย้ายบล็อกเดิมไปทั้งบล็อก ลำดับ assignment เหมือนเดิม และ <code>level.ts</code> ไม่ import อะไรจาก <code>phases/</code> จึงไม่มี import วน</li>
+<li><b>ข้อ 3:</b> <code>runTeam</code> สร้าง <code>{sent:false}</code> ใหม่ทุกครั้งที่รัน (<code>src/orchestrator.ts:18</code>) แล้วส่งต่อเข้า <code>runRequirements</code> ส่วนค่า default ของพารามิเตอร์ทำให้เทสต์ที่เรียกตรงยังทำงานได้ และใน <code>Deps</code> ไม่มี field นี้เหลืออยู่แล้ว</li>
+<li><b>ข้อ 1–2:</b> รันเคสจริงผ่าน <code>riskFlags</code> (ผลอยู่ด้านล่าง) ทั้ง 6 เคสภาษาไทยที่ brief กำหนด และทั้ง 4 เคส SQL ที่ต้องจับ/ต้องไม่จับ ให้ผลตรงตามที่ต้องการ</li>
+<li>ผู้ควบคุมรันเองแล้ว: <code>npm test</code> ผ่าน 887/887 และ <code>npm run typecheck</code> ไม่มี error</li>
+</ul>
+
+<h2>Findings</h2>
+
+<div class="card"><h3><span class="sev">NIT</span>SQL ยังไม่จับ query คอลัมน์เดียว, aggregate และชื่อที่อยู่ในเครื่องหมายคำพูด (<code>src/risk.ts:65</code>)</h3><dl>
+<dt>ทำไมถึงสำคัญ</dt><dd>คำขอแบบ "นับ order ด้วย <code>SELECT COUNT(*) FROM orders</code>" หรือ "<code>select name from users where id = 1</code>" จะไม่ขึ้นคำเตือน SQL แต่ผลกระทบต่ำ เพราะคำเตือนนี้เป็นแบบ best-effort ตามที่ README บอกไว้ และถ้าข้อความมีคำว่า <code>sql</code> ก็ยังถูกจับอยู่ดี</dd>
+<dt>หลักฐาน</dt><dd>ผลจาก probe: <code>SELECT COUNT(*) FROM orders</code> → [] · <code>select name from users where id = 1</code> → [] · <code>UPDATE "users" SET name = 1</code> → [] (ส่วน <code>SELECT u.id, u.name FROM users u</code> → sql ✓)</dd>
+<dt>แนวทางแก้ไข</dt><dd>เพิ่ม alternation ที่เป็นสัญญาณ SQL ชัด ๆ: <code>\bselect\s+(count|sum|avg|min|max)\s*\(</code>, <code>\bselect\s+[\w.]+\s+from\s+[\w."`]+\s+(where|join|order\s+by|group\s+by|limit)\b</code> และให้ identifier รับ <code>"`</code> ได้ ต้องยืนยันด้วยว่า "select a color from the palette" ยังไม่ถูกจับ</dd></dl></div>
+
+<div class="card"><h3><span class="sev">NIT</span>หมวด delete ภาษาไทยยังจับแบบ "มีคำครบ ที่ไหนก็ได้" ไม่ได้ดูว่าคำอยู่ใกล้กัน (<code>src/risk.ts:46-50</code>)</h3><dl>
+<dt>ทำไมถึงสำคัญ</dt><dd>"เพิ่มปุ่มลบในหน้าผู้ใช้ ให้แสดงทุกหน้า" ถูกเตือนว่าเป็น delete แม้ไม่ได้ลบข้อมูลจำนวนมาก ข้อนี้ผิดไปทางระวังเกิน ซึ่งปลอดภัยกว่าพลาดเคสเสี่ยง ผลที่เกิดคือผู้ใช้เห็นคำเตือน ⚠ เกินมาหนึ่งครั้ง</dd>
+<dt>หลักฐาน</dt><dd>probe: <code>เพิ่มปุ่มลบในหน้าผู้ใช้ ให้แสดงทุกหน้า</code> → ["delete"]</dd>
+<dt>แนวทางแก้ไข</dt><dd>(ไม่บังคับ) ให้ "ทั้งหมด"/"ทุก" ต้องตามหลัง "ลบ" ภายในประมาณ 20 ตัวอักษร เช่น <code>/ลบ[^\n]{0,20}?(ทั้งหมด|ทุก)/</code> แล้ว AND กับคำนามข้อมูลเหมือนเดิม วิธีนี้ทั้ง 6 เคสเดิมยังผ่าน</dd></dl></div>
+
+<h2>คำตัดสิน</h2>
+<p><span class="verdict" style="background:var(--ship)">ship</span> &nbsp;ข้อ major (SQL หลาย column) และ nit ทั้ง 4 ข้อจากรอบก่อนถูกปิดแล้วและตรวจยืนยันแล้ว ที่เหลือเป็น nit ระดับ heuristic ของคำเตือน ไม่ได้บล็อกการ merge</p>
+</main>
+</body>
+</html>

@@ -1,0 +1,2232 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>Headless mode + Claude Code skill Implementation Plan</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; line-height: 1.55;
+         max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1f2933;
+         background: #f5f7fa; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  pre { background: #1f2933; color: #e4e7eb; padding: .9rem 1rem;
+        border-radius: 6px; overflow-x: auto; }
+  code { background: #e4e7eb; padding: .1rem .35rem; border-radius: 4px; }
+  pre code { background: none; padding: 0; color: inherit; }
+  .frame { border-left: 6px solid; border-radius: 8px; padding: 1rem 1.25rem;
+           margin: 1.25rem 0; background: #ffffff;
+           box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .frame-header     { border-color: #2563eb; background: #eff6ff; }
+  .frame-constraints{ border-color: #d97706; background: #fffbeb; }
+  .frame-task       { border-color: #059669; background: #ecfdf5; }
+  .frame h1, .frame h2, .frame h3 { margin-top: 0; }
+  .note { border-color: #7c3aed; background: #f5f3ff; }
+  .step { display: flex; gap: .5rem; align-items: baseline;
+          margin: .75rem 0 .25rem; }
+  .step input { transform: scale(1.2); margin-top: .15rem; }
+  .meta { color: #52606d; font-size: .9rem; }
+</style>
+</head>
+<body>
+
+<div class="frame frame-header">
+  <h1>Headless mode + Claude Code skill Implementation Plan (โปรเจกต์ย่อย B)</h1>
+  <p><strong>เป้าหมาย:</strong> ให้ Claude Code สั่ง agent-team ได้โดยไม่ต้องเปิด terminal แยก: process รันค้างเบื้องหลัง คุยกับ Claude ผ่านไฟล์ในโฟลเดอร์งาน และ Claude ส่งทุกคำถามต่อให้ผู้ใช้ตัดสินใจ</p>
+  <p><strong>สถาปัตยกรรม:</strong> <code>HeadlessIO implements UserIO</code> แทน <code>CliIO</code> — <code>say()</code> ต่อท้าย <code>events.jsonl</code>, คำถามเขียน <code>question.json</code> แล้ว poll หา <code>answer.json</code> (เขียน atomic ด้วย tmp+rename) orchestrator/phase ไม่ถูกแก้ คำสั่งใหม่ <code>wait</code>/<code>status</code>/<code>answer</code>/<code>stop</code>/<code>install-skill</code> เป็น process สั้น ๆ ที่อ่าน/เขียนไฟล์เหล่านี้ และใช้ <code>run.lock</code> เดิมบอกว่า process ยังอยู่ไหม มี stop file + idle timeout กัน process ค้าง</p>
+  <p><strong>Tech Stack:</strong> TypeScript + tsx, Node ≥ 20.6, vitest, zod (มีอยู่แล้ว) — ไม่เพิ่ม dependency</p>
+  <p class="meta">ที่มา: design ใน conversation 2026-09-28 ปรับตาม <code>docs/check/2026-09-28-headless-design-tb-scrutinize.html</code> (stop + idle timeout, atomic write, แยก index.ts, SKILL.md ที่ <code>claude-skill/</code>, wait 540s, <code>--since</code>, activity, <code>--job</code>)</p>
+</div>
+
+<div class="frame note">
+  <strong>For agentic workers:</strong> REQUIRED SUB-SKILL: Use
+  tb-subagent-driven-development (recommended) or
+  tb-executing-plans to implement this plan task-by-task. Steps keep
+  the <code>- [ ]</code> marker next to each checkbox for tracking.
+</div>
+
+<div class="frame frame-constraints">
+  <h2>Global Constraints</h2>
+  <ul>
+    <li>ไฟล์ headless ทั้งหมดอยู่ใน <code>.agent-team/jobs/&lt;jobId&gt;/</code> ชื่อตรงตัว: <code>events.jsonl</code>, <code>question.json</code>, <code>answer.json</code>, <code>activity.json</code>, <code>exit.json</code>, <code>stop.json</code></li>
+    <li>ทุกการเขียนไฟล์ JSON ของ headless ต้องผ่าน <code>writeJsonAtomic</code> (tmp แล้ว rename) และทุกการอ่านผ่าน <code>readJsonSafe</code> (JSON พัง/ไม่มีไฟล์ = <code>undefined</code> ห้าม throw)</li>
+    <li>status ที่รายงานได้มีเท่านี้: <code>question</code>, <code>running</code>, <code>done</code>, <code>aborted</code>, <code>error</code>, <code>stopped</code>, <code>idle</code>, <code>dead</code></li>
+    <li>ค่าคงที่: <code>DEFAULT_WAIT_SEC = 540</code>, <code>MAX_WAIT_SEC = 3600</code>, <code>DEFAULT_TAIL = 20</code>, <code>headlessIdleMinutes</code> ค่าเริ่มต้น <code>120</code>, HeadlessIO poll <code>500</code>ms, stop grace <code>10000</code>ms, stop watcher poll <code>1000</code>ms, wait poll <code>1000</code>ms</li>
+    <li>jobId ต้องตรง <code>JOB_ID_RE = /^\d{8}-\d{6}(-\d+)?$/</code> ทุกที่ที่รับจากผู้ใช้ (กัน path traversal)</li>
+    <li>โหมด headless ห้ามสร้าง <code>CliIO</code> และห้ามอ่าน stdin; orchestrator และไฟล์ใน <code>src/phases/</code> ห้ามแก้</li>
+    <li>SKILL.md สำหรับ Claude Code อยู่ที่ <code>claude-skill/agent-team/SKILL.md</code> (ห้ามวางใต้ <code>skills/</code> ซึ่งเป็น plugin <code>team</code> ของ role agent)</li>
+    <li>ข้อความที่ผู้ใช้เห็นและ comment ในโค้ดเขียนภาษาไทยตามสไตล์ repo; stdout ของ <code>wait</code>/<code>status</code>/<code>answer</code>/<code>stop</code> เป็น JSON, error ไป stderr + exit code 1</li>
+    <li>ห้ามรันคำสั่ง <code>agent-team</code> กับโปรเจกต์จริงหรือแบบโต้ตอบ (เรียกโมเดลเสียเงิน) — ทดสอบผ่าน vitest เท่านั้น</li>
+    <li>ปิดแต่ละ task ด้วย <code>npm test</code> และ <code>npm run typecheck</code> ผ่านทั้งหมด; commit message ลงท้าย <code>Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;</code>; <code>git add</code> เฉพาะไฟล์ที่แก้ (มีไฟล์ untracked ที่ห้าม commit)</li>
+  </ul>
+</div>
+
+<div class="frame note">
+  <h2>โครงไฟล์</h2>
+  <ul>
+    <li><code>src/headless/files.ts</code> — ชื่อไฟล์, type ของ protocol, <code>writeJsonAtomic</code>/<code>readJsonSafe</code>/events/exit (Task 1)</li>
+    <li><code>src/headless/io.ts</code> — <code>HeadlessIO</code>, <code>HeadlessIdleError</code>, <code>ActivityStatus</code> (Task 2)</li>
+    <li><code>src/headless/status.ts</code> — <code>readStatus</code>, <code>waitForStatus</code>, <code>resolveJob</code> (Task 3) + <code>JobRepository.runningLock</code>, <code>JOB_ID_RE</code> ใน <code>src/jobs.ts</code></li>
+    <li><code>src/args.ts</code> (flag <code>--headless/--request/--job</code>) + <code>src/headless/args.ts</code> (คำสั่งย่อย) (Task 4)</li>
+    <li><code>src/headless/commands.ts</code>, <code>src/install-skill.ts</code>, <code>headlessIdleMinutes</code> ใน <code>src/config.ts</code> (Task 5)</li>
+    <li><code>src/headless/run.ts</code>, <code>src/run-context.ts</code>, แก้ <code>src/index.ts</code>, <code>src/interrupt.ts</code> (Task 6)</li>
+    <li><code>claude-skill/agent-team/SKILL.md</code>, README, <code>package.json</code> files (Task 7)</li>
+  </ul>
+</div>
+
+<!-- ============================ TASK 1 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 1: ไฟล์ protocol ของ headless (<code>src/headless/files.ts</code>)</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/headless/files.ts</code></li>
+    <li>เทสต์: <code>tests/headless/files.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ส่งต่อ (Produces): <code>HEADLESS_FILES</code>, <code>headlessPath(dir, file: HeadlessFile): string</code>, types <code>Question</code>/<code>QuestionKind</code>/<code>Answer</code>/<code>HeadlessEvent</code>/<code>ExitStatus</code>/<code>ExitInfo</code>/<code>Activity</code>, <code>writeJsonAtomic(file, data): void</code>, <code>readJsonSafe&lt;T&gt;(file): T | undefined</code>, <code>removeQuietly(file): void</code>, <code>readEvents(dir, since = 0): HeadlessEvent[]</code>, <code>lastEventSeq(dir): number</code>, <code>appendEvent(dir, event): void</code>, <code>writeExit(dir, status, message?, now?): void</code></li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+<pre><code>import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { beforeEach, describe, expect, it } from 'vitest';
+import {
+  appendEvent,
+  headlessPath,
+  lastEventSeq,
+  readEvents,
+  readJsonSafe,
+  removeQuietly,
+  writeExit,
+  writeJsonAtomic,
+  type ExitInfo,
+} from '../../src/headless/files';
+
+let dir: string;
+beforeEach(() =&gt; {
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-team-headless-files-'));
+});
+
+describe('writeJsonAtomic / readJsonSafe', () =&gt; {
+  it('เขียนแล้วอ่านกลับได้ และไม่เหลือไฟล์ .tmp', () =&gt; {
+    const file = headlessPath(dir, 'question');
+    writeJsonAtomic(file, { id: 'q1', text: 'ไทย 🙂' });
+    expect(readJsonSafe(file)).toEqual({ id: 'q1', text: 'ไทย 🙂' });
+    expect(fs.readdirSync(dir).filter((f) =&gt; f.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('เขียนทับไฟล์เดิมได้', () =&gt; {
+    const file = headlessPath(dir, 'answer');
+    writeJsonAtomic(file, { n: 1 });
+    writeJsonAtomic(file, { n: 2 });
+    expect(readJsonSafe(file)).toEqual({ n: 2 });
+  });
+
+  it('ไม่มีไฟล์ หรือ JSON พัง → undefined ไม่ throw', () =&gt; {
+    expect(readJsonSafe(path.join(dir, 'none.json'))).toBeUndefined();
+    const broken = path.join(dir, 'broken.json');
+    fs.writeFileSync(broken, '{"id": "q', 'utf8');
+    expect(readJsonSafe(broken)).toBeUndefined();
+  });
+
+  it('removeQuietly ไม่ throw แม้ไม่มีไฟล์', () =&gt; {
+    expect(() =&gt; removeQuietly(path.join(dir, 'none.json'))).not.toThrow();
+  });
+});
+
+describe('events', () =&gt; {
+  it('append แล้วอ่านตาม since และข้ามบรรทัดที่เขียนไม่จบ', () =&gt; {
+    appendEvent(dir, { seq: 1, at: 't1', text: 'a' });
+    appendEvent(dir, { seq: 2, at: 't2', text: 'b' });
+    fs.appendFileSync(headlessPath(dir, 'events'), '{"seq":3,"at":"t3","te', 'utf8');
+    expect(readEvents(dir).map((e) =&gt; e.text)).toEqual(['a', 'b']);
+    expect(readEvents(dir, 1).map((e) =&gt; e.text)).toEqual(['b']);
+    expect(lastEventSeq(dir)).toBe(2);
+  });
+
+  it('ไม่มีไฟล์ events → [] และ lastEventSeq = 0', () =&gt; {
+    expect(readEvents(dir)).toEqual([]);
+    expect(lastEventSeq(dir)).toBe(0);
+  });
+});
+
+describe('writeExit', () =&gt; {
+  it('เขียน exit.json พร้อม message', () =&gt; {
+    writeExit(dir, 'error', 'พัง', new Date('2026-09-28T00:00:00Z'));
+    expect(readJsonSafe&lt;ExitInfo&gt;(headlessPath(dir, 'exit'))).toEqual({
+      status: 'error',
+      message: 'พัง',
+      at: '2026-09-28T00:00:00.000Z',
+    });
+  });
+
+  it('ไม่มี message ก็ไม่มี key message', () =&gt; {
+    writeExit(dir, 'done');
+    expect(readJsonSafe&lt;ExitInfo&gt;(headlessPath(dir, 'exit'))).not.toHaveProperty('message');
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/headless/files.test.ts</code><br>คาดหวัง: FAIL เพราะหา module <code>src/headless/files</code> ไม่เจอ</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+<pre><code>import * as fs from 'node:fs';
+import * as path from 'node:path';
+
+/** ไฟล์สื่อสารระหว่าง process headless กับคำสั่ง wait/status/answer/stop (อยู่ใน .agent-team/jobs/&lt;id&gt;/) */
+export const HEADLESS_FILES = {
+  events: 'events.jsonl',
+  question: 'question.json',
+  answer: 'answer.json',
+  activity: 'activity.json',
+  exit: 'exit.json',
+  stop: 'stop.json',
+} as const;
+
+export type HeadlessFile = keyof typeof HEADLESS_FILES;
+
+export const headlessPath = (dir: string, file: HeadlessFile): string =&gt; path.join(dir, HEADLESS_FILES[file]);
+
+/** text = ข้อความอิสระ, choice = ต้องเป็นหนึ่งใน options, choiceOrText = ตัวเลือกหรือข้อความถึง PM */
+export type QuestionKind = 'text' | 'choice' | 'choiceOrText';
+
+export interface Question {
+  id: string;
+  kind: QuestionKind;
+  prompt: string;
+  options?: string[];
+  askedAt: string;
+}
+
+export interface Answer {
+  questionId: string;
+  text: string;
+}
+
+export interface HeadlessEvent {
+  seq: number;
+  at: string;
+  text: string;
+}
+
+export type ExitStatus = 'done' | 'aborted' | 'error' | 'stopped' | 'idle';
+
+export interface ExitInfo {
+  status: ExitStatus;
+  message?: string;
+  at: string;
+}
+
+export interface Activity {
+  label: string;
+  detail?: string;
+  at: string;
+}
+
+const RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+const RENAME_RETRIES = 10;
+const RENAME_RETRY_MS = 20;
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * เขียนไฟล์ชั่วคราวแล้ว rename ทับ ผู้อ่านจึงเห็นแต่ไฟล์เก่าทั้งก้อนหรือไฟล์ใหม่ทั้งก้อน
+ * Windows: rename ทับไฟล์ที่อีก process เปิดอ่านอยู่อาจได้ EPERM/EBUSY ชั่วครู่ จึง retry สั้น ๆ
+ */
+export function writeJsonAtomic(file: string, data: unknown): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(data), 'utf8');
+  for (let attempt = 0; ; attempt++) {
+    try {
+      fs.renameSync(tmp, file);
+      return;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code ?? '';
+      if (!RETRY_CODES.has(code) || attempt &gt;= RENAME_RETRIES) {
+        fs.rmSync(tmp, { force: true });
+        throw e;
+      }
+      sleepSync(RENAME_RETRY_MS);
+    }
+  }
+}
+
+/** ไม่มีไฟล์ อ่านไม่ได้ หรือ JSON พัง → undefined (ห้าม throw: อีก process อาจกำลังเขียน/ลบอยู่) */
+export function readJsonSafe&lt;T&gt;(file: string): T | undefined {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8')) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+export function removeQuietly(file: string): void {
+  try {
+    fs.rmSync(file, { force: true });
+  } catch {
+    // best-effort: ไฟล์ถูกเปิดค้างอยู่ก็ปล่อยไว้
+  }
+}
+
+/** อ่าน events.jsonl คืนเฉพาะ seq &gt; since ข้ามบรรทัดที่ parse ไม่ได้ (เช่นบรรทัดท้ายที่เขียนยังไม่จบ) */
+export function readEvents(dir: string, since = 0): HeadlessEvent[] {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(headlessPath(dir, 'events'), 'utf8');
+  } catch {
+    return [];
+  }
+  const events: HeadlessEvent[] = [];
+  for (const line of raw.split('\n')) {
+    if (line.trim() === '') continue;
+    try {
+      const event = JSON.parse(line) as HeadlessEvent;
+      if (typeof event.seq === 'number' &amp;&amp; event.seq &gt; since) events.push(event);
+    } catch {
+      // บรรทัดพัง/ยังเขียนไม่จบ
+    }
+  }
+  return events;
+}
+
+export function lastEventSeq(dir: string): number {
+  return readEvents(dir).reduce((max, e) =&gt; Math.max(max, e.seq), 0);
+}
+
+export function appendEvent(dir: string, event: HeadlessEvent): void {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.appendFileSync(headlessPath(dir, 'events'), `${JSON.stringify(event)}\n`, 'utf8');
+}
+
+export function writeExit(dir: string, status: ExitStatus, message?: string, now: Date = new Date()): void {
+  const at = now.toISOString();
+  const info: ExitInfo = message === undefined ? { status, at } : { status, message, at };
+  writeJsonAtomic(headlessPath(dir, 'exit'), info);
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/headless/files.test.ts</code> แล้ว <code>npm run typecheck</code><br>คาดหวัง: PASS ทั้งหมด, typecheck ไม่มี error</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/headless/files.ts tests/headless/files.test.ts
+git commit -m "feat(headless): file protocol helpers (atomic json, events, exit)"</code></pre>
+</div>
+
+<!-- ============================ TASK 2 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 2: <code>HeadlessIO</code> + <code>ActivityStatus</code> (<code>src/headless/io.ts</code>)</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/headless/io.ts</code></li>
+    <li>สร้าง: <code>tests/helpers/until.ts</code> (ใช้ซ้ำใน Task 3, 6)</li>
+    <li>เทสต์: <code>tests/headless/io.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): Task 1 ทั้งหมด; <code>parseChoice(input, options)</code> จาก <code>src/cli.ts</code>; <code>UserIO</code> จาก <code>src/deps.ts</code>; <code>StatusSink</code> จาก <code>src/activity.ts</code></li>
+    <li>ส่งต่อ (Produces): <code>class HeadlessIO implements UserIO</code> — <code>constructor(opts: HeadlessIOOptions)</code>, getter <code>lastSeq: number</code>; <code>interface HeadlessIOOptions { dir: string; idleTimeoutMs: number; pollMs?: number; now?: () =&gt; Date; sleep?: (ms: number) =&gt; Promise&lt;void&gt;; newId?: () =&gt; string }</code>; <code>class HeadlessIdleError extends Error</code>; <code>class ActivityStatus implements StatusSink</code> — <code>constructor(now?: () =&gt; Date)</code>, <code>attach(dir: string): void</code>; test helper <code>until&lt;T&gt;(get: () =&gt; T | undefined, timeoutMs = 3000): Promise&lt;T&gt;</code></li>
+  </ul>
+
+  <p>พฤติกรรม: constructor สร้าง <code>events.jsonl</code> ว่างถ้ายังไม่มี (ให้ <code>resolveJob</code> เห็นว่าเป็นงาน headless ตั้งแต่เริ่ม), ตั้ง <code>seq</code> ต่อจาก event สุดท้าย และลบ <code>question.json</code>/<code>answer.json</code> ที่ค้างจาก process ก่อน เวลารับคำตอบให้ลบคำถามก่อนคำตอบ (ช่วงรอยต่อ status จะเห็นเป็น running)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน helper <code>tests/helpers/until.ts</code></strong></span></p>
+<pre><code>/** poll จนกว่า get() คืนค่าไม่ใช่ undefined (ใช้รอไฟล์ที่อีกฝั่งเขียน) */
+export async function until&lt;T&gt;(get: () =&gt; T | undefined, timeoutMs = 3000): Promise&lt;T&gt; {
+  const end = Date.now() + timeoutMs;
+  for (;;) {
+    const value = get();
+    if (value !== undefined) return value;
+    if (Date.now() &gt; end) throw new Error('until: timeout');
+    await new Promise((resolve) =&gt; setTimeout(resolve, 5));
+  }
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: เขียน test ที่ต้อง fail</strong></span></p>
+<pre><code>import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { beforeEach, describe, expect, it } from 'vitest';
+import {
+  appendEvent,
+  headlessPath,
+  readEvents,
+  readJsonSafe,
+  writeJsonAtomic,
+  type Activity,
+  type Question,
+} from '../../src/headless/files';
+import { ActivityStatus, HeadlessIdleError, HeadlessIO } from '../../src/headless/io';
+import { until } from '../helpers/until';
+
+let dir: string;
+let ids: number;
+beforeEach(() =&gt; {
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-team-headless-io-'));
+  ids = 0;
+});
+
+const make = (idleTimeoutMs = 2000) =&gt;
+  new HeadlessIO({ dir, idleTimeoutMs, pollMs: 5, newId: () =&gt; `q${++ids}` });
+
+const question = () =&gt; until(() =&gt; readJsonSafe&lt;Question&gt;(headlessPath(dir, 'question')));
+const reply = (q: Question, text: string) =&gt;
+  writeJsonAtomic(headlessPath(dir, 'answer'), { questionId: q.id, text });
+
+describe('HeadlessIO', () =&gt; {
+  it('say ต่อท้าย events.jsonl ด้วย seq ที่ต่อจากของเดิม', () =&gt; {
+    appendEvent(dir, { seq: 7, at: 't', text: 'เก่า' });
+    const io = make();
+    expect(io.lastSeq).toBe(7);
+    io.say('ใหม่');
+    expect(io.lastSeq).toBe(8);
+    expect(readEvents(dir, 7)).toEqual([expect.objectContaining({ seq: 8, text: 'ใหม่' })]);
+  });
+
+  it('constructor สร้าง events.jsonl ว่าง และลบคำถาม/คำตอบค้าง', () =&gt; {
+    writeJsonAtomic(headlessPath(dir, 'question'), { id: 'old' });
+    writeJsonAtomic(headlessPath(dir, 'answer'), { questionId: 'old', text: 'x' });
+    make();
+    expect(fs.existsSync(headlessPath(dir, 'events'))).toBe(true);
+    expect(fs.existsSync(headlessPath(dir, 'question'))).toBe(false);
+    expect(fs.existsSync(headlessPath(dir, 'answer'))).toBe(false);
+  });
+
+  it('ask: เขียน question แบบ text แล้วคืนคำตอบที่ questionId ตรง และลบทั้งสองไฟล์', async () =&gt; {
+    const io = make();
+    const pending = io.ask('คุณอยากได้อะไร?');
+    const q = await question();
+    expect(q).toMatchObject({ id: 'q1', kind: 'text', prompt: 'คุณอยากได้อะไร?' });
+    expect(q).not.toHaveProperty('options');
+    reply(q, 'ระบบ todo');
+    await expect(pending).resolves.toBe('ระบบ todo');
+    expect(fs.existsSync(headlessPath(dir, 'question'))).toBe(false);
+    expect(fs.existsSync(headlessPath(dir, 'answer'))).toBe(false);
+  });
+
+  it('ไม่สนคำตอบที่ questionId ไม่ตรง', async () =&gt; {
+    const io = make();
+    const pending = io.ask('?');
+    const q = await question();
+    writeJsonAtomic(headlessPath(dir, 'answer'), { questionId: 'other', text: 'ผิด' });
+    await new Promise((r) =&gt; setTimeout(r, 30));
+    reply(q, 'ถูก');
+    await expect(pending).resolves.toBe('ถูก');
+  });
+
+  it('chooseOrText: ตัวเลือก (รวมเลขลำดับ) คืน option, ข้อความอื่นคืน { text }', async () =&gt; {
+    const io = make();
+    const first = io.chooseOrText('ยืนยันไหม?', ['confirm', 'revise'] as const);
+    const q1 = await question();
+    expect(q1).toMatchObject({ kind: 'choiceOrText', options: ['confirm', 'revise'] });
+    reply(q1, '2');
+    await expect(first).resolves.toBe('revise');
+
+    const second = io.chooseOrText('ยืนยันไหม?', ['confirm', 'revise'] as const);
+    const q2 = await until(() =&gt; {
+      const q = readJsonSafe&lt;Question&gt;(headlessPath(dir, 'question'));
+      return q?.id === 'q2' ? q : undefined;
+    });
+    reply(q2, 'ทำไมต้องมี login?');
+    await expect(second).resolves.toEqual({ text: 'ทำไมต้องมี login?' });
+  });
+
+  it('choose: คำตอบไม่อยู่ในตัวเลือกจะ say แจ้งแล้วถามใหม่', async () =&gt; {
+    const io = make();
+    const pending = io.choose('เลือก', ['a', 'b'] as const);
+    reply(await question(), 'zzz');
+    const q2 = await until(() =&gt; {
+      const q = readJsonSafe&lt;Question&gt;(headlessPath(dir, 'question'));
+      return q?.id === 'q2' ? q : undefined;
+    });
+    expect(q2.kind).toBe('choice');
+    reply(q2, 'b');
+    await expect(pending).resolves.toBe('b');
+    expect(readEvents(dir).map((e) =&gt; e.text).join('\n')).toContain('zzz');
+  });
+
+  it('ไม่มีคำตอบเกิน idleTimeoutMs → HeadlessIdleError และลบคำถามทิ้ง', async () =&gt; {
+    const io = make(40);
+    await expect(io.ask('?')).rejects.toBeInstanceOf(HeadlessIdleError);
+    expect(fs.existsSync(headlessPath(dir, 'question'))).toBe(false);
+  });
+});
+
+describe('ActivityStatus', () =&gt; {
+  it('ก่อน attach ไม่เขียนอะไร; start/update เขียน activity.json; stop ลบทิ้ง', () =&gt; {
+    const status = new ActivityStatus(() =&gt; new Date('2026-09-28T00:00:00Z'));
+    status.start('[qa] ตรวจ api');
+    expect(fs.existsSync(headlessPath(dir, 'activity'))).toBe(false);
+
+    status.attach(dir);
+    status.start('[qa] ตรวจ api');
+    expect(readJsonSafe&lt;Activity&gt;(headlessPath(dir, 'activity'))).toEqual({
+      label: '[qa] ตรวจ api',
+      at: '2026-09-28T00:00:00.000Z',
+    });
+    status.update('Bash: npm test');
+    expect(readJsonSafe&lt;Activity&gt;(headlessPath(dir, 'activity'))?.detail).toBe('Bash: npm test');
+    status.stop();
+    expect(fs.existsSync(headlessPath(dir, 'activity'))).toBe(false);
+  });
+
+  it('update โดยไม่มี start ไม่เขียนไฟล์', () =&gt; {
+    const status = new ActivityStatus();
+    status.attach(dir);
+    status.update('x');
+    expect(fs.existsSync(headlessPath(dir, 'activity'))).toBe(false);
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/headless/io.test.ts</code><br>คาดหวัง: FAIL เพราะหา module <code>src/headless/io</code> ไม่เจอ</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: เขียน implementation</strong></span></p>
+<pre><code>import { randomUUID } from 'node:crypto';
+import * as fs from 'node:fs';
+import type { StatusSink } from '../activity';
+import { parseChoice } from '../cli';
+import type { UserIO } from '../deps';
+import {
+  appendEvent,
+  headlessPath,
+  lastEventSeq,
+  readJsonSafe,
+  removeQuietly,
+  writeJsonAtomic,
+  type Activity,
+  type Answer,
+  type Question,
+  type QuestionKind,
+} from './files';
+
+export class HeadlessIdleError extends Error {
+  constructor(minutes: number) {
+    super(`รอคำตอบเกิน ${minutes} นาที`);
+    this.name = 'HeadlessIdleError';
+  }
+}
+
+export interface HeadlessIOOptions {
+  /** โฟลเดอร์งาน .agent-team/jobs/&lt;id&gt;/ */
+  dir: string;
+  /** รอคำตอบนานสุดเท่านี้ แล้วโยน HeadlessIdleError (กัน process ค้างถ้าไม่มีใครตอบ) */
+  idleTimeoutMs: number;
+  pollMs?: number;
+  now?: () =&gt; Date;
+  sleep?: (ms: number) =&gt; Promise&lt;void&gt;;
+  newId?: () =&gt; string;
+}
+
+const defaultSleep = (ms: number): Promise&lt;void&gt; =&gt; new Promise((resolve) =&gt; setTimeout(resolve, ms));
+
+/** UserIO ของโหมด headless: ไม่แตะ stdin/stdout คุยกับคำสั่ง wait/answer ผ่านไฟล์ในโฟลเดอร์งาน */
+export class HeadlessIO implements UserIO {
+  private seq: number;
+  private readonly pollMs: number;
+  private readonly now: () =&gt; Date;
+  private readonly sleep: (ms: number) =&gt; Promise&lt;void&gt;;
+  private readonly newId: () =&gt; string;
+
+  constructor(private readonly opts: HeadlessIOOptions) {
+    this.pollMs = opts.pollMs ?? 500;
+    this.now = opts.now ?? (() =&gt; new Date());
+    this.sleep = opts.sleep ?? defaultSleep;
+    this.newId = opts.newId ?? randomUUID;
+    fs.mkdirSync(opts.dir, { recursive: true });
+    // มี events.jsonl ตั้งแต่เริ่ม = resolveJob รู้ว่าเป็นงาน headless แม้ยังไม่ได้ say อะไร
+    fs.appendFileSync(headlessPath(opts.dir, 'events'), '', 'utf8');
+    this.seq = lastEventSeq(opts.dir);
+    // คำถาม/คำตอบค้างจาก process ก่อน (ตาย/ถูก kill) ใช้ต่อไม่ได้ คำถามใหม่จะได้ id ใหม่
+    removeQuietly(headlessPath(opts.dir, 'question'));
+    removeQuietly(headlessPath(opts.dir, 'answer'));
+  }
+
+  /** seq ของ event ล่าสุด (ส่งให้ Claude Code เป็นค่า --since เริ่มต้น) */
+  get lastSeq(): number {
+    return this.seq;
+  }
+
+  say(text: string): void {
+    this.seq += 1;
+    appendEvent(this.opts.dir, { seq: this.seq, at: this.now().toISOString(), text });
+  }
+
+  ask(prompt: string): Promise&lt;string&gt; {
+    return this.waitAnswer('text', prompt);
+  }
+
+  async choose&lt;T extends string&gt;(prompt: string, options: readonly T[]): Promise&lt;T&gt; {
+    for (;;) {
+      const text = await this.waitAnswer('choice', prompt, options);
+      const choice = parseChoice(text, options);
+      if (choice) return choice;
+      this.say(`"${text}" ไม่อยู่ในตัวเลือก: ${options.join(', ')}`);
+    }
+  }
+
+  async chooseOrText&lt;T extends string&gt;(prompt: string, options: readonly T[]): Promise&lt;T | { text: string }&gt; {
+    const text = await this.waitAnswer('choiceOrText', prompt, options);
+    return parseChoice(text, options) ?? { text };
+  }
+
+  private async waitAnswer(kind: QuestionKind, prompt: string, options?: readonly string[]): Promise&lt;string&gt; {
+    const { dir, idleTimeoutMs } = this.opts;
+    const questionFile = headlessPath(dir, 'question');
+    const answerFile = headlessPath(dir, 'answer');
+    const question: Question = { id: this.newId(), kind, prompt, askedAt: this.now().toISOString() };
+    if (options) question.options = [...options];
+    writeJsonAtomic(questionFile, question);
+    const deadline = this.now().getTime() + idleTimeoutMs;
+    for (;;) {
+      const answer = readJsonSafe&lt;Answer&gt;(answerFile);
+      if (answer?.questionId === question.id &amp;&amp; typeof answer.text === 'string') {
+        // ลบคำถามก่อนคำตอบ: ช่วงรอยต่อ status จะเห็นเป็น running ไม่ใช่คำถามที่ยังไม่มีคนตอบ
+        removeQuietly(questionFile);
+        removeQuietly(answerFile);
+        return answer.text;
+      }
+      if (this.now().getTime() &gt;= deadline) {
+        removeQuietly(questionFile);
+        throw new HeadlessIdleError(Math.round(idleTimeoutMs / 60_000));
+      }
+      await this.sleep(this.pollMs);
+    }
+  }
+}
+
+/**
+ * StatusSink ของ headless: เขียน agent ที่กำลังทำงาน + tool ล่าสุดลง activity.json ให้ wait/status แสดง
+ * สร้างก่อนรู้ jobId (runner ต้องได้ status ตอนสร้าง) แล้ว attach โฟลเดอร์งานทีหลัง ก่อน attach เป็น no-op
+ */
+export class ActivityStatus implements StatusSink {
+  private dir: string | undefined;
+  private label: string | undefined;
+
+  constructor(private readonly now: () =&gt; Date = () =&gt; new Date()) {}
+
+  attach(dir: string): void {
+    this.dir = dir;
+  }
+
+  start(label: string): void {
+    this.label = label;
+    this.write(undefined);
+  }
+
+  update(detail: string): void {
+    if (this.label !== undefined) this.write(detail);
+  }
+
+  stop(): void {
+    this.label = undefined;
+    if (this.dir) removeQuietly(headlessPath(this.dir, 'activity'));
+  }
+
+  private write(detail: string | undefined): void {
+    if (!this.dir || this.label === undefined) return;
+    const activity: Activity = { label: this.label, at: this.now().toISOString() };
+    if (detail !== undefined) activity.detail = detail;
+    try {
+      writeJsonAtomic(headlessPath(this.dir, 'activity'), activity);
+    } catch {
+      // activity เป็นแค่ข้อมูลประกอบ เขียนไม่ได้ต้องไม่ทำให้ agent ล้ม
+    }
+  }
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/headless/io.test.ts</code> แล้ว <code>npm run typecheck</code><br>คาดหวัง: PASS ทั้งหมด</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: Commit</strong></span></p>
+<pre><code>git add src/headless/io.ts tests/headless/io.test.ts tests/helpers/until.ts
+git commit -m "feat(headless): HeadlessIO file-based UserIO and ActivityStatus"</code></pre>
+</div>
+
+<!-- ============================ TASK 3 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 3: อ่านสถานะงาน (<code>src/headless/status.ts</code>) + <code>runningLock</code>/<code>JOB_ID_RE</code></h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/headless/status.ts</code></li>
+    <li>แก้ไข: <code>src/jobs.ts</code> (เพิ่ม <code>JOB_ID_RE</code> ใต้ <code>formatJobId</code> และ method <code>runningLock</code> ใน <code>JobRepository</code> ถัดจาก <code>unlockSync</code>)</li>
+    <li>เทสต์: <code>tests/headless/status.test.ts</code>, เพิ่มเคสใน <code>tests/jobs.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): Task 1 (<code>readEvents</code>, <code>readJsonSafe</code>, <code>headlessPath</code>, types); <code>JobRepository</code> (<code>jobDir</code>, <code>store</code>, <code>list</code>)</li>
+    <li>ส่งต่อ (Produces): <code>JOB_ID_RE</code> (export จาก <code>src/jobs.ts</code>); <code>JobRepository.runningLock(id): Promise&lt;JobLock | undefined&gt;</code>; <code>type JobStatus</code>; <code>interface StatusReport</code>; <code>DEFAULT_TAIL = 20</code>; <code>readStatus(repo, jobId, since?: number): Promise&lt;StatusReport&gt;</code>; <code>waitForStatus(repo, jobId, opts: WaitOptions): Promise&lt;StatusReport&gt;</code> กับ <code>interface WaitOptions { since?: number; timeoutMs: number; pollMs?: number; now?: () =&gt; number; sleep?: (ms: number) =&gt; Promise&lt;void&gt; }</code>; <code>resolveJob(repo, job?: string, opts?: { runningOnly?: boolean }): Promise&lt;string | undefined&gt;</code></li>
+  </ul>
+
+  <p>กติกา <code>readStatus</code>: ถ้า lock ยังอยู่ → <code>question</code> (มี question.json และยังไม่มี answer.json) ไม่งั้น <code>running</code> + <code>activity</code>; ถ้า lock ไม่อยู่ → phase DONE = <code>done</code>, ABORTED = <code>aborted</code>, มี exit.json = status ในไฟล์ + message, ไม่งั้น <code>dead</code> พร้อมคำแนะนำ <code>--job</code> — <code>messages</code> คือ say ที่ seq &gt; since (ไม่ส่ง since = 20 ข้อความท้าย + <code>truncated: true</code> ถ้าตัด) — <code>lastSeq</code> คือ seq สูงสุดที่เห็น (อย่างน้อยเท่า since)</p>
+  <p>กติกา <code>resolveJob</code>: มี <code>job</code> → ตรวจ <code>JOB_ID_RE</code> + โฟลเดอร์ต้องมี (ไม่งั้น throw); ไม่มี → เลือกจากงาน headless (มี <code>events.jsonl</code>) ที่ lock ยังอยู่: 1 งาน = งานนั้น, หลายงาน = throw พร้อมรายชื่อ, 0 งาน = ถ้า <code>runningOnly</code> คืน <code>undefined</code> ไม่งั้นคืนงาน headless ที่ <code>updatedAt</code> ล่าสุด หรือ throw ถ้าไม่มีเลย</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail — เพิ่มใน <code>tests/jobs.test.ts</code></strong></span></p>
+<pre><code>// เพิ่ม JOB_ID_RE ใน import จาก '../src/jobs' ด้านบนไฟล์
+
+describe('JOB_ID_RE', () =&gt; {
+  it('รับรูปแบบ id ของงาน และปฏิเสธ path', () =&gt; {
+    expect(JOB_ID_RE.test(formatJobId(at))).toBe(true);
+    expect(JOB_ID_RE.test('20260925-093015-2')).toBe(true);
+    expect(JOB_ID_RE.test('../x')).toBe(false);
+    expect(JOB_ID_RE.test('20260925-093015/..')).toBe(false);
+  });
+});
+
+describe('runningLock', () =&gt; {
+  it('คืน lock เมื่อ process ที่ถือยังอยู่ และ undefined เมื่อตายแล้ว', async () =&gt; {
+    const { id } = await make().create();
+    const other = make({ pid: 2000 });
+    expect(await other.runningLock(id)).toMatchObject({ pid: 1000 });
+    alive.delete(1000);
+    expect(await other.runningLock(id)).toBeUndefined();
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: เขียน test ที่ต้อง fail — <code>tests/headless/status.test.ts</code></strong></span></p>
+<pre><code>import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { appendEvent, headlessPath, writeExit, writeJsonAtomic } from '../../src/headless/files';
+import { DEFAULT_TAIL, readStatus, resolveJob, waitForStatus } from '../../src/headless/status';
+import { JobRepository } from '../../src/jobs';
+
+let projectDir: string;
+const alive = new Set&lt;number&gt;();
+const owner = () =&gt; new JobRepository(projectDir, { pid: 1000, isAlive: (p) =&gt; alive.has(p) });
+const viewer = () =&gt; new JobRepository(projectDir, { pid: 2000, isAlive: (p) =&gt; alive.has(p) });
+
+beforeEach(() =&gt; {
+  projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-team-status-'));
+  alive.clear();
+  alive.add(1000);
+});
+
+/** งาน headless ที่ process 1000 ถือ lock อยู่ (มี events.jsonl) */
+async function headlessJob(): Promise&lt;{ id: string; dir: string }&gt; {
+  const repo = owner();
+  const { id } = await repo.create();
+  const dir = repo.jobDir(id);
+  fs.appendFileSync(headlessPath(dir, 'events'), '');
+  return { id, dir };
+}
+
+describe('readStatus', () =&gt; {
+  it('lock อยู่ + มีคำถามยังไม่ตอบ → question พร้อม messages และ lastSeq', async () =&gt; {
+    const { id, dir } = await headlessJob();
+    appendEvent(dir, { seq: 1, at: 't', text: 'สรุป requirements' });
+    writeJsonAtomic(headlessPath(dir, 'question'), { id: 'q1', kind: 'choiceOrText', prompt: 'ยืนยันไหม?', options: ['confirm', 'revise'], askedAt: 't' });
+    const report = await readStatus(viewer(), id, 0);
+    expect(report).toMatchObject({ jobId: id, status: 'question', phase: 'REQUIREMENTS', messages: ['สรุป requirements'], lastSeq: 1 });
+    expect(report.question?.id).toBe('q1');
+  });
+
+  it('มี answer.json รอ process อ่าน → running และแนบ activity', async () =&gt; {
+    const { id, dir } = await headlessJob();
+    writeJsonAtomic(headlessPath(dir, 'question'), { id: 'q1', kind: 'text', prompt: '?', askedAt: 't' });
+    writeJsonAtomic(headlessPath(dir, 'answer'), { questionId: 'q1', text: 'x' });
+    writeJsonAtomic(headlessPath(dir, 'activity'), { label: '[qa] ตรวจ api', at: 't' });
+    const report = await readStatus(viewer(), id, 0);
+    expect(report.status).toBe('running');
+    expect(report.question).toBeUndefined();
+    expect(report.activity?.label).toBe('[qa] ตรวจ api');
+  });
+
+  it('since กรองข้อความ และ lastSeq ไม่ต่ำกว่า since เมื่อไม่มีข้อความใหม่', async () =&gt; {
+    const { id, dir } = await headlessJob();
+    appendEvent(dir, { seq: 1, at: 't', text: 'a' });
+    appendEvent(dir, { seq: 2, at: 't', text: 'b' });
+    expect((await readStatus(viewer(), id, 1)).messages).toEqual(['b']);
+    expect(await readStatus(viewer(), id, 2)).toMatchObject({ messages: [], lastSeq: 2 });
+  });
+
+  it('ไม่ส่ง since → เอาแค่ DEFAULT_TAIL ข้อความท้ายและบอก truncated', async () =&gt; {
+    const { id, dir } = await headlessJob();
+    for (let i = 1; i &lt;= DEFAULT_TAIL + 5; i++) appendEvent(dir, { seq: i, at: 't', text: `m${i}` });
+    const report = await readStatus(viewer(), id);
+    expect(report.messages).toHaveLength(DEFAULT_TAIL);
+    expect(report.messages.at(-1)).toBe(`m${DEFAULT_TAIL + 5}`);
+    expect(report.truncated).toBe(true);
+    expect(report.lastSeq).toBe(DEFAULT_TAIL + 5);
+  });
+
+  it('lock ไม่อยู่: phase DONE → done', async () =&gt; {
+    const { id } = await headlessJob();
+    const store = owner().store(id);
+    const state = (await store.load())!;
+    state.phase = 'DONE';
+    await store.save(state);
+    alive.delete(1000);
+    expect((await readStatus(viewer(), id, 0)).status).toBe('done');
+  });
+
+  it('lock ไม่อยู่ + exit.json → status และ message จากไฟล์', async () =&gt; {
+    const { id, dir } = await headlessJob();
+    writeExit(dir, 'idle', 'รอคำตอบเกิน 120 นาที');
+    alive.delete(1000);
+    expect(await readStatus(viewer(), id, 0)).toMatchObject({ status: 'idle', message: 'รอคำตอบเกิน 120 นาที' });
+  });
+
+  it('lock ไม่อยู่และไม่มี exit.json → dead พร้อมวิธีทำต่อ', async () =&gt; {
+    const { id } = await headlessJob();
+    alive.delete(1000);
+    const report = await readStatus(viewer(), id, 0);
+    expect(report.status).toBe('dead');
+    expect(report.message).toContain(`--job ${id}`);
+  });
+
+  it('ไม่มี state → throw', async () =&gt; {
+    await expect(readStatus(viewer(), '20260101-000000', 0)).rejects.toThrow('ไม่พบงาน');
+  });
+});
+
+describe('waitForStatus', () =&gt; {
+  it('รอจนมีคำถามแล้วคืนทันที', async () =&gt; {
+    const { id, dir } = await headlessJob();
+    setTimeout(() =&gt; writeJsonAtomic(headlessPath(dir, 'question'), { id: 'q1', kind: 'text', prompt: '?', askedAt: 't' }), 30);
+    const report = await waitForStatus(viewer(), id, { since: 0, timeoutMs: 2000, pollMs: 5 });
+    expect(report.status).toBe('question');
+  });
+
+  it('ครบ timeout ยังทำงานอยู่ → คืน running', async () =&gt; {
+    const { id } = await headlessJob();
+    const report = await waitForStatus(viewer(), id, { since: 0, timeoutMs: 30, pollMs: 5 });
+    expect(report.status).toBe('running');
+  });
+
+  it('timeoutMs = 0 อ่านครั้งเดียว (status)', async () =&gt; {
+    const { id } = await headlessJob();
+    let slept = 0;
+    await waitForStatus(viewer(), id, { timeoutMs: 0, sleep: async () =&gt; void slept++ });
+    expect(slept).toBe(0);
+  });
+});
+
+describe('resolveJob', () =&gt; {
+  it('--job: ตรวจรูปแบบและต้องมีโฟลเดอร์', async () =&gt; {
+    const { id } = await headlessJob();
+    expect(await resolveJob(viewer(), id)).toBe(id);
+    await expect(resolveJob(viewer(), '../etc')).rejects.toThrow('jobId ไม่ถูกรูปแบบ');
+    await expect(resolveJob(viewer(), '20260101-000000')).rejects.toThrow('ไม่พบงาน');
+  });
+
+  it('ไม่ระบุ: งาน headless ที่รันอยู่งานเดียว (ข้ามงานที่ไม่ใช่ headless)', async () =&gt; {
+    await owner().create(); // งานโต้ตอบ ไม่มี events.jsonl
+    const { id } = await headlessJob();
+    expect(await resolveJob(viewer())).toBe(id);
+  });
+
+  it('ไม่ระบุและรันอยู่หลายงาน → throw พร้อมรายชื่อ', async () =&gt; {
+    const a = await headlessJob();
+    const b = await headlessJob();
+    await expect(resolveJob(viewer())).rejects.toThrow(new RegExp(`${a.id}.*${b.id}|${b.id}.*${a.id}`));
+  });
+
+  it('ไม่มีงานรันอยู่: runningOnly → undefined, ไม่งั้นคืนงาน headless ล่าสุด', async () =&gt; {
+    const { id } = await headlessJob();
+    alive.delete(1000);
+    expect(await resolveJob(viewer(), undefined, { runningOnly: true })).toBeUndefined();
+    expect(await resolveJob(viewer())).toBe(id);
+  });
+
+  it('ไม่มีงาน headless เลย → throw', async () =&gt; {
+    await expect(resolveJob(viewer())).rejects.toThrow('ไม่พบงาน headless');
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/headless/status.test.ts tests/jobs.test.ts</code><br>คาดหวัง: FAIL (ไม่มี module / <code>JOB_ID_RE</code> / <code>runningLock</code>)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: แก้ <code>src/jobs.ts</code></strong></span></p>
+<pre><code>// ใต้ฟังก์ชัน formatJobId
+/** รูปแบบ id ของงาน (formatJobId + suffix -n) ใช้ตรวจ jobId ที่รับจากผู้ใช้ กัน path traversal */
+export const JOB_ID_RE = /^\d{8}-\d{6}(-\d+)?$/;
+
+// ใน class JobRepository ถัดจาก unlockSync
+  /** lock ของงานนี้ถ้า process ที่ถือยังทำงานอยู่ (คำสั่ง headless ที่ไม่ได้ถือ lock เองใช้เช็กว่างานยังรันไหม) */
+  async runningLock(id: string): Promise&lt;JobLock | undefined&gt; {
+    return this.liveLock(id);
+  }</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: เขียน <code>src/headless/status.ts</code></strong></span></p>
+<pre><code>import * as fs from 'node:fs';
+import { JOB_ID_RE, type JobRepository } from '../jobs';
+import type { Phase } from '../state';
+import {
+  headlessPath,
+  readEvents,
+  readJsonSafe,
+  type Activity,
+  type ExitInfo,
+  type ExitStatus,
+  type Question,
+} from './files';
+
+export type JobStatus = 'question' | 'running' | ExitStatus | 'dead';
+
+export interface StatusReport {
+  jobId: string;
+  status: JobStatus;
+  phase: Phase;
+  title?: string;
+  /** agent ที่กำลังทำงานและ tool ล่าสุด (เฉพาะตอนรันอยู่) */
+  activity?: Activity;
+  /** คำถามที่รอคำตอบ (เฉพาะ status = question) */
+  question?: Question;
+  /** คำอธิบายสถานะจบ/ตาย เช่น error หรือวิธีทำต่อ */
+  message?: string;
+  /** ข้อความที่ agent-team แสดง (say) ตั้งแต่ since */
+  messages: string[];
+  /** ส่งค่านี้เป็น --since ครั้งถัดไป */
+  lastSeq: number;
+  /** ไม่ได้ส่ง since และมีข้อความเกิน DEFAULT_TAIL จึงตัดเหลือท้ายสุด */
+  truncated?: boolean;
+}
+
+export const DEFAULT_TAIL = 20;
+
+export async function readStatus(repo: JobRepository, jobId: string, since?: number): Promise&lt;StatusReport&gt; {
+  const dir = repo.jobDir(jobId);
+  const state = await repo.store(jobId).load();
+  if (!state) throw new Error(`ไม่พบงาน ${jobId}`);
+  const events = readEvents(dir, since ?? 0);
+  const lastSeq = events.reduce((max, e) =&gt; Math.max(max, e.seq), since ?? 0);
+  let messages = events.map((e) =&gt; e.text);
+  const truncated = since === undefined &amp;&amp; messages.length &gt; DEFAULT_TAIL;
+  if (truncated) messages = messages.slice(-DEFAULT_TAIL);
+
+  const report: StatusReport = { jobId, status: 'running', phase: state.phase, messages, lastSeq };
+  if (state.title) report.title = state.title;
+  if (truncated) report.truncated = true;
+
+  if (await repo.runningLock(jobId)) {
+    const question = readJsonSafe&lt;Question&gt;(headlessPath(dir, 'question'));
+    const answered = fs.existsSync(headlessPath(dir, 'answer'));
+    if (question &amp;&amp; !answered) {
+      report.status = 'question';
+      report.question = question;
+    }
+    const activity = readJsonSafe&lt;Activity&gt;(headlessPath(dir, 'activity'));
+    if (activity) report.activity = activity;
+    return report;
+  }
+  if (state.phase === 'DONE') {
+    report.status = 'done';
+    return report;
+  }
+  if (state.phase === 'ABORTED') {
+    report.status = 'aborted';
+    return report;
+  }
+  const exit = readJsonSafe&lt;ExitInfo&gt;(headlessPath(dir, 'exit'));
+  if (exit) {
+    report.status = exit.status;
+    if (exit.message) report.message = exit.message;
+    return report;
+  }
+  report.status = 'dead';
+  report.message = `process ของงานนี้ไม่ได้รันอยู่ — ทำต่อด้วย agent-team run --headless --job ${jobId}`;
+  return report;
+}
+
+export interface WaitOptions {
+  since?: number;
+  /** 0 = อ่านครั้งเดียว (คำสั่ง status) */
+  timeoutMs: number;
+  pollMs?: number;
+  now?: () =&gt; number;
+  sleep?: (ms: number) =&gt; Promise&lt;void&gt;;
+}
+
+const defaultSleep = (ms: number): Promise&lt;void&gt; =&gt; new Promise((resolve) =&gt; setTimeout(resolve, ms));
+
+/** poll จนสถานะไม่ใช่ running (มีคำถาม/จบ/ตาย) หรือครบ timeout แล้วคืนสถานะล่าสุด */
+export async function waitForStatus(repo: JobRepository, jobId: string, opts: WaitOptions): Promise&lt;StatusReport&gt; {
+  const now = opts.now ?? Date.now;
+  const sleep = opts.sleep ?? defaultSleep;
+  const deadline = now() + opts.timeoutMs;
+  for (;;) {
+    const report = await readStatus(repo, jobId, opts.since);
+    if (report.status !== 'running' || now() &gt;= deadline) return report;
+    await sleep(opts.pollMs ?? 1000);
+  }
+}
+
+const isHeadlessJob = (repo: JobRepository, id: string): boolean =&gt;
+  fs.existsSync(headlessPath(repo.jobDir(id), 'events'));
+
+/**
+ * หา jobId ที่คำสั่ง headless จะทำงานด้วย
+ * ไม่ระบุ job: งาน headless ที่รันอยู่งานเดียว; ถ้าไม่มีงานรันอยู่ runningOnly คืน undefined (ให้ wait รอต่อ)
+ * ไม่งั้นใช้งาน headless ล่าสุด (ดูผลของงานที่จบแล้ว)
+ */
+export async function resolveJob(
+  repo: JobRepository,
+  job?: string,
+  opts: { runningOnly?: boolean } = {},
+): Promise&lt;string | undefined&gt; {
+  if (job !== undefined) {
+    if (!JOB_ID_RE.test(job)) throw new Error(`jobId ไม่ถูกรูปแบบ: ${job}`);
+    if (!fs.existsSync(repo.jobDir(job))) throw new Error(`ไม่พบงาน ${job}`);
+    return job;
+  }
+  const headless = (await repo.list()).filter((j) =&gt; isHeadlessJob(repo, j.id));
+  const running = headless.filter((j) =&gt; j.lock);
+  if (running.length === 1) return running[0]!.id;
+  if (running.length &gt; 1) {
+    throw new Error(`มีงาน headless รันอยู่หลายงาน ระบุ --job: ${running.map((j) =&gt; j.id).join(', ')}`);
+  }
+  if (opts.runningOnly) return undefined;
+  const latest = [...headless].sort((a, b) =&gt; b.updatedAt.getTime() - a.updatedAt.getTime())[0];
+  if (!latest) throw new Error('ไม่พบงาน headless ในโปรเจกต์นี้ — เริ่มด้วย agent-team run --headless --request "..."');
+  return latest.id;
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/headless/status.test.ts tests/jobs.test.ts</code> แล้ว <code>npm run typecheck</code><br>คาดหวัง: PASS ทั้งหมด</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: Commit</strong></span></p>
+<pre><code>git add src/jobs.ts src/headless/status.ts tests/jobs.test.ts tests/headless/status.test.ts
+git commit -m "feat(headless): job status report, wait loop and job resolution"</code></pre>
+</div>
+
+<!-- ============================ TASK 4 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 4: อาร์กิวเมนต์ — <code>run --headless</code> และคำสั่งย่อย</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/args.ts</code></li>
+    <li>สร้าง: <code>src/headless/args.ts</code></li>
+    <li>เทสต์: เพิ่มใน <code>tests/args.test.ts</code>, สร้าง <code>tests/headless/args.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>JOB_ID_RE</code> จาก <code>src/jobs.ts</code> (Task 3)</li>
+    <li>ส่งต่อ (Produces): <code>CliArgs</code> เพิ่ม field optional <code>headless?: true</code>, <code>request?: string</code>, <code>job?: string</code> (มีเฉพาะเมื่อใส่ <code>--headless</code>; โหมด headless ไม่ใส่โปรเจกต์ = cwd); <code>DEFAULT_WAIT_SEC = 540</code>, <code>MAX_WAIT_SEC = 3600</code>, <code>HEADLESS_COMMANDS</code>, <code>isHeadlessCommand(word): boolean</code>, <code>type HeadlessCommand</code>, <code>parseHeadlessCommand(argv: string[]): HeadlessCommand</code></li>
+  </ul>
+
+  <p>กติกา <code>run</code>: <code>--request</code>/<code>--job</code> ต้องมีค่าตามหลังและใช้ได้เฉพาะกับ <code>--headless</code>; <code>--headless</code> ต้องมี <strong>อย่างใดอย่างหนึ่งพอดี</strong> จาก <code>--request</code> (งานใหม่), <code>--resume</code>, <code>--job</code>; <code>--request</code> ที่เป็นช่องว่างล้วนผิด; <code>--headless</code> ใช้กับ <code>logs</code> ไม่ได้ — ผลของ parseArgs เดิม (ไม่ใส่ <code>--headless</code>) ต้องไม่มี key ใหม่ เพื่อไม่ให้เทสต์ <code>toEqual</code> เดิมพัง</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail — เพิ่มใน <code>tests/args.test.ts</code></strong></span></p>
+<pre><code>describe('parseArgs --headless', () =&gt; {
+  it('--headless --request: งานใหม่ ใช้ cwd เมื่อไม่ระบุโปรเจกต์', () =&gt; {
+    expect(parseArgs(['--headless', '--request', 'อยากได้ todo'])).toMatchObject({
+      command: 'run',
+      projectDir: path.resolve('.'),
+      headless: true,
+      request: 'อยากได้ todo',
+    });
+  });
+
+  it('--headless --job และ --headless --resume', () =&gt; {
+    expect(parseArgs(['--headless', '--project', 'a', '--job', '20260928-101500'])).toMatchObject({
+      headless: true,
+      job: '20260928-101500',
+      projectDir: path.resolve('a'),
+    });
+    expect(parseArgs(['--headless', '-r'])).toMatchObject({ headless: true, resume: true });
+  });
+
+  it('ไม่ใส่ --headless ไม่มี key headless', () =&gt; {
+    expect(parseArgs(['--project', 'a'])).not.toHaveProperty('headless');
+  });
+
+  it.each([
+    [['--headless'], 'อย่างใดอย่างหนึ่ง'],
+    [['--headless', '--request', 'x', '--resume'], 'อย่างใดอย่างหนึ่ง'],
+    [['--headless', '--request', 'x', '--job', '20260928-101500'], 'อย่างใดอย่างหนึ่ง'],
+    [['--request', 'x'], 'ใช้คู่กับ --headless'],
+    [['--job', '20260928-101500'], 'ใช้คู่กับ --headless'],
+    [['--headless', '--request'], 'ต้องระบุค่าหลัง --request'],
+    [['--headless', '--request', '   '], 'ห้ามว่าง'],
+    [['--headless', '--job', '../x'], 'jobId ไม่ถูกรูปแบบ'],
+    [['logs', '--headless'], 'agent-team logs ไม่ได้'],
+  ])('%j → error', (argv, message) =&gt; {
+    expect(() =&gt; parseArgs(argv)).toThrow(message);
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: เขียน test ที่ต้อง fail — <code>tests/headless/args.test.ts</code></strong></span></p>
+<pre><code>import * as path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { DEFAULT_WAIT_SEC, isHeadlessCommand, parseHeadlessCommand } from '../../src/headless/args';
+
+describe('isHeadlessCommand', () =&gt; {
+  it('รู้จักเฉพาะคำสั่งย่อยของ headless', () =&gt; {
+    for (const word of ['wait', 'status', 'answer', 'stop', 'install-skill']) expect(isHeadlessCommand(word)).toBe(true);
+    for (const word of ['logs', 'run', undefined, '--headless']) expect(isHeadlessCommand(word)).toBe(false);
+  });
+});
+
+describe('parseHeadlessCommand', () =&gt; {
+  it('wait: ค่าเริ่มต้น cwd, timeout 540', () =&gt; {
+    expect(parseHeadlessCommand(['wait'])).toEqual({ command: 'wait', projectDir: path.resolve('.'), timeoutSec: DEFAULT_WAIT_SEC });
+  });
+
+  it('wait: --project --job --since --timeout', () =&gt; {
+    expect(
+      parseHeadlessCommand(['wait', '--project', 'a', '--job', '20260928-101500', '--since', '12', '--timeout', '60']),
+    ).toEqual({ command: 'wait', projectDir: path.resolve('a'), job: '20260928-101500', since: 12, timeoutSec: 60 });
+  });
+
+  it('status: timeout = 0 เสมอ และไม่รับ --timeout', () =&gt; {
+    expect(parseHeadlessCommand(['status', '--since', '3'])).toMatchObject({ command: 'status', since: 3, timeoutSec: 0 });
+    expect(() =&gt; parseHeadlessCommand(['status', '--timeout', '5'])).toThrow('อาร์กิวเมนต์ไม่รู้จัก');
+  });
+
+  it('answer: ข้อความหนึ่งค่า และใช้ -- เพื่อส่งข้อความที่ขึ้นต้นด้วย -', () =&gt; {
+    expect(parseHeadlessCommand(['answer', '--job', '20260928-101500', 'confirm'])).toMatchObject({
+      command: 'answer',
+      job: '20260928-101500',
+      text: 'confirm',
+    });
+    expect(parseHeadlessCommand(['answer', '--', '-ไม่เอา login'])).toMatchObject({ text: '-ไม่เอา login' });
+    expect(parseHeadlessCommand(['answer', ''])).toMatchObject({ text: '' });
+  });
+
+  it('stop และ install-skill', () =&gt; {
+    expect(parseHeadlessCommand(['stop', '--project', 'a'])).toEqual({ command: 'stop', projectDir: path.resolve('a') });
+    expect(parseHeadlessCommand(['install-skill'])).toEqual({ command: 'install-skill' });
+  });
+
+  it.each([
+    [['answer'], 'ข้อความคำตอบ 1 ค่า'],
+    [['answer', 'a', 'b'], 'ข้อความคำตอบ 1 ค่า'],
+    [['wait', '--since', '-1'], 'จำนวนเต็ม'],
+    [['wait', '--timeout', '3601'], '0-3600'],
+    [['wait', '--job', '../x'], 'jobId ไม่ถูกรูปแบบ'],
+    [['wait', '--project'], 'ต้องระบุพาธหลัง --project'],
+    [['wait', 'extra'], 'ไม่รับค่า'],
+    [['install-skill', '--x'], 'ไม่รับอาร์กิวเมนต์'],
+    [['answer', '--since', '1', 'x'], 'อาร์กิวเมนต์ไม่รู้จัก'],
+  ])('%j → error', (argv, message) =&gt; {
+    expect(() =&gt; parseHeadlessCommand(argv)).toThrow(message);
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/args.test.ts tests/headless/args.test.ts</code><br>คาดหวัง: FAIL</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: แก้ <code>src/args.ts</code> ทั้งไฟล์</strong></span></p>
+<pre><code>import * as path from 'node:path';
+import { JOB_ID_RE } from './jobs';
+import type { Level } from './schemas';
+
+export type Command = 'run' | 'logs';
+
+export interface CliArgs {
+  /** logs = agent-team logs (ดู log เป็น HTML) */
+  command: Command;
+  /** undefined = ให้เลือกจากเมนูโปรเจกต์ (โหมด headless ไม่ระบุ = cwd) */
+  projectDir: string | undefined;
+  resume: boolean;
+  /** agent-team logs --live */
+  live: boolean;
+  /** --quick / --full */
+  level: Level | undefined;
+  /** run --headless: ไม่มีเมนู ไม่อ่าน stdin คุยผ่านไฟล์ใน .agent-team/jobs/&lt;id&gt;/ (มี key นี้เฉพาะตอนใส่ flag) */
+  headless?: true;
+  /** run --headless --request "...": ข้อความแรกถึง PM ของงานใหม่ */
+  request?: string;
+  /** run --headless --job &lt;id&gt;: ทำต่องานที่ระบุ */
+  job?: string;
+}
+
+export function parseArgs(argv: string[]): CliArgs {
+  // logs เป็นคำสั่งย่อยเฉพาะตำแหน่งแรก (โฟลเดอร์ชื่อ logs ให้พิมพ์ ./logs)
+  const command: Command = argv[0] === 'logs' ? 'logs' : 'run';
+  const rest = command === 'logs' ? argv.slice(1) : argv;
+  let projectDir: string | undefined;
+  let resume = false;
+  let live = false;
+  let level: Level | undefined;
+  let headless = false;
+  let request: string | undefined;
+  let job: string | undefined;
+  const setProject = (value: string): void =&gt; {
+    if (projectDir !== undefined) throw new Error('ระบุโปรเจกต์ได้ครั้งเดียว');
+    projectDir = value;
+  };
+  for (let i = 0; i &lt; rest.length; i++) {
+    const arg = rest[i] ?? '';
+    if (arg === '--resume' || arg === '-r') resume = true;
+    else if (arg === '--live') live = true;
+    else if (arg === '--headless') headless = true;
+    else if (arg === '--request' || arg === '--job') {
+      const value = rest[++i];
+      if (value === undefined || value === '') throw new Error(`ต้องระบุค่าหลัง ${arg}`);
+      if (arg === '--request') request = value;
+      else job = value;
+    } else if (arg === '--quick' || arg === '--full') {
+      const value = arg === '--quick' ? 'quick' : 'full';
+      if (level !== undefined &amp;&amp; level !== value) throw new Error('ใช้ --quick กับ --full พร้อมกันไม่ได้');
+      level = value;
+    } else if (arg === '--project') {
+      const value = rest[++i];
+      if (value === undefined || value === '' || value.startsWith('-')) throw new Error('ต้องระบุพาธหลัง --project');
+      setProject(value);
+    } else if (arg.startsWith('--project=')) {
+      const value = arg.slice('--project='.length);
+      if (value === '') throw new Error('ต้องระบุพาธหลัง --project');
+      setProject(value);
+    } else if (arg.startsWith('-')) throw new Error(`อาร์กิวเมนต์ไม่รู้จัก: ${arg}`);
+    else setProject(arg);
+  }
+  if (live &amp;&amp; command !== 'logs') throw new Error('--live ใช้ได้กับ agent-team logs เท่านั้น');
+  if (resume &amp;&amp; command === 'logs') throw new Error('-r/--resume ใช้กับ agent-team logs ไม่ได้');
+  if (level &amp;&amp; command === 'logs') throw new Error('--quick/--full ใช้กับ agent-team logs ไม่ได้');
+  if (headless &amp;&amp; command === 'logs') throw new Error('--headless ใช้กับ agent-team logs ไม่ได้');
+  if ((request !== undefined || job !== undefined) &amp;&amp; !headless) {
+    throw new Error('--request/--job ใช้คู่กับ --headless เท่านั้น');
+  }
+  if (headless) {
+    const modes = [request !== undefined, resume, job !== undefined].filter(Boolean).length;
+    if (modes !== 1) {
+      throw new Error('--headless ต้องมีอย่างใดอย่างหนึ่ง: --request "..." (งานใหม่), --resume หรือ --job &lt;id&gt;');
+    }
+    if (request !== undefined &amp;&amp; request.trim() === '') throw new Error('--request ห้ามว่าง');
+    if (job !== undefined &amp;&amp; !JOB_ID_RE.test(job)) throw new Error(`jobId ไม่ถูกรูปแบบ: ${job}`);
+  }
+  const dir = projectDir ?? (headless ? '.' : undefined);
+  return {
+    command,
+    projectDir: dir === undefined ? undefined : path.resolve(dir),
+    resume,
+    live,
+    level,
+    ...(headless ? { headless: true as const, request, job } : {}),
+  };
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: เขียน <code>src/headless/args.ts</code></strong></span></p>
+<pre><code>import * as path from 'node:path';
+import { JOB_ID_RE } from '../jobs';
+
+/** ค่าเริ่มต้นของ wait ต้องต่ำกว่า timeout สูงสุดของ Bash tool ใน Claude Code (600 วินาที) */
+export const DEFAULT_WAIT_SEC = 540;
+export const MAX_WAIT_SEC = 3600;
+
+export const HEADLESS_COMMANDS = ['wait', 'status', 'answer', 'stop', 'install-skill'] as const;
+export type HeadlessCommandName = (typeof HEADLESS_COMMANDS)[number];
+
+export type HeadlessCommand =
+  | { command: 'wait' | 'status'; projectDir: string; job?: string; since?: number; timeoutSec: number }
+  | { command: 'answer'; projectDir: string; job?: string; text: string }
+  | { command: 'stop'; projectDir: string; job?: string }
+  | { command: 'install-skill' };
+
+export const isHeadlessCommand = (word: string | undefined): word is HeadlessCommandName =&gt;
+  (HEADLESS_COMMANDS as readonly string[]).includes(word ?? '');
+
+function intArg(flag: string, value: string | undefined, min: number, max: number): number {
+  if (value === undefined || !/^\d+$/.test(value)) throw new Error(`${flag} ต้องเป็นจำนวนเต็ม`);
+  const n = Number(value);
+  if (n &lt; min || n &gt; max) throw new Error(`${flag} ต้องอยู่ระหว่าง ${min}-${max}`);
+  return n;
+}
+
+/** agent-team wait|status|answer|stop|install-skill (argv[0] คือชื่อคำสั่ง) */
+export function parseHeadlessCommand(argv: string[]): HeadlessCommand {
+  const [command, ...rest] = argv;
+  if (!isHeadlessCommand(command)) throw new Error(`คำสั่งไม่รู้จัก: ${command ?? ''}`);
+  if (command === 'install-skill') {
+    if (rest.length &gt; 0) throw new Error('install-skill ไม่รับอาร์กิวเมนต์');
+    return { command };
+  }
+  let projectDir = '.';
+  let job: string | undefined;
+  let since: number | undefined;
+  let timeoutSec: number | undefined;
+  const positional: string[] = [];
+  for (let i = 0; i &lt; rest.length; i++) {
+    const arg = rest[i] ?? '';
+    if (arg === '--') {
+      positional.push(...rest.slice(i + 1));
+      break;
+    }
+    if (arg === '--project') {
+      const value = rest[++i];
+      if (value === undefined || value === '' || value.startsWith('-')) throw new Error('ต้องระบุพาธหลัง --project');
+      projectDir = value;
+    } else if (arg === '--job') {
+      const value = rest[++i];
+      if (value === undefined || !JOB_ID_RE.test(value)) throw new Error(`jobId ไม่ถูกรูปแบบ: ${value ?? ''}`);
+      job = value;
+    } else if (arg === '--since' &amp;&amp; (command === 'wait' || command === 'status')) {
+      since = intArg('--since', rest[++i], 0, Number.MAX_SAFE_INTEGER);
+    } else if (arg === '--timeout' &amp;&amp; command === 'wait') {
+      timeoutSec = intArg('--timeout', rest[++i], 0, MAX_WAIT_SEC);
+    } else if (arg.startsWith('-') &amp;&amp; arg !== '-') {
+      throw new Error(`อาร์กิวเมนต์ไม่รู้จักสำหรับ ${command}: ${arg}`);
+    } else positional.push(arg);
+  }
+  const base = { projectDir: path.resolve(projectDir), ...(job === undefined ? {} : { job }) };
+  if (command === 'answer') {
+    if (positional.length !== 1) throw new Error('answer ต้องมีข้อความคำตอบ 1 ค่า (ครอบด้วยเครื่องหมายคำพูด)');
+    return { command, ...base, text: positional[0]! };
+  }
+  if (positional.length &gt; 0) throw new Error(`${command} ไม่รับค่า: ${positional.join(' ')}`);
+  if (command === 'stop') return { command, ...base };
+  return {
+    command,
+    ...base,
+    ...(since === undefined ? {} : { since }),
+    timeoutSec: command === 'status' ? 0 : (timeoutSec ?? DEFAULT_WAIT_SEC),
+  };
+}</code></pre>
+  <p class="meta">หมายเหตุ: <code>answer ''</code> (สตริงว่าง) ต้องผ่าน — ใน loop นั้น <code>''</code> ไม่ขึ้นต้นด้วย <code>-</code> จึงลง positional ถูกต้อง</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/args.test.ts tests/headless/args.test.ts</code> แล้ว <code>npm run typecheck</code><br>คาดหวัง: PASS ทั้งหมด (รวมเทสต์เดิมใน args.test.ts)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: Commit</strong></span></p>
+<pre><code>git add src/args.ts src/headless/args.ts tests/args.test.ts tests/headless/args.test.ts
+git commit -m "feat(headless): --headless run flags and wait/status/answer/stop/install-skill parsing"</code></pre>
+</div>
+
+<!-- ============================ TASK 5 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 5: คำสั่ง <code>wait</code>/<code>status</code>/<code>answer</code>/<code>stop</code>/<code>install-skill</code> + config idle timeout</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/headless/commands.ts</code>, <code>src/install-skill.ts</code></li>
+    <li>แก้ไข: <code>src/config.ts</code> (<code>headlessIdleMinutes</code>)</li>
+    <li>เทสต์: <code>tests/headless/commands.test.ts</code>, <code>tests/install-skill.test.ts</code>, เพิ่มใน <code>tests/config.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): Task 1 (<code>writeJsonAtomic</code>, <code>readJsonSafe</code>, <code>removeQuietly</code>, <code>writeExit</code>, <code>headlessPath</code>, <code>Question</code>), Task 3 (<code>resolveJob</code>, <code>waitForStatus</code>, <code>JobRepository.runningLock</code>), Task 4 (<code>HeadlessCommand</code>), <code>parseChoice</code> จาก <code>src/cli.ts</code>, <code>TEAM_ROOT</code> จาก <code>src/config.ts</code></li>
+    <li>ส่งต่อ (Produces): <code>TeamConfig.headlessIdleMinutes: number</code> (ค่าเริ่มต้น 120, override ได้ใน <code>agent-team.config.json</code>); <code>interface CommandResult { exitCode: number; stdout?: string; stderr?: string }</code>; <code>interface CommandDeps { sleep?; kill?: (pid: number) =&gt; void; stopGraceMs?: number; pollMs?: number; home?: string; skillSource?: string }</code>; <code>runHeadlessCommand(cmd: HeadlessCommand, deps?: CommandDeps): Promise&lt;CommandResult&gt;</code>; <code>SKILL_SOURCE</code>, <code>installSkill(opts?: { home?: string; source?: string }): string</code></li>
+  </ul>
+
+  <p>พฤติกรรม:</p>
+  <ul>
+    <li><code>wait</code> ไม่ระบุ <code>--job</code>: เรียก <code>resolveJob(..., { runningOnly: true })</code> ซ้ำทุก poll จนเจอหรือครบ timeout (กัน race ที่ process ใน background ยังสร้างงานไม่เสร็จ — ห้าม fallback ไปงานเก่าที่จบแล้ว) ครบ timeout ยังไม่เจอ → exit 1 "ไม่พบงาน headless ที่กำลังรัน"</li>
+    <li><code>answer</code>: ปฏิเสธ (exit 1) เมื่อ lock ไม่อยู่ / ไม่มี question.json / มี answer.json ค้าง / kind choice แต่คำตอบไม่ตรงตัวเลือก — ผ่านแล้วเขียน answer.json ด้วย questionId ของคำถามปัจจุบัน</li>
+    <li><code>stop</code>: งานต้องเป็น headless (มี events.jsonl) ไม่งั้น exit 1; ไม่ได้รันอยู่ → exit 0 <code>stopped: false</code>; เขียน stop.json แล้วรอ lock หายภายใน grace; ไม่หาย → <code>kill(lock.pid)</code> (กลืน error), ลบ run.lock/stop.json/question.json, เขียน exit.json <code>stopped</code></li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail — config (เพิ่มใน <code>tests/config.test.ts</code>)</strong></span></p>
+<pre><code>describe('headlessIdleMinutes', () =&gt; {
+  it('ค่าเริ่มต้น 120 และ override ได้', () =&gt; {
+    expect(DEFAULT_CONFIG.headlessIdleMinutes).toBe(120);
+    expect(mergeConfig(DEFAULT_CONFIG, { headlessIdleMinutes: 30 }).headlessIdleMinutes).toBe(30);
+    expect(mergeConfig(DEFAULT_CONFIG, {}).headlessIdleMinutes).toBe(120);
+    expect(() =&gt; mergeConfig(DEFAULT_CONFIG, { headlessIdleMinutes: 0 })).toThrow();
+  });
+});</code></pre>
+  <p class="meta">ถ้าเทสต์เดิมใน <code>tests/config.test.ts</code> เปรียบเทียบ config ทั้งก้อนด้วย object ที่เขียนมือ ให้เพิ่ม <code>headlessIdleMinutes: 120</code> ลงไปในค่าที่คาดหวังเหล่านั้น</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: เขียน test ที่ต้อง fail — <code>tests/install-skill.test.ts</code></strong></span></p>
+<pre><code>import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { installSkill } from '../src/install-skill';
+
+describe('installSkill', () =&gt; {
+  it('copy SKILL.md ไปที่ ~/.claude/skills/agent-team/ (สร้างโฟลเดอร์ให้) และเขียนทับของเก่า', () =&gt; {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-team-home-'));
+    const source = path.join(home, 'src-SKILL.md');
+    fs.writeFileSync(source, 'v1', 'utf8');
+    const target = installSkill({ home, source });
+    expect(target).toBe(path.join(home, '.claude', 'skills', 'agent-team', 'SKILL.md'));
+    expect(fs.readFileSync(target, 'utf8')).toBe('v1');
+    fs.writeFileSync(source, 'v2', 'utf8');
+    installSkill({ home, source });
+    expect(fs.readFileSync(target, 'utf8')).toBe('v2');
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน test ที่ต้อง fail — <code>tests/headless/commands.test.ts</code></strong></span></p>
+<pre><code>import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { runHeadlessCommand } from '../../src/headless/commands';
+import { headlessPath, readJsonSafe, writeJsonAtomic, type Answer, type ExitInfo } from '../../src/headless/files';
+import { JobRepository } from '../../src/jobs';
+
+let projectDir: string;
+
+beforeEach(() =&gt; {
+  projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-team-cmd-'));
+});
+
+/** งาน headless ที่ lock ด้วย pid ของ process จริงที่ยังอยู่ (process.pid ของเทสต์เอง) */
+async function runningJob(): Promise&lt;{ id: string; dir: string; repo: JobRepository }&gt; {
+  const repo = new JobRepository(projectDir);
+  const { id } = await repo.create();
+  const dir = repo.jobDir(id);
+  fs.appendFileSync(headlessPath(dir, 'events'), '');
+  return { id, dir, repo };
+}
+
+const ask = (dir: string, kind: 'text' | 'choice' | 'choiceOrText', options?: string[]) =&gt;
+  writeJsonAtomic(headlessPath(dir, 'question'), { id: 'q1', kind, prompt: '?', askedAt: 't', ...(options ? { options } : {}) });
+
+describe('answer', () =&gt; {
+  it('เขียน answer.json ด้วย questionId ปัจจุบัน', async () =&gt; {
+    const { id, dir } = await runningJob();
+    ask(dir, 'choiceOrText', ['confirm', 'revise']);
+    const result = await runHeadlessCommand({ command: 'answer', projectDir, job: id, text: 'ทำไมต้องมี login?' });
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout!)).toMatchObject({ ok: true, jobId: id, questionId: 'q1' });
+    expect(readJsonSafe&lt;Answer&gt;(headlessPath(dir, 'answer'))).toEqual({ questionId: 'q1', text: 'ทำไมต้องมี login?' });
+  });
+
+  it('kind choice: รับเลขลำดับ/ชื่อ option แต่ปฏิเสธข้อความอื่นพร้อมบอกตัวเลือก', async () =&gt; {
+    const { id, dir } = await runningJob();
+    ask(dir, 'choice', ['a', 'b']);
+    const bad = await runHeadlessCommand({ command: 'answer', projectDir, job: id, text: 'c' });
+    expect(bad).toMatchObject({ exitCode: 1 });
+    expect(bad.stderr).toContain('a, b');
+    expect((await runHeadlessCommand({ command: 'answer', projectDir, job: id, text: '2' })).exitCode).toBe(0);
+  });
+
+  it('ไม่มีคำถาม / มีคำตอบค้าง → exit 1', async () =&gt; {
+    const { id, dir } = await runningJob();
+    expect((await runHeadlessCommand({ command: 'answer', projectDir, job: id, text: 'x' })).stderr).toContain('ไม่มีคำถาม');
+    ask(dir, 'text');
+    writeJsonAtomic(headlessPath(dir, 'answer'), { questionId: 'q1', text: 'ก่อนหน้า' });
+    expect((await runHeadlessCommand({ command: 'answer', projectDir, job: id, text: 'x' })).stderr).toContain('รอ process อ่าน');
+  });
+
+  it('process ไม่ได้รันอยู่ → exit 1 พร้อมวิธีทำต่อ', async () =&gt; {
+    const { id, dir, repo } = await runningJob();
+    ask(dir, 'text');
+    await repo.unlock(id);
+    const result = await runHeadlessCommand({ command: 'answer', projectDir, job: id, text: 'x' });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain(`--job ${id}`);
+  });
+});
+
+describe('wait / status', () =&gt; {
+  it('status คืน JSON ของ StatusReport', async () =&gt; {
+    const { id } = await runningJob();
+    const result = await runHeadlessCommand({ command: 'status', projectDir, job: id, timeoutSec: 0 });
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout!)).toMatchObject({ jobId: id, status: 'running' });
+  });
+
+  it('wait ไม่ระบุ job: รอจนงาน headless เริ่ม (ไม่หยิบงานเก่า)', async () =&gt; {
+    const pending = runHeadlessCommand({ command: 'wait', projectDir, timeoutSec: 5 }, { pollMs: 5 });
+    await new Promise((r) =&gt; setTimeout(r, 30));
+    const { id, dir } = await runningJob();
+    ask(dir, 'text');
+    const result = await pending;
+    expect(JSON.parse(result.stdout!)).toMatchObject({ jobId: id, status: 'question' });
+  });
+
+  it('wait ไม่ระบุ job และไม่มีงานรันจนครบ timeout → exit 1', async () =&gt; {
+    const result = await runHeadlessCommand({ command: 'wait', projectDir, timeoutSec: 0 }, { pollMs: 5 });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('ไม่พบงาน headless ที่กำลังรัน');
+  });
+});
+
+describe('stop', () =&gt; {
+  it('process หยุดเองภายใน grace → stopped true และเขียน stop.json', async () =&gt; {
+    const { id, dir, repo } = await runningJob();
+    const sleep = vi.fn(async () =&gt; {
+      expect(fs.existsSync(headlessPath(dir, 'stop'))).toBe(true);
+      await repo.unlock(id); // จำลอง process เห็น stop.json แล้วจบ
+    });
+    const result = await runHeadlessCommand({ command: 'stop', projectDir, job: id }, { sleep, pollMs: 10, stopGraceMs: 100 });
+    expect(JSON.parse(result.stdout!)).toMatchObject({ ok: true, stopped: true });
+  });
+
+  it('ไม่ตอบสนอง → kill pid, ลบ lock และเขียน exit.json stopped', async () =&gt; {
+    const { id, dir, repo } = await runningJob();
+    const kill = vi.fn();
+    const result = await runHeadlessCommand(
+      { command: 'stop', projectDir, job: id },
+      { sleep: async () =&gt; {}, kill, pollMs: 10, stopGraceMs: 30 },
+    );
+    expect(kill).toHaveBeenCalledWith(process.pid);
+    expect(JSON.parse(result.stdout!)).toMatchObject({ stopped: true, killed: true });
+    expect(fs.existsSync(repo.lockPath(id))).toBe(false);
+    expect(readJsonSafe&lt;ExitInfo&gt;(headlessPath(dir, 'exit'))?.status).toBe('stopped');
+  });
+
+  it('งานไม่ได้รันอยู่ → exit 0 stopped false', async () =&gt; {
+    const { id, repo } = await runningJob();
+    await repo.unlock(id);
+    const result = await runHeadlessCommand({ command: 'stop', projectDir, job: id });
+    expect(JSON.parse(result.stdout!)).toMatchObject({ stopped: false });
+  });
+
+  it('งานที่ไม่ใช่ headless → exit 1', async () =&gt; {
+    const repo = new JobRepository(projectDir);
+    const { id } = await repo.create();
+    const result = await runHeadlessCommand({ command: 'stop', projectDir, job: id });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('headless');
+  });
+});
+
+describe('install-skill', () =&gt; {
+  it('รายงานพาธที่ติดตั้ง', async () =&gt; {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-team-home-'));
+    const source = path.join(home, 'SKILL.md');
+    fs.writeFileSync(source, 'x', 'utf8');
+    const result = await runHeadlessCommand({ command: 'install-skill' }, { home, skillSource: source });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(path.join(home, '.claude', 'skills', 'agent-team', 'SKILL.md'));
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/config.test.ts tests/install-skill.test.ts tests/headless/commands.test.ts</code><br>คาดหวัง: FAIL</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: แก้ <code>src/config.ts</code></strong></span></p>
+<pre><code>// interface TeamConfig เพิ่ม
+  /** โหมด headless: รอคำตอบนานสุดกี่นาทีก่อนจบงาน (resume ต่อได้) กัน process ค้างถ้าไม่มีใครตอบ */
+  headlessIdleMinutes: number;
+
+// DEFAULT_CONFIG เพิ่ม (ถัดจาก quickMaxQaRounds)
+  headlessIdleMinutes: 120,
+
+// ConfigOverrideSchema เพิ่ม (ถัดจาก quickMaxQaRounds)
+    headlessIdleMinutes: z.number().int().positive().optional(),
+
+// mergeConfig return เพิ่ม
+    headlessIdleMinutes: parsed.headlessIdleMinutes ?? base.headlessIdleMinutes,</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: เขียน <code>src/install-skill.ts</code></strong></span></p>
+<pre><code>import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { TEAM_ROOT } from './config';
+
+/** skill สำหรับ Claude Code ของผู้ใช้ (แยกจาก skills/ ซึ่งเป็น plugin team ของ role agent) */
+export const SKILL_SOURCE = path.join(TEAM_ROOT, 'claude-skill', 'agent-team', 'SKILL.md');
+
+/** copy SKILL.md ไปที่ ~/.claude/skills/agent-team/SKILL.md (เขียนทับ) แล้วคืนพาธปลายทาง */
+export function installSkill(opts: { home?: string; source?: string } = {}): string {
+  const source = opts.source ?? SKILL_SOURCE;
+  const target = path.join(opts.home ?? os.homedir(), '.claude', 'skills', 'agent-team', 'SKILL.md');
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.copyFileSync(source, target);
+  return target;
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: เขียน <code>src/headless/commands.ts</code></strong></span></p>
+<pre><code>import * as fs from 'node:fs';
+import { parseChoice } from '../cli';
+import { installSkill } from '../install-skill';
+import { JobRepository } from '../jobs';
+import type { HeadlessCommand } from './args';
+import { headlessPath, readJsonSafe, removeQuietly, writeExit, writeJsonAtomic, type Question } from './files';
+import { resolveJob, waitForStatus } from './status';
+
+export interface CommandResult {
+  exitCode: number;
+  stdout?: string;
+  stderr?: string;
+}
+
+export interface CommandDeps {
+  sleep?: (ms: number) =&gt; Promise&lt;void&gt;;
+  kill?: (pid: number) =&gt; void;
+  /** stop: รอให้ process หยุดเองนานสุดเท่านี้ก่อน kill */
+  stopGraceMs?: number;
+  pollMs?: number;
+  home?: string;
+  skillSource?: string;
+}
+
+const defaultSleep = (ms: number): Promise&lt;void&gt; =&gt; new Promise((resolve) =&gt; setTimeout(resolve, ms));
+const json = (data: unknown): string =&gt; JSON.stringify(data, null, 2);
+const fail = (message: string): CommandResult =&gt; ({ exitCode: 1, stderr: message });
+
+/** คำสั่งสั้น ๆ ของ headless: อ่าน/เขียนไฟล์ในโฟลเดอร์งาน ไม่เรียกโมเดล */
+export async function runHeadlessCommand(cmd: HeadlessCommand, deps: CommandDeps = {}): Promise&lt;CommandResult&gt; {
+  try {
+    if (cmd.command === 'install-skill') {
+      const target = installSkill({ home: deps.home, source: deps.skillSource });
+      return { exitCode: 0, stdout: `ติดตั้ง skill แล้วที่ ${target}` };
+    }
+    const repo = new JobRepository(cmd.projectDir);
+    const sleep = deps.sleep ?? defaultSleep;
+    if (cmd.command === 'wait' || cmd.command === 'status') {
+      const deadline = Date.now() + cmd.timeoutSec * 1000;
+      let jobId = await resolveJob(repo, cmd.job, { runningOnly: cmd.command === 'wait' });
+      // wait ไม่ระบุ job: process ใน background อาจยังสร้างงานไม่เสร็จ รอจนเจอ (ห้ามหยิบงานเก่าที่จบแล้ว)
+      while (jobId === undefined &amp;&amp; Date.now() &lt; deadline) {
+        await sleep(deps.pollMs ?? 1000);
+        jobId = await resolveJob(repo, undefined, { runningOnly: true });
+      }
+      if (jobId === undefined) return fail('ไม่พบงาน headless ที่กำลังรัน — ระบุ --job หรือเริ่มด้วย agent-team run --headless');
+      const report = await waitForStatus(repo, jobId, {
+        since: cmd.since,
+        timeoutMs: Math.max(0, deadline - Date.now()),
+        pollMs: deps.pollMs,
+        sleep,
+      });
+      return { exitCode: 0, stdout: json(report) };
+    }
+    const jobId = (await resolveJob(repo, cmd.job))!;
+    if (cmd.command === 'answer') return await answer(repo, jobId, cmd.text);
+    return await stop(repo, jobId, { ...deps, sleep });
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function answer(repo: JobRepository, jobId: string, text: string): Promise&lt;CommandResult&gt; {
+  const dir = repo.jobDir(jobId);
+  if (!(await repo.runningLock(jobId))) {
+    return fail(`งาน ${jobId} ไม่ได้รันอยู่ — ทำต่อด้วย agent-team run --headless --job ${jobId}`);
+  }
+  const question = readJsonSafe&lt;Question&gt;(headlessPath(dir, 'question'));
+  if (!question) return fail(`งาน ${jobId} ไม่มีคำถามรอคำตอบอยู่ — ดูสถานะด้วย agent-team status --job ${jobId}`);
+  if (fs.existsSync(headlessPath(dir, 'answer'))) {
+    return fail('มีคำตอบที่ส่งไปแล้วรอ process อ่านอยู่ — เรียก wait เพื่อดูสถานะล่าสุด');
+  }
+  const options = question.options ?? [];
+  if (question.kind === 'choice' &amp;&amp; !parseChoice(text, options)) {
+    return fail(`ต้องตอบเป็นหนึ่งใน: ${options.join(', ')}`);
+  }
+  writeJsonAtomic(headlessPath(dir, 'answer'), { questionId: question.id, text });
+  return { exitCode: 0, stdout: json({ ok: true, jobId, questionId: question.id }) };
+}
+
+async function stop(
+  repo: JobRepository,
+  jobId: string,
+  deps: CommandDeps &amp; { sleep: (ms: number) =&gt; Promise&lt;void&gt; },
+): Promise&lt;CommandResult&gt; {
+  const dir = repo.jobDir(jobId);
+  if (!fs.existsSync(headlessPath(dir, 'events'))) {
+    return fail(`งาน ${jobId} ไม่ใช่งาน headless — หยุดงานที่รันใน terminal ด้วย Ctrl+C`);
+  }
+  const lock = await repo.runningLock(jobId);
+  if (!lock) return { exitCode: 0, stdout: json({ ok: true, jobId, stopped: false, message: 'งานนี้ไม่ได้รันอยู่' }) };
+  const pollMs = deps.pollMs ?? 500;
+  const graceMs = deps.stopGraceMs ?? 10_000;
+  writeJsonAtomic(headlessPath(dir, 'stop'), { at: new Date().toISOString() });
+  for (let waited = 0; waited &lt; graceMs; waited += pollMs) {
+    await deps.sleep(pollMs);
+    if (!(await repo.runningLock(jobId))) return { exitCode: 0, stdout: json({ ok: true, jobId, stopped: true }) };
+  }
+  // process ไม่ตอบสนอง (เช่น node ลูกค้างหลัง shim ถูก kill บน Windows): kill ตรง pid ที่ถือ lock แล้วเก็บกวาดแทน
+  try {
+    (deps.kill ?? ((pid: number) =&gt; void process.kill(pid)))(lock.pid);
+  } catch {
+    // ตายไปแล้วระหว่างรอ
+  }
+  removeQuietly(repo.lockPath(jobId));
+  removeQuietly(headlessPath(dir, 'stop'));
+  removeQuietly(headlessPath(dir, 'question'));
+  writeExit(dir, 'stopped', 'ถูก kill เพราะไม่หยุดเองภายในเวลาที่กำหนด');
+  return { exitCode: 0, stdout: json({ ok: true, jobId, stopped: true, killed: true }) };
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 8: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/config.test.ts tests/install-skill.test.ts tests/headless/commands.test.ts</code> แล้ว <code>npm test</code> และ <code>npm run typecheck</code><br>คาดหวัง: PASS ทั้งหมด</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 9: Commit</strong></span></p>
+<pre><code>git add src/config.ts src/install-skill.ts src/headless/commands.ts tests/config.test.ts tests/install-skill.test.ts tests/headless/commands.test.ts
+git commit -m "feat(headless): wait/status/answer/stop/install-skill commands and idle timeout config"</code></pre>
+</div>
+
+<!-- ============================ TASK 6 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 6: รันงานแบบ headless (<code>src/headless/run.ts</code>) + แยก <code>index.ts</code></h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/headless/run.ts</code>, <code>src/run-context.ts</code></li>
+    <li>แก้ไข: <code>src/index.ts</code>, <code>src/interrupt.ts</code></li>
+    <li>เทสต์: <code>tests/headless/run.test.ts</code>, เพิ่มเคสใน <code>tests/interrupt.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): Task 1–5 ทั้งหมด; <code>selectJob(repo, io, { resume })</code>, <code>SelectedJob</code> จาก <code>src/job-menu.ts</code>; <code>runTeam(deps)</code>; <code>LoggingIO</code>, <code>FileLogger</code>; <code>SdkRoleRunner</code>; <code>makeInterruptHandler</code>; <code>presentBillingVars</code>; <code>ProjectRegistry</code>, <code>teamRootError</code></li>
+    <li>ส่งต่อ (Produces): <code>type InterruptSignal = 'SIGINT' | 'SIGHUP' | 'SIGTERM' | 'stop'</code> (handler รับ type นี้); <code>createRunContext(projectDir, opts: { say: (line: string) =&gt; void; status: StatusSink }): RunContext</code> และ <code>announceRun(ctx, io, data)</code>; <code>startHeadlessJob(repo, opts: { request?: string; resume: boolean; job?: string }): Promise&lt;SelectedJob&gt;</code>; <code>runHeadlessJob(o: HeadlessJobOptions): Promise&lt;ExitStatus&gt;</code>; <code>runHeadless(args: CliArgs): Promise&lt;number&gt;</code></li>
+  </ul>
+
+  <p>พฤติกรรม <code>runHeadless</code> (stdout ของ process = บรรทัด JSON เท่านั้น): บรรทัดแรก <code>{"jobId","since","projectDir"}</code>, บรรทัดสุดท้าย <code>{"jobId","status"}</code>; exit code 0 เมื่อ done/aborted, 1 เมื่อ error/idle; SIGINT/SIGHUP/SIGTERM เขียน exit.json <code>stopped</code> แล้วเรียก interrupt handler เดิม; เจอ stop.json → exit.json <code>stopped</code> แล้ว handler (<code>'stop'</code>)</p>
+  <p><code>startHeadlessJob</code>: <code>--job</code> → state ต้องมี และ lock ได้ (ไม่งั้น throw "กำลังรันอยู่ใน process อื่น"); <code>--resume</code> → <code>selectJob</code> ด้วย io ที่ห้ามถาม (throw ถ้าถูกเรียก ask); งานใหม่ → ถ้ามีงานใด ๆ ถือ lock อยู่ในโปรเจกต์ throw "headless ไม่เริ่มงานซ้อน" ไม่งั้น <code>repo.create()</code> แล้วตั้ง <code>state.pendingPrompt = request</code> และ save</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail — เพิ่มใน <code>tests/interrupt.test.ts</code></strong></span></p>
+<pre><code>  it.each(['SIGTERM', 'stop'] as const)('%s: ทำงานเหมือน SIGINT (ปล่อย lock, abort, exit 130)', async (signal) =&gt; {
+    const { repo, id, calls, exits, handler } = await setup('created');
+    handler(signal);
+    expect(existsSync(repo.lockPath(id!))).toBe(false);
+    expect(calls).toContain('abort');
+    expect(exits).toEqual([130]);
+  });</code></pre>
+  <p class="meta">วางใน <code>describe('makeInterruptHandler')</code> เดิม</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: เขียน test ที่ต้อง fail — <code>tests/headless/run.test.ts</code></strong></span></p>
+<pre><code>import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { DEFAULT_CONFIG } from '../../src/config';
+import { headlessPath, readEvents, readJsonSafe, writeJsonAtomic, type ExitInfo, type Question } from '../../src/headless/files';
+import { HeadlessIO } from '../../src/headless/io';
+import { runHeadlessJob, startHeadlessJob } from '../../src/headless/run';
+import { JobRepository } from '../../src/jobs';
+import { nullLogger } from '../../src/logger';
+import { asking, makeDesign, passReport, proposal } from '../helpers/builders';
+import { FakeRunner, type FakeScript } from '../helpers/fakes';
+import { until } from '../helpers/until';
+
+let projectDir: string;
+beforeEach(() =&gt; {
+  projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-team-hrun-'));
+});
+
+/** ตอบคำถามตามลำดับ (รอคำถามที่ id ใหม่ทุกครั้ง) คืน prompt ที่เจอ */
+async function answerAll(dir: string, answers: string[]): Promise&lt;string[]&gt; {
+  const seen = new Set&lt;string&gt;();
+  const prompts: string[] = [];
+  for (const text of answers) {
+    const q = await until(() =&gt; {
+      const current = readJsonSafe&lt;Question&gt;(headlessPath(dir, 'question'));
+      return current &amp;&amp; !seen.has(current.id) ? current : undefined;
+    });
+    seen.add(q.id);
+    prompts.push(q.prompt);
+    writeJsonAtomic(headlessPath(dir, 'answer'), { questionId: q.id, text });
+  }
+  return prompts;
+}
+
+async function setup(script: FakeScript, idleTimeoutMs = 3000) {
+  const repo = new JobRepository(projectDir);
+  const job = await startHeadlessJob(repo, { request: 'อยากได้ todo', resume: false });
+  const dir = repo.jobDir(job.id);
+  const io = new HeadlessIO({ dir, idleTimeoutMs, pollMs: 5 });
+  const runner = new FakeRunner(script);
+  const stops: number[] = [];
+  const run = (stopPollMs = 1000) =&gt;
+    runHeadlessJob({
+      repo,
+      jobId: job.id,
+      store: job.store,
+      runner,
+      config: DEFAULT_CONFIG,
+      logger: nullLogger,
+      io,
+      onStop: () =&gt; void stops.push(Date.now()),
+      stopPollMs,
+    });
+  return { repo, job, dir, runner, run, stops };
+}
+
+describe('startHeadlessJob', () =&gt; {
+  it('งานใหม่: ตั้ง pendingPrompt จาก --request และถือ lock', async () =&gt; {
+    const repo = new JobRepository(projectDir);
+    const job = await startHeadlessJob(repo, { request: 'อยากได้ todo', resume: false });
+    expect((await job.store.load())?.pendingPrompt).toBe('อยากได้ todo');
+    expect(await repo.runningLock(job.id)).toBeDefined();
+  });
+
+  it('งานใหม่แต่มีงานอื่นรันอยู่ → throw ไม่เริ่มงานซ้อน', async () =&gt; {
+    const repo = new JobRepository(projectDir);
+    await startHeadlessJob(repo, { request: 'a', resume: false });
+    await expect(startHeadlessJob(repo, { request: 'b', resume: false })).rejects.toThrow('ไม่เริ่มงานซ้อน');
+  });
+
+  it('--job: lock งานที่ระบุ; งานที่ไม่มี → throw', async () =&gt; {
+    const repo = new JobRepository(projectDir);
+    const first = await startHeadlessJob(repo, { request: 'a', resume: false });
+    await repo.unlock(first.id);
+    const again = await startHeadlessJob(repo, { job: first.id, resume: false });
+    expect(again.id).toBe(first.id);
+    await expect(startHeadlessJob(repo, { job: '20200101-000000', resume: false })).rejects.toThrow('ไม่พบงาน');
+  });
+
+  it('--resume: ทำต่องานค้างล่าสุดโดยไม่ถามอะไร', async () =&gt; {
+    const repo = new JobRepository(projectDir);
+    const first = await startHeadlessJob(repo, { request: 'a', resume: false });
+    const store = repo.store(first.id);
+    const state = (await store.load())!;
+    state.title = 'a';
+    await store.save(state);
+    await repo.unlock(first.id);
+    expect((await startHeadlessJob(repo, { resume: true })).id).toBe(first.id);
+  });
+});
+
+describe('runHeadlessJob', () =&gt; {
+  it('flow เต็มผ่านไฟล์คำถาม/คำตอบ → done, exit.json done, ปล่อย lock', async () =&gt; {
+    const { repo, job, dir, run } = await setup({
+      pm: [proposal(), asking('สรุป design'), asking('สรุปส่งมอบ')],
+      plans: [makeDesign()],
+      qa: [passReport('api'), passReport('ui')],
+    });
+    const result = run();
+    const prompts = await answerAll(dir, ['confirm', 'confirm', 'accept']);
+    await expect(result).resolves.toBe('done');
+    expect(prompts).toHaveLength(3);
+    expect(readJsonSafe&lt;ExitInfo&gt;(headlessPath(dir, 'exit'))?.status).toBe('done');
+    expect(await repo.runningLock(job.id)).toBeUndefined();
+    expect(readEvents(dir).length).toBeGreaterThan(0);
+  });
+
+  it('ไม่มีใครตอบจนเกิน idle timeout → idle พร้อมวิธีทำต่อ', async () =&gt; {
+    const { job, dir, run } = await setup({ pm: [asking('ขอรายละเอียดเพิ่ม')] }, 50);
+    await expect(run()).resolves.toBe('idle');
+    const exit = readJsonSafe&lt;ExitInfo&gt;(headlessPath(dir, 'exit'));
+    expect(exit?.status).toBe('idle');
+    expect(exit?.message).toContain(`--job ${job.id}`);
+  });
+
+  it('เจอ stop.json → เขียน exit.json stopped แล้วเรียก onStop ครั้งเดียว', async () =&gt; {
+    const { dir, run, stops } = await setup({ pm: [asking('ขอรายละเอียดเพิ่ม')] }, 300);
+    const result = run(5);
+    await until(() =&gt; readJsonSafe&lt;Question&gt;(headlessPath(dir, 'question')));
+    writeJsonAtomic(headlessPath(dir, 'stop'), { at: 't' });
+    await until(() =&gt; (stops.length &gt; 0 ? true : undefined));
+    expect(readJsonSafe&lt;ExitInfo&gt;(headlessPath(dir, 'exit'))?.status).toBe('stopped');
+    expect(fs.existsSync(headlessPath(dir, 'stop'))).toBe(false);
+    await result; // ในเทสต์ onStop ไม่ exit จริง งานจึงจบด้วย idle ตามมา
+    expect(stops).toHaveLength(1);
+  });
+
+  it('ลบ exit.json/stop.json ค้างจากรอบก่อนตอนเริ่ม', async () =&gt; {
+    const { dir, run } = await setup({ pm: [asking('?')] }, 30);
+    writeJsonAtomic(headlessPath(dir, 'stop'), { at: 'old' });
+    writeJsonAtomic(headlessPath(dir, 'exit'), { status: 'error', at: 'old' });
+    await expect(run(1000)).resolves.toBe('idle');
+  });
+});</code></pre>
+  <p class="meta">ถ้า <code>proposal()</code> ใน builders ทำให้ requirements ถามมากกว่า 1 ครั้ง ให้ปรับลิสต์คำตอบตามเทสต์ <code>flow เต็ม</code> ใน <code>tests/orchestrator.test.ts</code> (ที่นั่นใช้ <code>['อยากได้ todo', 'confirm', 'confirm', 'accept']</code> ซึ่งข้อความแรกตรงกับ <code>--request</code>)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/headless/run.test.ts tests/interrupt.test.ts</code><br>คาดหวัง: FAIL</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: แก้ <code>src/interrupt.ts</code></strong></span></p>
+<pre><code>/** SIGTERM/stop ใช้ในโหมด headless (stop = เจอ stop.json จากคำสั่ง agent-team stop) */
+export type InterruptSignal = 'SIGINT' | 'SIGHUP' | 'SIGTERM' | 'stop';
+
+/** handler เดียวใช้กับทุกสัญญาณหยุด ทุกขั้นเป็น sync เพราะจบด้วย exit */
+export function makeInterruptHandler(deps: InterruptDeps): (signal: InterruptSignal) =&gt; void {
+  // เนื้อฟังก์ชันเดิมไม่เปลี่ยน</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: เขียน <code>src/run-context.ts</code></strong></span></p>
+<pre><code>import * as path from 'node:path';
+import type { StatusSink } from './activity';
+import { loadConfig, type TeamConfig } from './config';
+import type { UserIO } from './deps';
+import { presentBillingVars } from './env';
+import { JobRepository } from './jobs';
+import { FileLogger } from './logger';
+import { SdkRoleRunner } from './runner';
+
+export interface RunContext {
+  config: TeamConfig;
+  logger: FileLogger;
+  logFile: string;
+  abortController: AbortController;
+  runner: SdkRoleRunner;
+  repo: JobRepository;
+}
+
+/** ของที่ทั้งโหมดโต้ตอบและ headless ต้องใช้ในการรันงาน (config, log, runner, repo) */
+export function createRunContext(
+  projectDir: string,
+  opts: { say: (line: string) =&gt; void; status: StatusSink },
+): RunContext {
+  const config = loadConfig();
+  const abortController = new AbortController();
+  const logFile = path.join(projectDir, '.agent-team', 'agent-team.log');
+  const logger = new FileLogger(logFile);
+  const runner = new SdkRoleRunner({
+    projectDir,
+    config,
+    abortController,
+    logger,
+    log: opts.say,
+    status: opts.status,
+    debug: process.env.AGENT_TEAM_DEBUG === '1',
+  });
+  const repo = new JobRepository(projectDir, { log: logger });
+  return { config, logger, logFile, abortController, runner, repo };
+}
+
+/** log run.start และแจ้งที่อยู่ log / env ที่ไม่ส่งให้ agent */
+export function announceRun(ctx: RunContext, io: UserIO, data: Record&lt;string, unknown&gt;): void {
+  ctx.logger.log('INFO', 'run.start', {
+    ...data,
+    pid: process.pid,
+    node: process.version,
+    debug: process.env.AGENT_TEAM_DEBUG === '1',
+  });
+  io.say(`บันทึก log ที่ ${ctx.logFile}`);
+  const ignored = presentBillingVars();
+  if (ignored.length &gt; 0) {
+    io.say(`ไม่ส่ง ${ignored.join(', ')} ให้ agent — ใช้โควตา subscription ที่ login ไว้เท่านั้น`);
+  }
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: เขียน <code>src/headless/run.ts</code></strong></span></p>
+<pre><code>import * as fs from 'node:fs';
+import type { CliArgs } from '../args';
+import type { TeamConfig } from '../config';
+import type { RoleRunner, StateStore, UserIO } from '../deps';
+import { makeInterruptHandler, type InterruptSignal } from '../interrupt';
+import { selectJob, type SelectedJob } from '../job-menu';
+import type { JobRepository } from '../jobs';
+import { LoggingIO, type Logger } from '../logger';
+import { runTeam } from '../orchestrator';
+import { ProjectRegistry, teamRootError } from '../projects';
+import { announceRun, createRunContext } from '../run-context';
+import type { Level } from '../schemas';
+import { headlessPath, removeQuietly, writeExit, type ExitStatus } from './files';
+import { ActivityStatus, HeadlessIdleError, HeadlessIO } from './io';
+
+const errMessage = (e: unknown): string =&gt; (e instanceof Error ? e.message : String(e));
+
+/** io สำหรับ selectJob --resume: เส้นทางนี้ไม่ควรถามอะไร ถ้าถูกถามแปลว่ามีทางที่ต้องใช้คนตัดสิน → ล้มชัด ๆ */
+const noAskIO: UserIO = {
+  say() {},
+  ask: async () =&gt; {
+    throw new Error('headless: เลือกงานต้องถามผู้ใช้ — ระบุ --job &lt;id&gt; แทน');
+  },
+  choose: async () =&gt; {
+    throw new Error('headless: เลือกงานต้องถามผู้ใช้ — ระบุ --job &lt;id&gt; แทน');
+  },
+  chooseOrText: async () =&gt; {
+    throw new Error('headless: เลือกงานต้องถามผู้ใช้ — ระบุ --job &lt;id&gt; แทน');
+  },
+};
+
+/** เลือก/สร้างงานสำหรับโหมด headless งานที่คืนออกมาถูก lock แล้วเสมอ */
+export async function startHeadlessJob(
+  repo: JobRepository,
+  opts: { request?: string; resume: boolean; job?: string },
+): Promise&lt;SelectedJob&gt; {
+  await repo.migrateLegacy();
+  if (opts.job !== undefined) {
+    if (!(await repo.store(opts.job).load())) throw new Error(`ไม่พบงาน ${opts.job}`);
+    if (!(await repo.lock(opts.job))) throw new Error(`งาน ${opts.job} กำลังรันอยู่ใน process อื่น`);
+    return { id: opts.job, store: repo.store(opts.job) };
+  }
+  if (opts.resume) return selectJob(repo, noAskIO, { resume: true });
+  const running = (await repo.list()).filter((j) =&gt; j.lock);
+  if (running.length &gt; 0) {
+    throw new Error(
+      `มีงานกำลังรันอยู่ในโปรเจกต์นี้ (${running.map((j) =&gt; j.id).join(', ')}) — headless ไม่เริ่มงานซ้อน`,
+    );
+  }
+  const job = await repo.create();
+  const state = await job.store.load();
+  if (!state) throw new Error(`สร้างงาน ${job.id} ไม่สำเร็จ`);
+  state.pendingPrompt = opts.request;
+  await job.store.save(state);
+  return job;
+}
+
+export interface HeadlessJobOptions {
+  repo: JobRepository;
+  jobId: string;
+  store: StateStore;
+  runner: RoleRunner;
+  config: TeamConfig;
+  logger: Logger;
+  /** LoggingIO ที่ครอบ HeadlessIO ของงานนี้ */
+  io: UserIO;
+  levelPreference?: Level;
+  /** เรียกหลังเขียน exit.json เมื่อเจอ stop.json (runHeadless ส่ง interrupt handler ที่จบด้วย exit 130) */
+  onStop: () =&gt; void;
+  stopPollMs?: number;
+}
+
+/** รัน orchestrator กับงานที่ lock แล้ว เขียน exit.json ตอนจบทุกทาง และปล่อย lock */
+export async function runHeadlessJob(o: HeadlessJobOptions): Promise&lt;ExitStatus&gt; {
+  const dir = o.repo.jobDir(o.jobId);
+  const stopFile = headlessPath(dir, 'stop');
+  removeQuietly(headlessPath(dir, 'exit'));
+  removeQuietly(stopFile);
+  const timer = setInterval(() =&gt; {
+    if (!fs.existsSync(stopFile)) return;
+    clearInterval(timer);
+    removeQuietly(stopFile);
+    writeExit(dir, 'stopped', 'หยุดตามคำสั่ง agent-team stop');
+    o.onStop();
+  }, o.stopPollMs ?? 1000);
+  try {
+    const final = await runTeam({
+      runner: o.runner,
+      io: o.io,
+      store: o.store,
+      config: o.config,
+      log: o.logger,
+      levelPreference: o.levelPreference,
+    });
+    const status: ExitStatus = final.phase === 'DONE' ? 'done' : 'aborted';
+    writeExit(dir, status);
+    o.logger.log('INFO', 'run.end', { phase: final.phase, jobId: o.jobId, headless: true });
+    return status;
+  } catch (e) {
+    const status: ExitStatus = e instanceof HeadlessIdleError ? 'idle' : 'error';
+    const message = `${errMessage(e)} — ทำต่อด้วย agent-team run --headless --job ${o.jobId}`;
+    writeExit(dir, status, message);
+    o.logger.log(status === 'idle' ? 'WARN' : 'ERROR', 'run.error', {
+      jobId: o.jobId,
+      headless: true,
+      message,
+      stack: e instanceof Error ? e.stack : undefined,
+    });
+    return status;
+  } finally {
+    clearInterval(timer);
+    await o.repo.unlock(o.jobId);
+  }
+}
+
+/** agent-team run --headless: ไม่มีเมนู ไม่สร้าง CliIO stdout เป็นบรรทัด JSON เท่านั้น คืน exit code */
+export async function runHeadless(args: CliArgs): Promise&lt;number&gt; {
+  const projectDir = args.projectDir!;
+  const rootError = teamRootError(projectDir);
+  if (rootError) {
+    console.error(rootError);
+    return 1;
+  }
+  if (!fs.existsSync(projectDir) || !fs.statSync(projectDir).isDirectory()) {
+    console.error(`ไม่พบโฟลเดอร์โปรเจกต์: ${projectDir}`);
+    return 1;
+  }
+  await new ProjectRegistry(undefined, { warn: () =&gt; {} }).touch(projectDir).catch(() =&gt; {});
+
+  const activity = new ActivityStatus();
+  let io: UserIO | undefined;
+  const ctx = createRunContext(projectDir, { say: (line) =&gt; io?.say(line), status: activity });
+  let job: SelectedJob;
+  try {
+    job = await startHeadlessJob(ctx.repo, { request: args.request, resume: args.resume, job: args.job });
+  } catch (e) {
+    console.error(errMessage(e));
+    return 1;
+  }
+  const dir = ctx.repo.jobDir(job.id);
+  activity.attach(dir);
+  const headless = new HeadlessIO({ dir, idleTimeoutMs: ctx.config.headlessIdleMinutes * 60_000 });
+  io = new LoggingIO(headless, ctx.logger);
+  console.log(JSON.stringify({ jobId: job.id, since: headless.lastSeq, projectDir }));
+  announceRun(ctx, io, { projectDir, resume: args.resume, headless: true, jobId: job.id });
+
+  const onSignal = makeInterruptHandler({
+    repo: ctx.repo,
+    getJobId: () =&gt; job.id,
+    logger: ctx.logger,
+    abort: () =&gt; ctx.abortController.abort(),
+    closeCli: () =&gt; {},
+    print: (text) =&gt; console.error(text.trim()),
+    exit: (code) =&gt; process.exit(code),
+  });
+  const stopBySignal = (signal: InterruptSignal): void =&gt; {
+    writeExit(dir, 'stopped', `หยุดด้วย ${signal}`);
+    onSignal(signal);
+  };
+  for (const signal of ['SIGINT', 'SIGHUP', 'SIGTERM'] as const) process.on(signal, () =&gt; stopBySignal(signal));
+
+  const status = await runHeadlessJob({
+    repo: ctx.repo,
+    jobId: job.id,
+    store: job.store,
+    runner: ctx.runner,
+    config: ctx.config,
+    logger: ctx.logger,
+    io,
+    levelPreference: args.level,
+    onStop: () =&gt; onSignal('stop'),
+  });
+  console.log(JSON.stringify({ jobId: job.id, status }));
+  return status === 'error' || status === 'idle' ? 1 : 0;
+}</code></pre>
+  <p class="meta">หมายเหตุ: ข้อความของ interrupt handler ไปที่ stderr เพื่อให้ stdout มีแต่บรรทัด JSON</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: แก้ <code>src/index.ts</code> ให้แยกทาง headless และใช้ <code>createRunContext</code></strong></span></p>
+<pre><code>// import ใหม่ (ลบ import ที่ไม่ได้ใช้แล้ว: path, loadConfig, presentBillingVars, JobRepository, FileLogger, SdkRoleRunner)
+import { runHeadlessCommand } from './headless/commands';
+import { isHeadlessCommand, parseHeadlessCommand } from './headless/args';
+import { runHeadless } from './headless/run';
+import { announceRun, createRunContext } from './run-context';
+
+async function main(): Promise&lt;void&gt; {
+  const argv = process.argv.slice(2);
+  // คำสั่งสั้นของ headless: ไม่มีเมนู ไม่สร้าง CliIO (stdin ของ task เบื้องหลังมักปิดอยู่)
+  if (isHeadlessCommand(argv[0])) {
+    const result = await runHeadlessCommand(parseHeadlessCommand(argv));
+    if (result.stdout) console.log(result.stdout);
+    if (result.stderr) console.error(result.stderr);
+    process.exitCode = result.exitCode;
+    return;
+  }
+  const args = parseArgs(argv);
+  if (args.headless) {
+    process.exitCode = await runHeadless(args);
+    return;
+  }
+  const cli = new CliIO();
+  // ... ส่วนเมนูโปรเจกต์ / teamRootError / logs เหมือนเดิมทุกบรรทัด จนถึงก่อน const config = loadConfig();
+
+  // แทนบล็อกเดิมตั้งแต่ const config = loadConfig(); จนถึงก่อน let jobId ด้วย:
+  let io: LoggingIO | undefined;
+  const ctx = createRunContext(projectDir, { say: (line) =&gt; io?.say(line), status: cli.status });
+  io = new LoggingIO(cli, ctx.logger);
+  announceRun(ctx, io, { projectDir, resume: args.resume });
+  const { config, logger, runner, repo, abortController } = ctx;
+  let jobId: string | undefined;
+  // ... ส่วนที่เหลือ (onSignal, selectJob, runTeam, catch, finally) เหมือนเดิมทุกบรรทัด
+}</code></pre>
+  <p class="meta">เป้าหมาย: พฤติกรรมโหมดโต้ตอบเหมือนเดิมทุกข้อความและทุก log event (<code>run.start</code> มี <code>projectDir</code>, <code>resume</code>, <code>pid</code>, <code>node</code>, <code>debug</code> ครบเหมือนก่อน) — ตัวแปร <code>io</code> ในส่วนที่เหลือของ <code>main()</code> ถูกใช้ในรูป <code>LoggingIO</code> ที่ไม่ใช่ undefined แล้ว ถ้า TypeScript บ่นให้ประกาศ <code>const loggingIO = new LoggingIO(cli, ctx.logger); io = loggingIO;</code> แล้วใช้ <code>loggingIO</code> ต่อ</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 8: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/headless/run.test.ts tests/interrupt.test.ts</code> แล้ว <code>npm test</code> และ <code>npm run typecheck</code><br>คาดหวัง: PASS ทั้งหมด</p>
+  <p>ตรวจด้วยมือ (ไม่เรียกโมเดล): <code>npx tsx src/index.ts status --project "$(mktemp -d)"</code> → stderr "ไม่พบงาน headless ในโปรเจกต์นี้" exit 1; <code>npx tsx src/index.ts --headless</code> → error "อย่างใดอย่างหนึ่ง"</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 9: Commit</strong></span></p>
+<pre><code>git add src/interrupt.ts src/run-context.ts src/headless/run.ts src/index.ts tests/interrupt.test.ts tests/headless/run.test.ts
+git commit -m "feat(headless): run --headless entry, stop watcher and shared run context"</code></pre>
+</div>
+
+<!-- ============================ TASK 7 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 7: SKILL.md สำหรับ Claude Code + README + package files</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>claude-skill/agent-team/SKILL.md</code></li>
+    <li>แก้ไข: <code>README.md</code> (เพิ่มหัวข้อ <code>## ใช้ผ่าน Claude Code (headless)</code> ถัดจาก <code>## ระดับงาน: quick / full</code> และเพิ่ม <code>headlessIdleMinutes</code> ในหัวข้อ <code>## ตั้งค่า (ไม่บังคับ)</code>), <code>package.json</code> (<code>files</code> เพิ่ม <code>"claude-skill"</code>)</li>
+    <li>เทสต์: เพิ่มใน <code>tests/install-skill.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>SKILL_SOURCE</code> (Task 5), คำสั่งและ flag ทั้งหมดจาก Task 4, status ทั้ง 8 ค่าจาก Task 3</li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail — เพิ่มใน <code>tests/install-skill.test.ts</code></strong></span></p>
+<pre><code>// เพิ่ม SKILL_SOURCE ใน import จาก '../src/install-skill'
+
+describe('SKILL_SOURCE', () =&gt; {
+  it('มีไฟล์จริง frontmatter ชื่อ agent-team และอ้างทุกคำสั่ง/สถานะที่ CLI มี', () =&gt; {
+    const text = fs.readFileSync(SKILL_SOURCE, 'utf8');
+    expect(text).toMatch(/^---\r?\nname: agent-team\r?\n/);
+    for (const word of ['--headless', 'wait', 'answer', 'stop', '--since', '--job', 'timeout: 600000']) {
+      expect(text).toContain(word);
+    }
+    for (const status of ['question', 'running', 'done', 'aborted', 'error', 'stopped', 'idle', 'dead']) {
+      expect(text).toContain(`\`${status}\``);
+    }
+  });
+
+  it('ไม่ได้อยู่ใต้ skills/ (plugin ของ role agent)', () =&gt; {
+    expect(SKILL_SOURCE.split(path.sep)).not.toContain('skills');
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/install-skill.test.ts</code><br>คาดหวัง: FAIL เพราะยังไม่มีไฟล์ SKILL.md</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน <code>claude-skill/agent-team/SKILL.md</code></strong></span></p>
+<pre><code>---
+name: agent-team
+description: Drive the local agent-team CLI (PM → Planning → workers → QA → Security) in headless mode. Use when the user asks to have agent-team ("ทีม agent", "ให้ agent-team ทำ") build, fix or continue work in a project, check an agent-team job's status, answer its questions, or stop it. The user stays the decision-maker - relay every question to them and never answer on their behalf.
+---
+
+# agent-team (headless)
+
+agent-team เรียกโมเดลที่มีค่าใช้จ่ายทุกครั้งที่รัน เริ่มงานเฉพาะเมื่อผู้ใช้ขอชัดเจน
+
+## เริ่มงาน
+
+1. ยืนยันกับผู้ใช้ก่อน: โฟลเดอร์โปรเจกต์ (absolute path), คำขอ (ข้อความแรกถึง PM) และระดับถ้าผู้ใช้ระบุ (`--quick` / `--full`)
+2. รันด้วย Bash tool แบบ `run_in_background: true`:
+
+   agent-team run --headless --project "&lt;path&gt;" --request "&lt;คำขอ&gt;" [--quick|--full]
+
+   ทำต่องานเดิมใช้ `--resume` (งานค้างล่าสุด) หรือ `--job &lt;jobId&gt;` แทน `--request`
+   บรรทัดแรกของ output เป็น JSON `{"jobId", "since", "projectDir"}`
+3. เรียก wait ครั้งแรก (Bash `timeout: 600000`):
+
+   agent-team wait --project "&lt;path&gt;"
+
+   ถ้ารู้ jobId จาก output แล้วให้ใส่ `--job &lt;jobId&gt; --since &lt;since&gt;` เลย จากนั้นใช้ `--job` และ `--since` ทุกครั้ง
+
+## Loop
+
+    agent-team wait --project "&lt;path&gt;" --job &lt;jobId&gt; --since &lt;lastSeq&gt;
+
+เรียกด้วย Bash `timeout: 600000` เสมอ (wait รอสูงสุด 540 วินาที) จำ `lastSeq` จากผลทุกครั้งแล้วส่งเป็น `--since` ครั้งถัดไป แล้วดู `status`:
+
+- `running`: ยังทำงานอยู่ แจ้งความคืบหน้าสั้น ๆ จาก `phase` / `activity` แล้วเรียก wait ซ้ำ
+- `question`:
+  1. แสดง `messages` ให้ผู้ใช้ (สรุป requirements / design / ผล QA ที่ต้องใช้ตัดสินใจ ห้ามตัดสาระสำคัญ)
+  2. ถาม `question.prompt` กับผู้ใช้ ถ้ามี `question.options` ให้เป็นตัวเลือก (AskUserQuestion) — `kind: choiceOrText` ผู้ใช้พิมพ์ข้อความอิสระเพื่อถาม PM ได้, `kind: text` เป็นข้อความอิสระ, `kind: choice` ต้องเป็นหนึ่งในตัวเลือก
+  3. ส่งคำตอบของผู้ใช้ตามจริง:
+
+         agent-team answer --project "&lt;path&gt;" --job &lt;jobId&gt; -- "&lt;คำตอบ&gt;"
+
+  4. เรียก wait ต่อ
+- `done`: งานเสร็จ สรุป `messages` ให้ผู้ใช้
+- `aborted`: งานถูกยกเลิกตามที่ผู้ใช้เลือก
+- `error` / `idle` / `stopped` / `dead`: แจ้ง `message` ถ้าผู้ใช้อยากทำต่อ รัน `agent-team run --headless --project "&lt;path&gt;" --job &lt;jobId&gt;` แบบ background แล้วเข้า loop ใหม่
+
+## กฎ
+
+- ห้ามตอบคำถามแทนผู้ใช้ แม้คำตอบจะดูชัด (เช่น confirm) ผู้ใช้เป็นคนตัดสินทุกจุด
+- ห้ามแก้ไฟล์ใน `.agent-team/` เอง ใช้คำสั่ง `answer` / `stop` เท่านั้น
+- หยุดงานเมื่อผู้ใช้สั่งเท่านั้น: `agent-team stop --project "&lt;path&gt;" --job &lt;jobId&gt;`
+- ห้ามเริ่มงาน headless ซ้อนในโปรเจกต์เดียวกัน
+- `answer` exit 1 = คำตอบไม่ถูกส่ง อ่าน stderr แล้วแก้ตามนั้น (เช่นตัวเลือกไม่ถูก หรือ process ไม่ได้รันอยู่)
+- ดู log ละเอียดเมื่อมีปัญหา: `agent-team logs "&lt;path&gt;"`</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: README — เพิ่มหัวข้อใหม่ถัดจาก <code>## ระดับงาน: quick / full</code></strong></span></p>
+<pre><code>## ใช้ผ่าน Claude Code (headless)
+
+ให้ Claude Code สั่ง agent-team แทนการเปิด terminal เอง Claude จะส่งทุกคำถามของทีมกลับมาให้คุณตอบในแชต
+
+ติดตั้ง skill ครั้งเดียว (copy ไปที่ `~/.claude/skills/agent-team/SKILL.md` รันซ้ำเพื่ออัปเดต):
+
+    agent-team install-skill
+
+แล้วบอก Claude Code เช่น "ให้ agent-team ทำหน้า login ในโปรเจกต์ C:/work/my/app"
+
+คำสั่งที่ skill ใช้ (เรียกเองก็ได้):
+
+- `agent-team run --headless --project &lt;path&gt; --request "..." [--quick|--full]` เริ่มงานใหม่ (ทำต่อ: `--resume` หรือ `--job &lt;id&gt;`) ไม่มีเมนูและไม่อ่าน stdin
+- `agent-team wait [--job &lt;id&gt;] [--since &lt;seq&gt;] [--timeout &lt;วินาที&gt;]` รอจนมีคำถาม/งานจบ (ค่าเริ่มต้น 540 วินาที) พิมพ์ JSON สถานะ
+- `agent-team status [--job &lt;id&gt;] [--since &lt;seq&gt;]` เหมือน wait แต่ตอบทันที
+- `agent-team answer [--job &lt;id&gt;] -- "&lt;คำตอบ&gt;"` ตอบคำถามที่รออยู่
+- `agent-team stop [--job &lt;id&gt;]` หยุดงาน (process ไม่หยุดใน 10 วินาทีจะถูก kill)
+
+ทุกคำสั่งรับ `--project &lt;path&gt;` (ไม่ใส่ = โฟลเดอร์ปัจจุบัน) ไฟล์สื่อสารอยู่ใน `.agent-team/jobs/&lt;id&gt;/` (`events.jsonl`, `question.json`, `answer.json`, `activity.json`, `exit.json`, `stop.json`)
+ถ้าไม่มีใครตอบคำถามเกิน `headlessIdleMinutes` (ค่าเริ่มต้น 120 นาที) งานจะหยุดแบบ resume ต่อได้ด้วย `--job &lt;id&gt;`</code></pre>
+  <p class="meta">ในหัวข้อ <code>## ตั้งค่า (ไม่บังคับ)</code> เพิ่มบรรทัดอธิบาย <code>headlessIdleMinutes</code> (จำนวนเต็มบวก, ค่าเริ่มต้น 120) ตามรูปแบบของ key อื่นในหัวข้อนั้น</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: <code>package.json</code> — เพิ่ม <code>"claude-skill"</code> ใน <code>files</code> ถัดจาก <code>"skills"</code></strong></span></p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/install-skill.test.ts</code> แล้ว <code>npm test</code> และ <code>npm run typecheck</code><br>คาดหวัง: PASS ทั้งหมด</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: Commit</strong></span></p>
+<pre><code>git add claude-skill/agent-team/SKILL.md README.md package.json tests/install-skill.test.ts
+git commit -m "docs(headless): Claude Code skill, README usage and package files"</code></pre>
+</div>
+
+</body>
+</html>

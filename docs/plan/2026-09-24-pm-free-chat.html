@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>PM Free-Text Q&amp;A Implementation Plan</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; line-height: 1.55;
+         max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1f2933;
+         background: #f5f7fa; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  pre { background: #1f2933; color: #e4e7eb; padding: .9rem 1rem;
+        border-radius: 6px; overflow-x: auto; }
+  code { background: #e4e7eb; padding: .1rem .35rem; border-radius: 4px; }
+  pre code { background: none; padding: 0; color: inherit; }
+  .frame { border-left: 6px solid; border-radius: 8px; padding: 1rem 1.25rem;
+           margin: 1.25rem 0; background: #ffffff;
+           box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .frame-header     { border-color: #2563eb; background: #eff6ff; }  /* blue  */
+  .frame-constraints{ border-color: #d97706; background: #fffbeb; }  /* amber */
+  .frame-task       { border-color: #059669; background: #ecfdf5; }  /* green */
+  .frame h1, .frame h2, .frame h3 { margin-top: 0; }
+  .note { border-color: #7c3aed; background: #f5f3ff; }              /* violet */
+  .step { display: flex; gap: .5rem; align-items: baseline;
+          margin: .75rem 0 .25rem; }
+  .step input { transform: scale(1.2); margin-top: .15rem; }
+  .meta { color: #52606d; font-size: .9rem; }
+</style>
+</head>
+<body>
+
+<div class="frame frame-header">
+  <h1>PM Free-Text Q&amp;A Implementation Plan</h1>
+  <p><strong>เป้าหมาย:</strong> ให้ user พิมพ์คำถาม/ความเห็นแทนการเลือกจากตัวเลือกจำกัดได้ ที่ทุกจุดที่ระบบรอ
+  การตัดสินใจ (REQUIREMENTS confirm/revise, REVIEW confirm/revise, BUILD escalate continue/accept/abort,
+  DELIVER accept/change) — PM ตอบคำถามนั้น (พร้อมให้คำแนะนำถ้าควร) แล้วระบบถามตัวเลือกเดิมซ้ำจนกว่าจะเลือกจริง</p>
+  <p><strong>สถาปัตยกรรม:</strong> เพิ่ม method ใหม่ <code>chooseOrText</code> เข้า <code>UserIO</code>
+  interface (คืนตัวเลือกที่ตรง หรือคืนข้อความดิบที่ห่อไว้ถ้าไม่ตรง) implement ในทั้ง 3 คลาสที่มีอยู่
+  (<code>CliIO</code>, <code>ScriptedIO</code>, <code>LoggingIO</code>) แล้วรีแฟกเตอร์ <code>choose</code>
+  เดิมให้เรียกใช้ซ้ำ จากนั้นเพิ่ม helper กลาง <code>decide()</code> ใน <code>io-util.ts</code> ที่วนถาม PM
+  เมื่อได้ข้อความที่ไม่ตรงตัวเลือก แล้วเอาไปแทนที่ <code>io.choose(...)</code> เดิมทั้ง 4 จุด ไม่แตะ state
+  machine หรือ phase transition ใด ๆ เลย</p>
+  <p><strong>Tech Stack:</strong> TypeScript, vitest, @anthropic-ai/claude-agent-sdk</p>
+</div>
+
+<div class="frame note">
+  <strong>For agentic workers:</strong> REQUIRED SUB-SKILL: Use
+  tb-subagent-driven-development (recommended) or
+  tb-executing-plans to implement this plan task-by-task. Steps keep
+  the <code>- [ ]</code> marker next to each checkbox for tracking.
+</div>
+
+<div class="frame frame-constraints">
+  <h2>Global Constraints</h2>
+  <ul>
+    <li>ทำงานทั้งหมดบน branch ใหม่ชื่อ <code>feat/pm-free-chat</code> แตกจาก <code>main</code>
+    (ตอนนี้ <code>main</code> ตรงกับ <code>origin/main</code> พอดี) — สร้าง branch นี้เป็น step แรกของ
+    Task 1 เท่านั้น ไม่ต้องสร้างซ้ำใน task อื่น</li>
+    <li>ห้าม <code>git add -A</code> หรือ <code>git add .</code> — stage เฉพาะไฟล์ที่ task นั้นแก้จริงเสมอ</li>
+    <li>รัน <code>npm test</code> ให้ผ่านทั้งหมดก่อน commit ทุกครั้ง — Task 1 แตะ <code>UserIO</code>
+    interface (มี 3 implementer + object literal อีก 2 จุดในเทสต์) ต้องรัน <code>npm run typecheck</code>
+    ด้วยเสมอ (ตัวอื่นก็ควรรันเผื่อไว้เช่นกัน)</li>
+    <li>โค้ดและชื่อ field ใหม่ทั้งหมดต้องตามสไตล์เดิมของไฟล์ที่แก้ (ภาษาอังกฤษสำหรับโค้ด, ข้อความ Thai
+    สำหรับ prompt/error ที่ user เห็น แบบที่ไฟล์เดิมใช้)</li>
+    <li>commit message จบด้วย attribution line ตามที่ระบบกำหนดในเซสชันที่รันจริงตอนนั้น (เช่น
+    <code>Co-Authored-By:</code> และ <code>Claude-Session:</code> ถ้ามี) — ห้าม hardcode ค่าจากเซสชันที่เขียน
+    plan ฉบับนี้ เพราะอาจถูก execute จากเซสชันอื่น</li>
+    <li>อย่าลบหรือย้ายไฟล์ที่ไม่เกี่ยวข้อง — ทุก task แก้เฉพาะไฟล์ที่ระบุไว้เท่านั้น</li>
+    <li>state machine และ phase transition เดิมทั้งหมดต้องไม่เปลี่ยนพฤติกรรม — ฟีเจอร์นี้แค่เพิ่มทางเลือก
+    "พิมพ์คำถามก่อนเลือก" เท่านั้น เทสต์เดิมทุกตัวที่จำลอง user เลือกตรง ๆ (ไม่พิมพ์คำถามแทรก) ต้องผ่านโดย
+    ไม่ต้องแก้ ยกเว้น 3 จุดที่ระบุไว้ชัดเจนใน Task 3 (เพราะ mock ไปดักฟัง method เดิมที่ไม่ถูกเรียกแล้ว)</li>
+  </ul>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 1: เพิ่ม <code>chooseOrText</code> เข้า <code>UserIO</code> + implement ทุกคลาสที่มีอยู่</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/deps.ts:45-49</code> (<code>UserIO</code> interface)</li>
+    <li>แก้ไข: <code>src/cli.ts:68-76</code> (<code>CliIO</code>)</li>
+    <li>แก้ไข: <code>tests/helpers/fakes.ts:55-61</code> (<code>ScriptedIO</code>)</li>
+    <li>แก้ไข: <code>src/logger.ts:63-67</code> (<code>LoggingIO</code>)</li>
+    <li>แก้ไข: <code>tests/phases/deliver.test.ts:49-61</code> (<code>spyIo: UserIO</code> object literal —
+    แก้แค่ให้ typecheck ผ่าน ยังไม่เปลี่ยนพฤติกรรม test)</li>
+    <li>แก้ไข: <code>tests/logger.test.ts:98-106</code> (<code>failing: UserIO</code> object literal)</li>
+    <li>เทสต์: <code>tests/cli.test.ts</code>, <code>tests/fakes.test.ts</code>,
+    <code>tests/logger.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): ไม่มี — เป็น task แรก</li>
+    <li>ส่งต่อ (Produces): <code>UserIO.chooseOrText&lt;T extends string&gt;(prompt: string, options:
+    readonly T[]): Promise&lt;T | { text: string }&gt;</code> — คืนตัวเลือกที่ตรงกับ <code>options</code>
+    ถ้าพิมพ์ตรง หรือคืน <code>{ text: &lt;สิ่งที่พิมพ์&gt; }</code> ถ้าไม่ตรง implement แล้วใน
+    <code>CliIO</code>, <code>ScriptedIO</code>, <code>LoggingIO</code> — Task 2 (io-util.ts) จะเรียกใช้
+    method นี้</li>
+  </ul>
+
+  <p><strong>ทำไมต้องแก้ 3 คลาส + object literal อีก 2 จุด พร้อมกันใน task เดียว:</strong> การเพิ่ม method
+  เข้า <code>UserIO</code> interface ทำให้ทุกอย่างที่ type เป็น <code>UserIO</code> (ทั้ง class ที่
+  <code>implements UserIO</code> และ object literal ที่ type ตรง ๆ ว่า <code>: UserIO</code>) ต้องมี method
+  นี้ครบ ไม่งั้น <code>npm run typecheck</code> จะพังทันที — grep ทั้ง repo แล้วเจอ 5 จุดพอดี (ไม่มีจุดอื่นแล้ว)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: สร้าง branch ใหม่</strong></span></p>
+<pre><code>git checkout main
+git pull origin main
+git checkout -b feat/pm-free-chat</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: แก้ tests/cli.test.ts ให้เพิ่ม test สำหรับ chooseOrText</strong></span></p>
+  <p>เพิ่ม 2 test นี้ต่อท้าย test <code>'choose แสดงเมนูเลขพร้อมป้ายภาษาไทย ...'</code> (ในกลุ่ม
+  <code>describe('CliIO', ...)</code>):</p>
+<pre><code>  it('chooseOrText: คืนตัวเลือกเมื่อพิมพ์ตรงกับตัวเลือก', async () =&gt; {
+    const { io, input } = makeIO();
+    const result = io.chooseOrText('เลือก', options);
+    input.write('confirm\n');
+    expect(await result).toBe('confirm');
+  });
+
+  it('chooseOrText: คืน { text } เมื่อพิมพ์อย่างอื่น พร้อมโชว์คำใบ้ว่าถามได้', async () =&gt; {
+    const { io, input, written } = makeIO();
+    const result = io.chooseOrText('เลือก', options);
+    await vi.waitFor(() =&gt; {
+      expect(written()).toContain('หรือพิมพ์คำถาม/ความเห็นถึง PM ก่อนตัดสินใจก็ได้');
+    });
+    input.write('ทำไมต้องเลือกแบบนี้\n');
+    expect(await result).toEqual({ text: 'ทำไมต้องเลือกแบบนี้' });
+  });</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: รันเทสต์เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npm test -- cli</code><br>
+     คาดหวัง: FAIL/compile error เพราะ <code>io.chooseOrText</code> ยังไม่มีบน <code>CliIO</code></p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: แก้ src/deps.ts — เพิ่ม method เข้า UserIO</strong></span></p>
+  <p>แก้ <code>UserIO</code> interface ให้เพิ่มบรรทัดต่อจาก <code>choose</code>:</p>
+<pre><code>export interface UserIO {
+  say(text: string): void;
+  ask(prompt: string): Promise&lt;string&gt;;
+  choose&lt;T extends string&gt;(prompt: string, options: readonly T[]): Promise&lt;T&gt;;
+  chooseOrText&lt;T extends string&gt;(prompt: string, options: readonly T[]): Promise&lt;T | { text: string }&gt;;
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: แก้ src/cli.ts — implement chooseOrText ใน CliIO และรีแฟกเตอร์ choose</strong></span></p>
+  <p>แทนที่ <code>async choose(...)</code> เดิมทั้งฟังก์ชันด้วยทั้งสองนี้:</p>
+<pre><code>  async chooseOrText&lt;T extends string&gt;(prompt: string, options: readonly T[]): Promise&lt;T | { text: string }&gt; {
+    const menu = options.map((o, i) =&gt; `${i + 1}) ${o}${LABELS[o] ? ` (${LABELS[o]})` : ''}`).join('   ');
+    const answer = await this.ask(`${prompt}\n${menu}\nหรือพิมพ์คำถาม/ความเห็นถึง PM ก่อนตัดสินใจก็ได้\n&gt; `);
+    const choice = parseChoice(answer, options);
+    return choice ?? { text: answer };
+  }
+
+  async choose&lt;T extends string&gt;(prompt: string, options: readonly T[]): Promise&lt;T&gt; {
+    for (;;) {
+      const result = await this.chooseOrText(prompt, options);
+      if (typeof result === 'string') return result;
+      this.say('กรุณาพิมพ์หมายเลขหรือชื่อตัวเลือกให้ตรง');
+    }
+  }</code></pre>
+  <p><code>LABELS</code> และ <code>parseChoice</code> ที่มีอยู่แล้วในไฟล์นี้ใช้ซ้ำได้เลย ไม่ต้องแก้</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: รันเทสต์เพื่อยืนยันว่า cli.test.ts pass</strong></span></p>
+  <p>รัน: <code>npm test -- cli</code><br>
+     คาดหวัง: PASS ทั้งหมด (รวมเทสต์ <code>choose</code> เดิมที่ยังต้องผ่านเหมือนก่อน — refactor ไม่เปลี่ยน
+     พฤติกรรมภายนอกของ <code>choose</code>)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: แก้ tests/helpers/fakes.ts — เพิ่ม chooseOrText ใน ScriptedIO</strong></span></p>
+  <p>แทนที่ <code>async choose(...)</code> เดิมของ <code>ScriptedIO</code> ทั้งฟังก์ชันด้วยทั้งสองนี้:</p>
+<pre><code>  async chooseOrText&lt;T extends string&gt;(prompt: string, options: readonly T[]): Promise&lt;T | { text: string }&gt; {
+    const answer = await this.ask(prompt);
+    return options.includes(answer as T) ? (answer as T) : { text: answer };
+  }
+
+  async choose&lt;T extends string&gt;(prompt: string, options: readonly T[]): Promise&lt;T&gt; {
+    const result = await this.chooseOrText(prompt, options);
+    if (typeof result === 'string') return result;
+    throw new Error(`ScriptedIO: "${result.text}" ไม่อยู่ใน ${options.join(',')}`);
+  }</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 8: เพิ่ม test ยืนยัน chooseOrText ของ ScriptedIO ใน tests/fakes.test.ts</strong></span></p>
+  <p>เพิ่ม 2 test นี้ต่อท้ายกลุ่ม <code>describe('ScriptedIO', ...)</code> (ก่อนปิด <code>});</code> ของกลุ่มนั้น):</p>
+<pre><code>  it('chooseOrText คืนตัวเลือกตรง ๆ เมื่อคำตอบตรงกับ option', async () =&gt; {
+    const io = new ScriptedIO(['confirm']);
+    const result = await io.chooseOrText('q', ['confirm', 'revise'] as const);
+    expect(result).toBe('confirm');
+  });
+
+  it('chooseOrText คืน text ที่ห่อไว้เมื่อคำตอบไม่ตรงตัวเลือก', async () =&gt; {
+    const io = new ScriptedIO(['ทำไมต้องทำแบบนี้']);
+    const result = await io.chooseOrText('q', ['confirm', 'revise'] as const);
+    expect(result).toEqual({ text: 'ทำไมต้องทำแบบนี้' });
+  });</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 9: แก้ src/logger.ts — เพิ่ม chooseOrText ใน LoggingIO</strong></span></p>
+  <p>เพิ่ม method นี้ต่อจาก <code>choose</code> เดิมใน class <code>LoggingIO</code> (ไม่ต้องแก้
+  <code>choose</code> เดิม):</p>
+<pre><code>  async chooseOrText&lt;T extends string&gt;(prompt: string, options: readonly T[]): Promise&lt;T | { text: string }&gt; {
+    const result = await this.inner.chooseOrText(prompt, options);
+    if (typeof result === 'string') {
+      this.logger.log('INFO', 'user.choice', { prompt, choice: result });
+    } else {
+      this.logger.log('INFO', 'user.question', { prompt, question: result.text });
+    }
+    return result;
+  }</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 10: แก้ tests/logger.test.ts — เพิ่ม chooseOrText ใน object literal ที่ type เป็น UserIO และเพิ่ม test</strong></span></p>
+  <p>แก้ object <code>failing: UserIO</code> (ประมาณบรรทัด 98-106) ให้เพิ่มฟิลด์นี้ต่อจาก <code>choose</code>:</p>
+<pre><code>      chooseOrText: async () =&gt; {
+        throw new Error('EOF');
+      },</code></pre>
+  <p>เพิ่ม 2 test นี้ต่อท้ายกลุ่ม <code>describe(...)</code> เดียวกับ test <code>'choose: บันทึกตัวเลือกที่ user เลือก'</code>
+  (วางต่อจาก test นั้น):</p>
+<pre><code>  it('chooseOrText: บันทึก user.choice เมื่อเลือกตรงตัวเลือก', async () =&gt; {
+    const { events, logger } = spy();
+    const io = new LoggingIO(new ScriptedIO(['confirm']), logger);
+    expect(await io.chooseOrText('ยืนยัน?', ['confirm', 'revise'] as const)).toBe('confirm');
+    expect(events).toEqual([
+      { level: 'INFO', event: 'user.choice', data: { prompt: 'ยืนยัน?', choice: 'confirm' } },
+    ]);
+  });
+
+  it('chooseOrText: บันทึก user.question เมื่อพิมพ์คำถามแทนตัวเลือก', async () =&gt; {
+    const { events, logger } = spy();
+    const io = new LoggingIO(new ScriptedIO(['ทำไมต้องทำแบบนี้']), logger);
+    const result = await io.chooseOrText('ยืนยัน?', ['confirm', 'revise'] as const);
+    expect(result).toEqual({ text: 'ทำไมต้องทำแบบนี้' });
+    expect(events).toEqual([
+      { level: 'INFO', event: 'user.question', data: { prompt: 'ยืนยัน?', question: 'ทำไมต้องทำแบบนี้' } },
+    ]);
+  });</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 11: แก้ tests/phases/deliver.test.ts — เพิ่ม chooseOrText แบบ passthrough ใน spyIo</strong></span></p>
+  <p>หา object <code>spyIo: UserIO</code> ในเทสต์ <code>'บันทึก pmSessionId ลง store ก่อนถาม user'</code>
+  (ประมาณบรรทัด 49-61) เพิ่มบรรทัดนี้ต่อจาก <code>choose</code> (ยังไม่เปลี่ยน logic การดัก spy ตอนนี้ —
+  แค่ทำให้ type ผ่าน task นี้จะแก้ logic จริงใน Task 3):</p>
+<pre><code>      chooseOrText: (prompt, options) =&gt; io.chooseOrText(prompt, options),</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 12: รันเทสต์ทั้งหมดและ typecheck เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npm test</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: ผ่านหมดทุกไฟล์ (ยังไม่มี production code ที่เรียก <code>chooseOrText</code> จริงนอกจากในเทสต์
+     ที่เพิ่งเขียน เพราะ Task 3 ถึงจะเชื่อมเข้า phase logic)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 13: Commit</strong></span></p>
+<pre><code>git add src/deps.ts src/cli.ts src/logger.ts tests/cli.test.ts tests/helpers/fakes.ts tests/fakes.test.ts tests/logger.test.ts tests/phases/deliver.test.ts
+git commit -m "feat: add UserIO.chooseOrText, implemented in CliIO/ScriptedIO/LoggingIO"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 2: เพิ่ม helper <code>decide()</code> ใน io-util.ts</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/io-util.ts</code> (ทั้งไฟล์ — สั้นมาก เพิ่มฟังก์ชันใหม่ 1 ฟังก์ชัน)</li>
+    <li>เทสต์: <code>tests/io-util.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>UserIO.chooseOrText</code> จาก Task 1</li>
+    <li>ส่งต่อ (Produces): <code>decide&lt;T extends string&gt;(deps: Deps, state: State, prompt: string,
+    options: readonly T[]): Promise&lt;T&gt;</code> — Task 3 จะเรียกใช้แทน <code>io.choose(...)</code> เดิม
+    ทั้ง 4 จุด</li>
+  </ul>
+
+  <p><strong>ทำงานยังไง:</strong> วนเรียก <code>io.chooseOrText</code> — ถ้าได้ตัวเลือกที่ตรง (เป็น
+  <code>string</code>) คืนค่าทันที ถ้าได้ <code>{ text }</code> (ไม่ตรงตัวเลือก) ให้ส่ง <code>text</code>
+  นั้นเข้า PM session เดิม (<code>state.pmSessionId</code> — session เดียวกับที่เพิ่งอธิบายสถานการณ์ให้ user
+  ฟัง จึงมีบริบทครบอยู่แล้ว ไม่ต้องแนบอะไรเพิ่ม) แสดงคำตอบของ PM แล้ววนถามตัวเลือกเดิมซ้ำ</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>แก้บรรทัด import บนสุดของ <code>tests/io-util.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import { askNonEmpty, decide } from '../src/io-util';
+import { newState } from '../src/state';
+import { asking } from './helpers/builders';
+import { ScriptedIO, makeDeps } from './helpers/fakes';</code></pre>
+  <p>เพิ่ม describe block ใหม่ต่อท้ายไฟล์ (หลัง <code>describe('askNonEmpty', ...)</code>):</p>
+<pre><code>describe('decide', () =&gt; {
+  it('เลือกตรง ๆ โดยไม่ต้องถาม PM เลย', async () =&gt; {
+    const { deps, runner } = makeDeps({}, ['confirm']);
+    const state = newState();
+    const result = await decide(deps, state, 'ยืนยันไหม?', ['confirm', 'revise'] as const);
+
+    expect(result).toBe('confirm');
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  it('พิมพ์คำถามก่อน -&gt; PM ตอบ -&gt; ถามตัวเลือกเดิมซ้ำจนกว่าจะเลือกจริง', async () =&gt; {
+    const { deps, runner, io, store } = makeDeps(
+      { pm: [asking('เพราะ backend ต้องเสร็จก่อน frontend ถึงจะเทสได้')] },
+      ['ทำไม backend ต้องทำก่อน', 'confirm'],
+    );
+    const state = newState();
+    const result = await decide(deps, state, 'ยืนยันไหม?', ['confirm', 'revise'] as const);
+
+    expect(result).toBe('confirm');
+    expect(runner.calls).toHaveLength(1);
+    expect((runner.calls[0]!.input as { prompt: string }).prompt).toBe('ทำไม backend ต้องทำก่อน');
+    expect(io.said.some((s) =&gt; s.includes('เพราะ backend ต้องเสร็จก่อน'))).toBe(true);
+    expect(store.state?.pmSessionId).toBe('pm-session');
+  });
+
+  it('ถามได้หลายครั้งติดกันก่อนจะเลือกจริง', async () =&gt; {
+    const { deps, runner } = makeDeps(
+      { pm: [asking('คำตอบ 1'), asking('คำตอบ 2')] },
+      ['คำถาม 1', 'คำถาม 2', 'revise'],
+    );
+    const state = newState();
+    const result = await decide(deps, state, 'ยืนยันไหม?', ['confirm', 'revise'] as const);
+
+    expect(result).toBe('revise');
+    expect(runner.calls).toHaveLength(2);
+  });
+
+  it('ส่ง sessionId เดิมเข้า PM ทุกครั้งที่ถาม (ต่อบทสนทนาเดียวกัน ไม่เริ่มใหม่)', async () =&gt; {
+    const { deps, runner } = makeDeps(
+      { pm: [asking('ตอบ 1'), asking('ตอบ 2')] },
+      ['คำถาม 1', 'คำถาม 2', 'confirm'],
+    );
+    const state = newState();
+    state.pmSessionId = 'existing-session';
+    await decide(deps, state, 'ยืนยันไหม?', ['confirm', 'revise'] as const);
+
+    expect((runner.calls[0]!.input as { sessionId?: string }).sessionId).toBe('existing-session');
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รันเทสต์เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npm test -- io-util</code><br>
+     คาดหวัง: FAIL/compile error เพราะ <code>decide</code> ยังไม่มีใน <code>src/io-util.ts</code></p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แก้ src/io-util.ts</strong></span></p>
+  <p>แก้บรรทัด import บนสุด:</p>
+<pre><code>import type { Deps, UserIO } from './deps';
+import type { State } from './state';</code></pre>
+  <p>เพิ่มฟังก์ชันต่อท้ายไฟล์ (หลัง <code>askNonEmpty</code>):</p>
+<pre><code>export async function decide&lt;T extends string&gt;(
+  deps: Deps,
+  state: State,
+  prompt: string,
+  options: readonly T[],
+): Promise&lt;T&gt; {
+  const { runner, io, store } = deps;
+  for (;;) {
+    const result = await io.chooseOrText(prompt, options);
+    if (typeof result === 'string') return result;
+    const { turn, sessionId } = await runner.pmTurn({ sessionId: state.pmSessionId, prompt: result.text });
+    state.pmSessionId = sessionId;
+    await store.save(state);
+    io.say(`\n[PM] ${turn.message}\n`);
+  }
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รันเทสต์และ typecheck เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npm test -- io-util</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: ผ่านหมด</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/io-util.ts tests/io-util.test.ts
+git commit -m "feat: add decide() helper for free-text Q&amp;A at decision points"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 3: เชื่อม decide() เข้า 4 จุดตัดสินใจ + ปรับ PM_PROMPT</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/phases/requirements.ts</code></li>
+    <li>แก้ไข: <code>src/phases/design.ts</code></li>
+    <li>แก้ไข: <code>src/phases/build.ts</code></li>
+    <li>แก้ไข: <code>src/phases/deliver.ts</code></li>
+    <li>แก้ไข: <code>src/prompts.ts</code> (<code>PM_PROMPT</code>)</li>
+    <li>เทสต์: <code>tests/phases/requirements.test.ts</code>, <code>tests/phases/design.test.ts</code>,
+    <code>tests/phases/build.test.ts</code>, <code>tests/phases/deliver.test.ts</code>,
+    <code>tests/prompts.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>decide()</code> จาก Task 2</li>
+    <li>ส่งต่อ (Produces): ไม่มี — เป็น task สุดท้าย ปิดจบด้วยการรัน suite เต็ม</li>
+  </ul>
+
+  <p><strong>สำคัญ:</strong> มี 3 เทสต์เดิมที่ mock ดักฟัง <code>io.choose</code> โดยตรง (เพื่อเช็คว่า
+  <code>pmSessionId</code> ถูกบันทึกก่อนถาม user) — พอ production code เปลี่ยนไปเรียก
+  <code>io.chooseOrText</code> แทน (ผ่าน <code>decide()</code>) mock เดิมจะไม่ถูกเรียกอีกต่อไป เทสต์จะ
+  "ผ่านลอย ๆ" แบบไม่ได้ทดสอบอะไรจริง (เพราะ <code>persistedWhenAsked</code> ไม่เคยถูกตั้งค่า แล้วยัง toBe
+  'pm-session' เพราะ... ที่จริงจะ fail เพราะ undefined !== 'pm-session') — ต้องแก้ทั้ง 3 จุดตาม Step ที่ระบุ
+  ไว้ชัดเจนด้านล่าง ไม่ใช่แค่เพิ่มของใหม่แล้วปล่อยของเก่าไว้</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail — tests/phases/requirements.test.ts</strong></span></p>
+  <p>เพิ่ม test นี้ต่อท้ายกลุ่ม <code>describe('runRequirements', ...)</code> (ก่อนปิด <code>});</code>
+  ของกลุ่มนั้น):</p>
+<pre><code>  it('พิมพ์คำถามแทนการเลือก confirm/revise -&gt; PM ตอบก่อน แล้วถามใหม่จนกว่าจะเลือกจริง', async () =&gt; {
+    const { deps, runner, io } = makeDeps(
+      { pm: [asking('ใช้ tech อะไร?'), proposal(), asking('เพราะ Express เบาและเร็วพอสำหรับ todo list')] },
+      ['อยากได้ todo list', 'ใช้ Express', 'ทำไมต้องใช้ Express', 'confirm'],
+    );
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(state.phase).toBe('DESIGN');
+    expect(runner.calls).toHaveLength(3);
+    expect(pmInput(runner, 2).prompt).toBe('ทำไมต้องใช้ Express');
+    expect(io.said.join('\n')).toContain('เพราะ Express เบาและเร็วพอ');
+  });</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รันเทสต์เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npm test -- phases/requirements</code><br>
+     คาดหวัง: FAIL เพราะ <code>ScriptedIO.choose</code> โยน error ("ทำไมต้องใช้ Express" ไม่อยู่ในตัวเลือก)
+     — <code>runRequirements</code> ยังเรียก <code>io.choose</code> ตรง ๆ อยู่</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แก้ src/phases/requirements.ts</strong></span></p>
+  <p>แก้บรรทัด import:</p>
+<pre><code>import type { Deps } from '../deps';
+import { askNonEmpty, decide } from '../io-util';
+import { formatRequirements } from '../format';
+import type { State } from '../state';</code></pre>
+  <p>แก้บรรทัด <code>const decision = await io.choose('ยืนยัน requirements นี้ไหม?', ['confirm', 'revise'] as const);</code>
+  เป็น:</p>
+<pre><code>    const decision = await decide(deps, state, 'ยืนยัน requirements นี้ไหม?', ['confirm', 'revise'] as const);</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รันเทสต์เพื่อยืนยันว่า requirements.test.ts pass</strong></span></p>
+  <p>รัน: <code>npm test -- phases/requirements</code><br>
+     คาดหวัง: PASS ทั้งหมด</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: เขียน test ที่ต้อง fail — tests/phases/design.test.ts</strong></span></p>
+  <p>เพิ่ม test นี้ต่อท้ายกลุ่ม <code>describe('runReview', ...)</code>:</p>
+<pre><code>  it('พิมพ์คำถามแทนการเลือก confirm/revise -&gt; PM ตอบก่อน แล้วถามใหม่จนเลือกจริง', async () =&gt; {
+    const { deps, runner, io } = makeDeps(
+      { pm: [asking('สรุป design ให้ฟัง'), asking('เพราะ backend ต้องเสร็จก่อนถึงจะเทส UI ได้')] },
+      ['ทำไม backend ต้องทำก่อน', 'confirm'],
+    );
+    const state = stateAt('REVIEW');
+    state.design = makeDesign();
+    await runReview(deps, state);
+
+    expect(state.phase).toBe('BUILD');
+    expect(runner.calls).toHaveLength(2);
+    expect((runner.calls[1]!.input as { prompt: string }).prompt).toBe('ทำไม backend ต้องทำก่อน');
+    expect(io.said.join('\n')).toContain('เพราะ backend ต้องเสร็จก่อน');
+  });</code></pre>
+  <p>แก้ test <code>'บันทึก pmSessionId ลง store ก่อนถาม user'</code> ที่มีอยู่แล้วในไฟล์เดียวกัน — เปลี่ยน
+  จาก mock <code>io.choose</code> เป็น mock <code>io.chooseOrText</code>:</p>
+<pre><code>  it('บันทึก pmSessionId ลง store ก่อนถาม user', async () =&gt; {
+    const { deps, io, store } = makeDeps({ pm: [asking('สรุป')] }, ['confirm']);
+    let persistedWhenAsked: string | undefined;
+    const chooseOrText = io.chooseOrText.bind(io);
+    io.chooseOrText = async (prompt, options) =&gt; {
+      persistedWhenAsked = store.state?.pmSessionId;
+      return chooseOrText(prompt, options);
+    };
+    const state = stateAt('REVIEW');
+    state.design = makeDesign();
+    await runReview(deps, state);
+
+    expect(persistedWhenAsked).toBe('pm-session');
+    expect(store.state?.pmSessionId).toBe('pm-session');
+  });</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: รันเทสต์เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npm test -- phases/design</code><br>
+     คาดหวัง: FAIL ทั้ง test ใหม่ (choose โยน error) และ test เดิมที่เพิ่งแก้ (persistedWhenAsked ยังเป็น
+     undefined เพราะ production code ยังเรียก <code>io.choose</code> ไม่ใช่ <code>io.chooseOrText</code>)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: แก้ src/phases/design.ts</strong></span></p>
+  <p>แก้บรรทัด import:</p>
+<pre><code>import { askNonEmpty, decide } from '../io-util';</code></pre>
+  <p>แก้บรรทัด <code>const decision = await io.choose('ยืนยันแบบนี้ไหม?', ['confirm', 'revise'] as const);</code>
+  เป็น:</p>
+<pre><code>  const decision = await decide(deps, state, 'ยืนยันแบบนี้ไหม?', ['confirm', 'revise'] as const);</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 8: รันเทสต์เพื่อยืนยันว่า design.test.ts pass</strong></span></p>
+  <p>รัน: <code>npm test -- phases/design</code><br>
+     คาดหวัง: PASS ทั้งหมด</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 9: เขียน test ที่ต้อง fail — tests/phases/build.test.ts</strong></span></p>
+  <p>เพิ่ม test นี้ต่อท้ายกลุ่ม <code>describe('runBuild', ...)</code> (วางใกล้ ๆ test escalate อื่น ๆ
+  ก็ได้):</p>
+<pre><code>  it('escalate: พิมพ์คำถามแทนการเลือก continue/accept/abort -&gt; PM ตอบก่อน แล้วถามใหม่จนเลือกจริง', async () =&gt; {
+    const { deps, runner, io } = makeDeps(
+      { qa: fails('api', 5), pm: [asking('ค้าง 5 รอบ'), asking('เพราะ endpoint ยังไม่ครบตาม spec')] },
+      ['ทำไมถึงไม่ผ่าน', 'abort'],
+    );
+    const state = buildState(single());
+    await runBuild(deps, state);
+
+    expect(state.phase).toBe('ABORTED');
+    const pmCalls = runner.calls.filter((c) =&gt; c.role === 'pm');
+    expect(pmCalls).toHaveLength(2);
+    expect((pmCalls[1]!.input as { prompt: string }).prompt).toBe('ทำไมถึงไม่ผ่าน');
+    expect(io.said.join('\n')).toContain('เพราะ endpoint ยังไม่ครบตาม spec');
+  });</code></pre>
+  <p>แก้ test <code>'escalate บันทึก pmSessionId ลง store ก่อนถาม user'</code> ที่มีอยู่แล้วในไฟล์เดียวกัน —
+  เปลี่ยนจาก mock <code>io.choose</code> เป็น mock <code>io.chooseOrText</code>:</p>
+<pre><code>  it('escalate บันทึก pmSessionId ลง store ก่อนถาม user', async () =&gt; {
+    const { deps, io, store } = makeDeps({ qa: fails('api', 5), pm: [asking('ค้าง')] }, ['abort']);
+    let persistedWhenAsked: string | undefined;
+    const chooseOrText = io.chooseOrText.bind(io);
+    io.chooseOrText = async (prompt, options) =&gt; {
+      persistedWhenAsked = store.state?.pmSessionId;
+      return chooseOrText(prompt, options);
+    };
+    await runBuild(deps, buildState(single()));
+
+    expect(persistedWhenAsked).toBe('pm-session');
+    expect(store.state?.pmSessionId).toBe('pm-session');
+  });</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 10: รันเทสต์เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npm test -- phases/build</code><br>
+     คาดหวัง: FAIL ทั้ง 2 test (เหตุผลเดียวกับ Step 6)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 11: แก้ src/phases/build.ts</strong></span></p>
+  <p>ไฟล์นี้ยังไม่เคย import จาก <code>io-util</code> มาก่อน — เพิ่มบรรทัดนี้แทรกเข้าไปเป็นบรรทัดที่ 2
+  ของ import block เดิม (ไม่ต้องแก้บรรทัดอื่นในบล็อก แค่แทรกบรรทัดใหม่):</p>
+<pre><code>import { decide } from '../io-util';</code></pre>
+  <p>ผลลัพธ์ที่ถูกต้องของ import block ทั้งหมด (5 บรรทัดเดิม + 1 บรรทัดใหม่):</p>
+<pre><code>import type { Deps } from '../deps';
+import { decide } from '../io-util';
+import { isPass, isSecurityPass, orderTasks } from '../domain';
+import { RoleRunError } from '../errors';
+import { nullLogger } from '../logger';
+import type { Design, QAReport, Requirements, Task } from '../schemas';
+import type { State, TaskProgress } from '../state';</code></pre>
+  <p>แก้บล็อกท้ายฟังก์ชัน <code>escalate</code> จาก:</p>
+<pre><code>  return io.choose(
+    `task ${task.id} ไม่ผ่านครบ ${progress.rounds} รอบ (continue = ทำต่ออีก ${config.extraRoundsOnContinue} รอบ, accept = รับตามสภาพ, abort = ยกเลิก)`,
+    ['continue', 'accept', 'abort'] as const,
+  );</code></pre>
+  <p>เป็น:</p>
+<pre><code>  return decide(
+    deps,
+    state,
+    `task ${task.id} ไม่ผ่านครบ ${progress.rounds} รอบ (continue = ทำต่ออีก ${config.extraRoundsOnContinue} รอบ, accept = รับตามสภาพ, abort = ยกเลิก)`,
+    ['continue', 'accept', 'abort'] as const,
+  );</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 12: รันเทสต์เพื่อยืนยันว่า build.test.ts pass</strong></span></p>
+  <p>รัน: <code>npm test -- phases/build</code><br>
+     คาดหวัง: PASS ทั้งหมด</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 13: เขียน test ที่ต้อง fail — tests/phases/deliver.test.ts</strong></span></p>
+  <p>เพิ่ม test นี้ต่อท้ายกลุ่ม <code>describe('runDeliver', ...)</code>:</p>
+<pre><code>  it('พิมพ์คำถามแทนการเลือก accept/change -&gt; PM ตอบก่อน แล้วถามใหม่จนเลือกจริง', async () =&gt; {
+    const { deps, runner, io } = makeDeps(
+      { pm: [asking('ส่งมอบครบแล้ว'), asking('security ตรวจผ่านทุก task แล้วครับ')] },
+      ['security ตรวจผ่านหมดหรือยัง', 'accept'],
+    );
+    const state = deliverState();
+    await runDeliver(deps, state);
+
+    expect(state.phase).toBe('DONE');
+    expect(runner.calls).toHaveLength(2);
+    expect((runner.calls[1]!.input as { prompt: string }).prompt).toBe('security ตรวจผ่านหมดหรือยัง');
+    expect(io.said.join('\n')).toContain('security ตรวจผ่านทุก task แล้วครับ');
+  });</code></pre>
+  <p>แก้ test <code>'บันทึก pmSessionId ลง store ก่อนถาม user'</code> ที่มีอยู่แล้วในไฟล์เดียวกัน — ย้ายการดัก
+  spy จาก <code>choose</code> ไปที่ <code>chooseOrText</code> ใน object <code>spyIo</code> (ตัวแปร
+  <code>persistedAtChoose</code> ไม่ต้องเปลี่ยนชื่อ):</p>
+<pre><code>  it('บันทึก pmSessionId ลง store ก่อนถาม user', async () =&gt; {
+    const { deps, io, store } = makeDeps({ pm: [asking('ส่งมอบ')] }, ['accept']);
+    let persistedAtChoose: string | undefined;
+    const spyIo: UserIO = {
+      say: (text) =&gt; io.say(text),
+      ask: (prompt) =&gt; io.ask(prompt),
+      choose: (prompt, options) =&gt; io.choose(prompt, options),
+      chooseOrText: async (prompt, options) =&gt; {
+        persistedAtChoose = store.state?.pmSessionId;
+        return io.chooseOrText(prompt, options);
+      },
+    };
+    const state = deliverState();
+    await runDeliver({ ...deps, io: spyIo }, state);
+
+    expect(persistedAtChoose).toBe('pm-session');
+  });</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 14: รันเทสต์เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npm test -- phases/deliver</code><br>
+     คาดหวัง: FAIL ทั้ง 2 test (เหตุผลเดียวกับ Step 6)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 15: แก้ src/phases/deliver.ts</strong></span></p>
+  <p>แก้บรรทัด import:</p>
+<pre><code>import { askNonEmpty, decide } from '../io-util';</code></pre>
+  <p>แก้บรรทัด <code>const decision = await io.choose('ตรวจรับงานนี้ไหม?', ['accept', 'change'] as const);</code>
+  เป็น:</p>
+<pre><code>  const decision = await decide(deps, state, 'ตรวจรับงานนี้ไหม?', ['accept', 'change'] as const);</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 16: รันเทสต์เพื่อยืนยันว่า deliver.test.ts pass</strong></span></p>
+  <p>รัน: <code>npm test -- phases/deliver</code><br>
+     คาดหวัง: PASS ทั้งหมด</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 17: เขียน test ที่ต้อง fail — tests/prompts.test.ts</strong></span></p>
+  <p>เพิ่ม test นี้ต่อท้ายกลุ่ม <code>describe('SYSTEM_PROMPTS', ...)</code>:</p>
+<pre><code>  it('PM ตอบคำถามอิสระและให้คำแนะนำได้ ไม่ใช่แค่ท่องตัวเลือกซ้ำ', () =&gt; {
+    expect(SYSTEM_PROMPTS.pm).toContain('question or comment');
+    expect(SYSTEM_PROMPTS.pm).toContain('recommendation');
+  });</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 18: รันเทสต์เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npm test -- prompts</code><br>
+     คาดหวัง: FAIL เพราะ <code>PM_PROMPT</code> ยังไม่มีคำเหล่านี้</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 19: แก้ src/prompts.ts</strong></span></p>
+  <p>แก้ <code>PM_PROMPT</code> ให้เพิ่มข้อ 4 ต่อจากข้อ 3 เดิม (ก่อนบรรทัดว่างที่คั่นไปกลุ่ม
+  <code>'Rules:'</code>):</p>
+<pre><code>const PM_PROMPT = [
+  'You are the Project Manager (PM) of a software agent team. You are the ONLY agent that talks to the human user. Always talk to the user in Thai.',
+  '',
+  'What you do in this conversation:',
+  '1. Understand the requirement. Ask ONE focused question at a time about anything unclear (goal, users, features, constraints, out-of-scope, acceptance criteria). Suggest better ideas when you see them and say briefly why.',
+  '2. When you understand enough, answer with status "proposal" and fill "requirements" completely. Otherwise use status "asking" and omit "requirements".',
+  '3. When asked to present a design, a blocked task or a delivery summary, write a clear Thai summary in "message" with status "asking" and no requirements.',
+  '4. If the user sends a question or comment instead of a decision (not requirements, not confirming/revising something you just presented), answer it directly in "message" using the context already in this conversation, and give your own recommendation when the question calls for one. Use status "asking" and no requirements. Do not repeat the pending choice - the system will ask it again.',
+  '',
+  'Rules:',
+  '- Never write or modify code. You may read the project (Read/Glob/Grep) to understand existing code.',
+  '- Keep "message" short, friendly and in Thai. Do not use markdown tables.',
+  '- Never claim that work is done or verified unless the prompt says it passed QA.',
+].join('\n');</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 20: รันเทสต์ทั้งหมดและ typecheck เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npm test</code><br>
+     คาดหวัง: ผ่านหมดทุกไฟล์ (เดิม 496 tests + ที่เพิ่มใน plan นี้)</p>
+  <p>รัน: <code>npm run typecheck</code><br>
+     คาดหวัง: ไม่มี error</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 21: Commit</strong></span></p>
+<pre><code>git add src/phases/requirements.ts src/phases/design.ts src/phases/build.ts src/phases/deliver.ts src/prompts.ts tests/phases/requirements.test.ts tests/phases/design.test.ts tests/phases/build.test.ts tests/phases/deliver.test.ts tests/prompts.test.ts
+git commit -m "feat: let user ask PM free-text questions at every decision point"</code></pre>
+</div>
+
+</body>
+</html>

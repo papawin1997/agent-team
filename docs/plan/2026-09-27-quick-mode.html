@@ -1,0 +1,827 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>โหมด quick + PM จัดระดับงาน (โปรเจกต์ย่อย A) Implementation Plan</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; line-height: 1.55;
+         max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1f2933;
+         background: #f5f7fa; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  pre { background: #1f2933; color: #e4e7eb; padding: .9rem 1rem;
+        border-radius: 6px; overflow-x: auto; }
+  code { background: #e4e7eb; padding: .1rem .35rem; border-radius: 4px; }
+  pre code { background: none; padding: 0; color: inherit; }
+  .frame { border-left: 6px solid; border-radius: 8px; padding: 1rem 1.25rem;
+           margin: 1.25rem 0; background: #ffffff;
+           box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .frame-header     { border-color: #2563eb; background: #eff6ff; }
+  .frame-constraints{ border-color: #d97706; background: #fffbeb; }
+  .frame-task       { border-color: #059669; background: #ecfdf5; }
+  .frame h1, .frame h2, .frame h3 { margin-top: 0; }
+  .note { border-color: #7c3aed; background: #f5f3ff; }
+  .step { display: flex; gap: .5rem; align-items: baseline;
+          margin: .75rem 0 .25rem; }
+  .step input { transform: scale(1.2); margin-top: .15rem; }
+  .meta { color: #52606d; font-size: .9rem; }
+</style>
+</head>
+<body>
+
+<div class="frame frame-header">
+  <h1>โหมด quick + PM จัดระดับงาน (โปรเจกต์ย่อย A) Implementation Plan</h1>
+<p><strong>เป้าหมาย:</strong> ให้ PM จัดระดับงานเป็น quick หรือ full และงาน quick ทำได้เร็วและถูกแบบ Claude Code (1 task → worker → QA ≤2 รอบ → ส่งมอบ ข้าม Planning/REVIEW/Security) โดยมีการเช็กคำเสี่ยงกันงานเสี่ยงหลุดเข้า quick</p>
+<p><strong>สถาปัตยกรรม:</strong> PM ส่ง <code>level</code>/<code>levelReason</code>/<code>quickTask</code> มาใน <code>PmTurn</code> ตอน proposal → <code>runRequirements</code> ถ้าเลือก quick จะสร้าง design สังเคราะห์ 1 task (<code>quickDesign</code>) แล้วกระโดดไป BUILD ทันที → <code>runBuild</code> ข้าม Security เมื่อ <code>state.level === 'quick'</code> และตอน escalate มีตัวเลือก <code>full</code> ให้ย้อนไป DESIGN → การเช็กคำเสี่ยงอยู่ใน <code>src/risk.ts</code> (ฟังก์ชันล้วน) → CLI <code>--quick/--full</code> ส่งค่าผ่าน <code>Deps.levelPreference</code> → หน้า <code>agent-team logs</code> แสดงระดับจาก event <code>level.decided</code></p>
+<p><strong>Tech Stack:</strong> TypeScript (tsx), zod, vitest</p>
+</div>
+
+<div class="frame note">
+  <strong>For agentic workers:</strong> REQUIRED SUB-SKILL: Use
+  tb-subagent-driven-development (recommended) or
+  tb-executing-plans to implement this plan task-by-task. Steps keep
+  the <code>- [ ]</code> marker next to each checkbox for tracking.
+</div>
+
+<div class="frame frame-constraints">
+  <h2>Global Constraints</h2>
+<ul class="meta">
+  <li>ระดับงานมีแค่ <code>'quick' | 'full'</code> ในโปรเจกต์ย่อยนี้ (standard/ยกระดับอัตโนมัติ/Security ตามไฟล์เสี่ยง = โปรเจกต์ย่อย D, ตัด context/เลือกโมเดล = E, headless/skill = B — ห้ามทำในนี้)</li>
+  <li>งาน quick: design สังเคราะห์ 1 task id <code>quick</code>, ข้าม DESIGN และ REVIEW, BUILD ไม่เรียก Security, จำนวนรอบ QA = <code>config.quickMaxQaRounds</code> (ค่าเริ่มต้น 2, override ได้ใน <code>agent-team.config.json</code>), QA ยังรันเทสต์ทั้งหมดเหมือนเดิม</li>
+  <li>ตอน proposal ที่ PM เสนอ quick ให้ผู้ใช้เลือก <code>quick</code> / <code>full</code> / <code>revise</code>; ถ้าเช็กคำเสี่ยงเจอ ให้แสดง <code>⚠ งานนี้แตะเรื่อง &lt;หมวด&gt; — แนะนำ full ...</code> และเรียงตัวเลือกเป็น <code>full</code> / <code>quick</code> / <code>revise</code></li>
+  <li><code>--full</code> = ไม่เสนอ quick เลย (ใช้ confirm/revise แบบเดิม); <code>--quick</code> = บอก PM ว่าผู้ใช้อยากได้ quick แต่ยังผ่านเกณฑ์และเช็กคำเสี่ยงตามปกติ; ใช้พร้อมกันหรือใช้กับ <code>logs</code> ไม่ได้</li>
+  <li>ตอน escalate ของงาน quick มีตัวเลือกเพิ่ม <code>full</code> = ยกระดับ: <code>state.level='full'</code>, ลบ <code>quickTask</code>, ไป <code>DESIGN</code> (โค้ดที่ worker ทำไปแล้วยังอยู่)</li>
+  <li>ทุกครั้งที่ตัดสินระดับ บันทึก log <code>level.decided { level, by: 'pm' | 'user', reason, riskFlags }</code></li>
+  <li>state เก่าที่ไม่มี <code>level</code> = full ทำงานเหมือนเดิมทุกอย่าง</li>
+  <li>ข้อความที่ผู้ใช้เห็นเป็นภาษาไทย ใช้คำว่า "โปรเจกต์"; ไม่เพิ่ม dependency</li>
+  <li>ทุก task ต้องจบด้วย <code>npm test</code> และ <code>npm run typecheck</code> ผ่านทั้งคู่</li>
+</ul>
+</div>
+
+<div class="frame note">
+  <h2>โครงสร้างไฟล์</h2>
+<ul class="meta">
+  <li>สร้าง <code>src/risk.ts</code> — <code>riskFlags(text)</code> และ <code>riskText(requirements, quickTask?)</code></li>
+  <li>แก้ <code>src/schemas.ts</code> — <code>LevelSchema</code>, <code>QuickTaskSchema</code>, field ใหม่ใน <code>PmTurnSchema</code></li>
+  <li>แก้ <code>src/state.ts</code> — <code>level?</code>, <code>quickTask?</code></li>
+  <li>แก้ <code>src/config.ts</code> — <code>quickMaxQaRounds</code></li>
+  <li>แก้ <code>src/deps.ts</code> — <code>Deps.levelPreference?</code></li>
+  <li>แก้ <code>src/domain.ts</code> — <code>QUICK_TASK_ID</code>, <code>quickDesign()</code></li>
+  <li>แก้ <code>src/format.ts</code> — <code>formatQuickTask()</code></li>
+  <li>แก้ <code>src/prompts.ts</code> — กติกาการจัดระดับใน prompt ของ PM</li>
+  <li>แก้ <code>src/args.ts</code>, <code>src/index.ts</code> — <code>--quick</code> / <code>--full</code></li>
+  <li>แก้ <code>src/phases/requirements.ts</code>, <code>src/phases/build.ts</code>, <code>src/phases/deliver.ts</code> — flow ของ quick</li>
+  <li>แก้ <code>src/logview/parse-log.ts</code>, <code>src/logview/web/page.js</code> — แสดงระดับงาน</li>
+  <li>แก้ <code>README.md</code></li>
+</ul>
+</div>
+
+<!-- ============================ TASK 1 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 1: เช็กคำเสี่ยง (risk.ts)</h3>
+<p class="meta"><strong>ไฟล์:</strong></p>
+<ul class="meta">
+  <li>สร้าง: <code>src/risk.ts</code></li>
+  <li>เทสต์: <code>tests/risk.test.ts</code></li>
+</ul>
+<p class="meta"><strong>Interfaces:</strong></p>
+<ul class="meta">
+  <li>ใช้จาก (Consumes): <code>Requirements</code> จาก <code>src/schemas.ts</code> (มีอยู่แล้ว: <code>goal, features[], constraints[], outOfScope[], acceptanceCriteria[]</code>)</li>
+  <li>ส่งต่อ (Produces): <code>type RiskCategory = 'auth' | 'secret' | 'payment' | 'delete' | 'migration' | 'sql' | 'upload' | 'shell' | 'network'</code>; <code>riskFlags(text: string): RiskCategory[]</code> (ไม่ซ้ำ เรียงตามลำดับหมวดข้างบน); <code>riskText(requirements: Requirements, quickTask?: { title: string; description: string; acceptanceCriteria: string[] }): string</code> (รวมข้อความที่ต้องตรวจ ไม่รวม <code>outOfScope</code>)</li>
+</ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+<p>สร้าง <code>tests/risk.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import { riskFlags, riskText } from '../src/risk';
+import { makeRequirements } from './helpers/builders';
+
+describe('riskFlags', () =&gt; {
+  it('งานทั่วไปไม่มีหมวดเสี่ยง', () =&gt; {
+    expect(riskFlags('แก้คำผิดในหน้า about และเปลี่ยนสีปุ่ม')).toEqual([]);
+    expect(riskFlags('เพิ่ม/ลบ todo ในรายการ')).toEqual([]);
+    expect(riskFlags('เพิ่มหน้า authors และรองรับ mysql กับ postgresql')).toEqual([]);
+  });
+
+  it('ภาษาอังกฤษ: ไม่สนตัวพิมพ์ และดูเป็นคำ ไม่ใช่ส่วนของคำอื่น', () =&gt; {
+    expect(riskFlags('Add Google LOGIN button')).toEqual(['auth']);
+    expect(riskFlags('store the API key in .env')).toEqual(['secret']);
+    expect(riskFlags('Stripe checkout for payment')).toEqual(['payment']);
+    expect(riskFlags('DROP TABLE users')).toEqual(['delete']);
+    expect(riskFlags('write a migration to alter table')).toEqual(['migration']);
+    expect(riskFlags('build the report with raw SQL')).toEqual(['sql']);
+    expect(riskFlags('allow file upload')).toEqual(['upload']);
+    expect(riskFlags('run it with child_process exec')).toEqual(['shell']);
+    expect(riskFlags('enable CORS for the webhook')).toEqual(['network']);
+  });
+
+  it('ภาษาไทย', () =&gt; {
+    expect(riskFlags('เพิ่มหน้าเข้าสู่ระบบด้วยรหัสผ่าน')).toEqual(['auth']);
+    expect(riskFlags('เก็บคีย์ลับไว้ในไฟล์')).toEqual(['secret']);
+    expect(riskFlags('ให้ลูกค้าชำระเงินด้วยบัตรเครดิต')).toEqual(['payment']);
+    expect(riskFlags('ปุ่มลบข้อมูลทั้งหมดของผู้ใช้')).toEqual(['delete']);
+    expect(riskFlags('ย้ายข้อมูลไปฐานข้อมูลใหม่')).toEqual(['migration']);
+    expect(riskFlags('ให้อัปโหลดรูปโปรไฟล์ได้')).toEqual(['upload']);
+    expect(riskFlags('ให้ระบบรันคำสั่งบนเซิร์ฟเวอร์')).toEqual(['shell']);
+  });
+
+  it('หลายหมวดพร้อมกัน: ไม่ซ้ำและเรียงตามลำดับหมวด', () =&gt; {
+    expect(riskFlags('upload avatar after login, login again, then pay via payment page')).toEqual([
+      'auth',
+      'payment',
+      'upload',
+    ]);
+  });
+});
+
+describe('riskText', () =&gt; {
+  it('รวม goal/features/constraints/acceptanceCriteria และ quickTask แต่ไม่รวม outOfScope', () =&gt; {
+    const req = { ...makeRequirements(), outOfScope: ['ระบบ login'] };
+    const text = riskText(req, { title: 'แก้ปุ่ม', description: 'เปลี่ยนสีปุ่ม', acceptanceCriteria: ['ปุ่มเป็นสีเขียว'] });
+    expect(text).toContain('todo list');
+    expect(text).toContain('เปลี่ยนสีปุ่ม');
+    expect(text).toContain('ปุ่มเป็นสีเขียว');
+    expect(text).not.toContain('login');
+    expect(riskFlags(text)).toEqual([]);
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+<p>รัน: <code>npx vitest run tests/risk.test.ts</code> — คาดหวัง: FAIL ด้วย "Failed to resolve import '../src/risk'"</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+<p>สร้าง <code>src/risk.ts</code>:</p>
+<pre><code>import type { Requirements } from './schemas';
+
+export type RiskCategory = 'auth' | 'secret' | 'payment' | 'delete' | 'migration' | 'sql' | 'upload' | 'shell' | 'network';
+
+/** คำภาษาอังกฤษตรวจแบบทั้งคำ (ไม่สนตัวพิมพ์) ส่วนคำไทยตรวจแบบ substring เพราะภาษาไทยไม่มีช่องว่างระหว่างคำ */
+const RULES: readonly { category: RiskCategory; en: RegExp; th: readonly string[] }[] = [
+  {
+    category: 'auth',
+    en: /\b(auth|authn|authz|authentication|authorization|authenticate|login|log-in|logout|sign[- ]?in|sign[- ]?up|password|passwd|oauth|sso|jwt|session|permission|permissions|rbac|acl)\b/i,
+    th: ['เข้าสู่ระบบ', 'ล็อกอิน', 'ล็อคอิน', 'รหัสผ่าน', 'สิทธิ์', 'ยืนยันตัวตน', 'สมัครสมาชิก'],
+  },
+  {
+    category: 'secret',
+    en: /(\b(secret|secrets|api[- _]?key|token|tokens|credential|credentials|private key)\b)|(^|\s)\.env\b/i,
+    th: ['คีย์ลับ', 'รหัสลับ', 'โทเคน'],
+  },
+  {
+    category: 'payment',
+    en: /\b(payment|payments|billing|invoice|checkout|credit card|stripe|refund|pay)\b/i,
+    th: ['ชำระเงิน', 'จ่ายเงิน', 'บัตรเครดิต', 'คืนเงิน', 'ใบแจ้งหนี้'],
+  },
+  {
+    category: 'delete',
+    en: /\b(drop table|drop database|truncate|purge|wipe|rm -rf|delete all|bulk delete)\b/i,
+    th: ['ลบข้อมูลทั้งหมด', 'ลบทั้งหมด', 'ล้างข้อมูล', 'ลบข้อมูลผู้ใช้'],
+  },
+  {
+    category: 'migration',
+    en: /\b(migration|migrations|migrate|alter table|schema change)\b/i,
+    th: ['ย้ายข้อมูล', 'เปลี่ยนโครงสร้างฐานข้อมูล'],
+  },
+  { category: 'sql', en: /\b(sql|raw query)\b/i, th: [] },
+  { category: 'upload', en: /\b(upload|uploads|multipart)\b/i, th: ['อัปโหลด', 'อัพโหลด'] },
+  {
+    category: 'shell',
+    en: /\b(exec|execsync|spawn|shell|subprocess|child_process|eval)\b/i,
+    th: ['รันคำสั่ง', 'สั่งคำสั่ง'],
+  },
+  { category: 'network', en: /\b(cors|webhook|webhooks|ssrf|proxy)\b/i, th: [] },
+];
+
+/** หมวดงานเสี่ยงที่พบในข้อความ (ไม่ซ้ำ เรียงตาม RULES) — ใช้กันงานเสี่ยงหลุดเข้าโหมด quick */
+export function riskFlags(text: string): RiskCategory[] {
+  return RULES.filter((r) =&gt; r.en.test(text) || r.th.some((w) =&gt; text.includes(w))).map((r) =&gt; r.category);
+}
+
+/** ข้อความที่ต้องตรวจความเสี่ยง: ไม่รวม outOfScope เพราะเป็นสิ่งที่ตกลงว่าจะไม่ทำ */
+export function riskText(
+  requirements: Requirements,
+  quickTask?: { title: string; description: string; acceptanceCriteria: string[] },
+): string {
+  const parts = [
+    requirements.goal,
+    ...requirements.features,
+    ...requirements.constraints,
+    ...requirements.acceptanceCriteria,
+  ];
+  if (quickTask) parts.push(quickTask.title, quickTask.description, ...quickTask.acceptanceCriteria);
+  return parts.join('\n');
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+<p>รัน: <code>npx vitest run tests/risk.test.ts</code> แล้ว <code>npm run typecheck</code> — คาดหวัง: PASS</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/risk.ts tests/risk.test.ts
+git commit -m "feat: risk keyword check for quick-mode triage"</code></pre>
+</div>
+
+<!-- ============================ TASK 2 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 2: schema, state, config, CLI และ prompt ของ PM สำหรับระดับงาน</h3>
+<p class="meta"><strong>ไฟล์:</strong></p>
+<ul class="meta">
+  <li>แก้ไข: <code>src/schemas.ts</code>, <code>src/state.ts</code>, <code>src/config.ts</code>, <code>src/deps.ts</code>, <code>src/domain.ts</code>, <code>src/format.ts</code>, <code>src/prompts.ts</code>, <code>src/args.ts</code>, <code>src/index.ts</code></li>
+  <li>เทสต์: <code>tests/schemas.test.ts</code>, <code>tests/config.test.ts</code>, <code>tests/args.test.ts</code>, <code>tests/domain.test.ts</code>, <code>tests/format.test.ts</code>, <code>tests/prompts.test.ts</code> (เพิ่ม test ต่อท้าย describe เดิม)</li>
+</ul>
+<p class="meta"><strong>Interfaces:</strong></p>
+<ul class="meta">
+  <li>ใช้จาก (Consumes): ไม่มีจาก task ก่อน</li>
+  <li>ส่งต่อ (Produces): ใน <code>src/schemas.ts</code>: <code>LevelSchema = z.enum(['quick','full'])</code>, <code>type Level</code>, <code>QuickTaskSchema</code> (<code>title</code>, <code>owner: 'frontend'|'backend'</code>, <code>description</code>, <code>acceptanceCriteria[]</code> min 1), <code>type QuickTask</code>, และ <code>PmTurnSchema</code> มี <code>level?: Level</code>, <code>levelReason?: string</code>, <code>quickTask?: QuickTask</code>; <code>State.level?: Level</code>, <code>State.quickTask?: QuickTask</code>; <code>TeamConfig.quickMaxQaRounds: number</code> (DEFAULT 2); <code>Deps.levelPreference?: Level</code>; <code>QUICK_TASK_ID = 'quick'</code> และ <code>quickDesign(requirements: Requirements, task: QuickTask): Design</code> ใน <code>src/domain.ts</code>; <code>formatQuickTask(task: QuickTask): string</code> ใน <code>src/format.ts</code>; <code>CliArgs.level: Level | undefined</code></li>
+</ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail (เพิ่มต่อท้ายไฟล์เทสต์เดิมแต่ละไฟล์ พร้อม import ที่ต้องใช้)</strong></span></p>
+<p><code>tests/schemas.test.ts</code>:</p>
+<pre><code>describe('PmTurnSchema: ระดับงาน', () =&gt; {
+  const quickTask = { title: 'แก้คำผิด', owner: 'frontend', description: 'แก้คำ', acceptanceCriteria: ['แสดงถูก'] };
+  it('รับ level/levelReason/quickTask ที่ถูกต้อง และไม่บังคับ', () =&gt; {
+    const base = { message: 'ok', status: 'proposal', requirements: makeRequirements() };
+    expect(PmTurnSchema.parse(base).level).toBeUndefined();
+    expect(PmTurnSchema.parse({ ...base, level: 'quick', levelReason: 'ไฟล์เดียว', quickTask }).quickTask).toEqual(quickTask);
+  });
+  it('ปฏิเสธ level/owner ที่ไม่รู้จัก และ quickTask ที่ไม่มีเกณฑ์ตรวจรับ', () =&gt; {
+    const base = { message: 'ok', status: 'proposal', requirements: makeRequirements() };
+    expect(() =&gt; PmTurnSchema.parse({ ...base, level: 'medium' })).toThrow();
+    expect(() =&gt; PmTurnSchema.parse({ ...base, level: 'quick', quickTask: { ...quickTask, owner: 'qa' } })).toThrow();
+    expect(() =&gt; PmTurnSchema.parse({ ...base, level: 'quick', quickTask: { ...quickTask, acceptanceCriteria: [] } })).toThrow();
+  });
+});</code></pre>
+<p>(import <code>makeRequirements</code> จาก <code>./helpers/builders</code> ถ้ายังไม่มี)</p>
+<p><code>tests/config.test.ts</code>:</p>
+<pre><code>describe('quickMaxQaRounds', () =&gt; {
+  it('ค่าเริ่มต้น 2, override ได้, ต้องเป็นจำนวนเต็มบวก', () =&gt; {
+    expect(DEFAULT_CONFIG.quickMaxQaRounds).toBe(2);
+    expect(mergeConfig(DEFAULT_CONFIG, {}).quickMaxQaRounds).toBe(2);
+    expect(mergeConfig(DEFAULT_CONFIG, { quickMaxQaRounds: 3 }).quickMaxQaRounds).toBe(3);
+    expect(() =&gt; mergeConfig(DEFAULT_CONFIG, { quickMaxQaRounds: 0 })).toThrow();
+  });
+});</code></pre>
+<p><code>tests/args.test.ts</code> (เพิ่มใน describe เดิม):</p>
+<pre><code>  it('--quick / --full', () =&gt; {
+    expect(parseArgs(['a', '--quick']).level).toBe('quick');
+    expect(parseArgs(['--full']).level).toBe('full');
+    expect(parseArgs([]).level).toBeUndefined();
+    expect(() =&gt; parseArgs(['--quick', '--full'])).toThrow('พร้อมกันไม่ได้');
+    expect(() =&gt; parseArgs(['logs', '--quick'])).toThrow('logs');
+  });</code></pre>
+<p><code>tests/domain.test.ts</code>:</p>
+<pre><code>describe('quickDesign', () =&gt; {
+  it('สร้าง design 1 task id quick จาก requirements และ quickTask', () =&gt; {
+    const d = quickDesign(makeRequirements(), {
+      title: 'แก้คำผิด',
+      owner: 'frontend',
+      description: 'แก้คำว่า Hellp',
+      acceptanceCriteria: ['แสดง Hello'],
+    });
+    expect(QUICK_TASK_ID).toBe('quick');
+    expect(d.overview).toBe('todo list');
+    expect(d.tasks).toEqual([
+      {
+        id: 'quick',
+        title: 'แก้คำผิด',
+        owner: 'frontend',
+        dependsOn: [],
+        description: 'แก้คำว่า Hellp',
+        acceptanceCriteria: ['แสดง Hello'],
+        changed: true,
+      },
+    ]);
+    expect(DesignSchema.parse(d)).toEqual(d);
+  });
+});</code></pre>
+<p>(import <code>quickDesign</code>, <code>QUICK_TASK_ID</code> จาก <code>../src/domain</code>, <code>DesignSchema</code> จาก <code>../src/schemas</code>, <code>makeRequirements</code> จาก <code>./helpers/builders</code>)</p>
+<p><code>tests/format.test.ts</code>:</p>
+<pre><code>describe('formatQuickTask', () =&gt; {
+  it('แสดงชื่องาน ผู้ทำ รายละเอียด และเกณฑ์ตรวจรับ', () =&gt; {
+    const text = formatQuickTask({ title: 'แก้คำผิด', owner: 'frontend', description: 'แก้คำ', acceptanceCriteria: ['แสดงถูก', 'เทสต์ผ่าน'] });
+    expect(text).toContain('--- งานแบบ quick (1 task) ---');
+    expect(text).toContain('ชื่องาน: แก้คำผิด');
+    expect(text).toContain('ผู้ทำ: frontend');
+    expect(text).toContain('  - เทสต์ผ่าน');
+  });
+});</code></pre>
+<p><code>tests/prompts.test.ts</code>:</p>
+<pre><code>describe('PM: จัดระดับงาน', () =&gt; {
+  it('prompt ของ PM อธิบาย level/quickTask และเกณฑ์งานเสี่ยง', () =&gt; {
+    const pm = SYSTEM_PROMPTS.pm;
+    expect(pm).toContain('"level"');
+    expect(pm).toContain('"quickTask"');
+    expect(pm).toContain('levelReason');
+    expect(pm).toContain('at most ONE clarifying question');
+    expect(pm).toContain('authentication');
+  });
+});</code></pre>
+<p>รัน: <code>npx vitest run tests/schemas.test.ts tests/config.test.ts tests/args.test.ts tests/domain.test.ts tests/format.test.ts tests/prompts.test.ts</code> — คาดหวัง: FAIL ที่ test ใหม่</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: <code>src/schemas.ts</code></strong></span></p>
+<p>เพิ่มหลัง <code>OwnerSchema</code>:</p>
+<pre><code>export const LevelSchema = z.enum(['quick', 'full']);
+export type Level = z.infer&lt;typeof LevelSchema&gt;;
+
+/** งานเดียวที่ PM เสนอเมื่อจัดระดับเป็น quick (ไม่มี Planning) */
+export const QuickTaskSchema = z.object({
+  title: z.string().min(1),
+  owner: OwnerSchema,
+  description: z.string().min(1),
+  acceptanceCriteria: z.array(z.string().min(1)).min(1),
+});
+export type QuickTask = z.infer&lt;typeof QuickTaskSchema&gt;;</code></pre>
+<p>แทนที่ <code>PmTurnSchema</code>:</p>
+<pre><code>export const PmTurnSchema = z.object({
+  message: z.string().min(1),
+  status: z.enum(['asking', 'proposal']),
+  requirements: RequirementsSchema.optional(),
+  level: LevelSchema.optional(),
+  levelReason: z.string().optional(),
+  quickTask: QuickTaskSchema.optional(),
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: <code>src/state.ts</code>, <code>src/config.ts</code>, <code>src/deps.ts</code></strong></span></p>
+<p><code>src/state.ts</code>: import <code>Level, QuickTask</code> จาก <code>./schemas</code> และเพิ่มใน <code>State</code> (หลัง <code>design?</code>):</p>
+<pre><code>  /** ระดับงานที่เลือก — ไม่มี = full (งานเก่าก่อนมีโหมด quick) */
+  level?: Level;
+  /** งานเดียวของโหมด quick (มีเฉพาะตอน level = quick) */
+  quickTask?: QuickTask;</code></pre>
+<p><code>src/config.ts</code>: เพิ่ม <code>quickMaxQaRounds: number;</code> ใน <code>TeamConfig</code> (หลัง <code>extraRoundsOnContinue</code>), <code>quickMaxQaRounds: 2,</code> ใน <code>DEFAULT_CONFIG</code> (หลัง <code>extraRoundsOnContinue: 5,</code>), <code>quickMaxQaRounds: z.number().int().positive().optional(),</code> ใน <code>ConfigOverrideSchema</code> และใน <code>mergeConfig</code> คืน <code>quickMaxQaRounds: parsed.quickMaxQaRounds ?? base.quickMaxQaRounds,</code></p>
+<p><code>src/deps.ts</code>: import <code>Level</code> จาก <code>./schemas</code> และเพิ่มใน <code>Deps</code>:</p>
+<pre><code>  /** จาก --quick / --full: บอก PM ว่าผู้ใช้อยากได้ระดับไหน (full = ไม่เสนอ quick) */
+  levelPreference?: Level;</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: <code>src/domain.ts</code> และ <code>src/format.ts</code></strong></span></p>
+<p><code>src/domain.ts</code> (เพิ่ม import <code>QuickTask, Requirements</code> ใน import type เดิม):</p>
+<pre><code>export const QUICK_TASK_ID = 'quick';
+
+/** design สังเคราะห์ของโหมด quick: 1 task ไม่มีขั้นออกแบบ ให้ worker ทำตาม convention เดิมของโปรเจกต์ */
+export function quickDesign(requirements: Requirements, task: QuickTask): Design {
+  return {
+    overview: requirements.goal,
+    architecture: 'quick mode: ไม่มีขั้นออกแบบ ทำตาม task และ convention เดิมของโปรเจกต์',
+    apiContract: 'n/a',
+    dataModel: 'n/a',
+    tasks: [
+      {
+        id: QUICK_TASK_ID,
+        title: task.title,
+        owner: task.owner,
+        dependsOn: [],
+        description: task.description,
+        acceptanceCriteria: task.acceptanceCriteria,
+        changed: true,
+      },
+    ],
+  };
+}</code></pre>
+<p><code>src/format.ts</code> (เพิ่ม <code>QuickTask</code> ใน import type จาก <code>./schemas</code>):</p>
+<pre><code>export function formatQuickTask(task: QuickTask): string {
+  return [
+    '--- งานแบบ quick (1 task) ---',
+    `ชื่องาน: ${task.title}`,
+    `ผู้ทำ: ${task.owner}`,
+    `รายละเอียด: ${task.description}`,
+    'เกณฑ์ตรวจรับ:',
+    ...task.acceptanceCriteria.map((c) =&gt; `  - ${c}`),
+  ].join('\n');
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: <code>src/prompts.ts</code> — เพิ่มกติกาใน <code>PM_PROMPT</code></strong></span></p>
+<p>แทรกบรรทัดเหล่านี้ใน array ของ <code>PM_PROMPT</code> ก่อนบรรทัด <code>''</code> ที่อยู่ก่อน <code>'Rules:'</code>:</p>
+<pre><code>  '',
+  'Triage (only when you answer with status "proposal"):',
+  '- Also set "level" to "quick" or "full", and a short Thai "levelReason".',
+  '- "quick" means a small, well-understood change: roughly 1-3 files, no new architecture, API or data model, and it does NOT touch authentication/authorization, secrets or tokens, payments, deleting or migrating data, raw SQL, file upload, running shell commands, or networking/CORS/webhooks. Everything else is "full".',
+  '- For "quick", also fill "quickTask": ONE task a single worker can finish - title, owner "frontend" or "backend", a description detailed enough for someone who never saw this conversation, and acceptanceCriteria that QA can check by running code or tests. For "full", omit quickTask.',
+  '- When the request already looks like quick, ask at most ONE clarifying question before proposing.',
+  '- If the conversation says the user requires full, always use "full". If it says the user prefers quick, use "quick" when the rules above allow it; otherwise use "full" and explain why in levelReason.',</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: <code>src/args.ts</code> และ <code>src/index.ts</code></strong></span></p>
+<p><code>src/args.ts</code>: import <code>type Level</code> จาก <code>./schemas</code>; เพิ่ม <code>level: Level | undefined;</code> ใน <code>CliArgs</code> (มี comment <code>/** --quick / --full */</code>); ใน <code>parseArgs</code> ประกาศ <code>let level: Level | undefined;</code> และเพิ่มในลูปก่อนเงื่อนไข <code>--project</code>:</p>
+<pre><code>    else if (arg === '--quick' || arg === '--full') {
+      const value = arg === '--quick' ? 'quick' : 'full';
+      if (level !== undefined &amp;&amp; level !== value) throw new Error('ใช้ --quick กับ --full พร้อมกันไม่ได้');
+      level = value;
+    }</code></pre>
+<p>หลังลูป (ต่อจากเช็ก <code>--live</code>/<code>-r</code>) เพิ่ม:</p>
+<pre><code>  if (level &amp;&amp; command === 'logs') throw new Error('--quick/--full ใช้กับ agent-team logs ไม่ได้');</code></pre>
+<p>และคืน <code>level</code> ใน object ผลลัพธ์</p>
+<p><code>src/index.ts</code>: ในการเรียก <code>runTeam({ runner, io, store: job.store, config, log: logger })</code> เพิ่ม <code>levelPreference: args.level</code></p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+<p>รัน: <code>npm test</code> และ <code>npm run typecheck</code> — คาดหวัง: ผ่านทั้งหมด (test เดิมของ args ที่ใช้ <code>toEqual</code> ยังผ่าน เพราะ <code>level: undefined</code> ไม่ทำให้ <code>toEqual</code> ต่าง)</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 8: Commit</strong></span></p>
+<pre><code>git add src/schemas.ts src/state.ts src/config.ts src/deps.ts src/domain.ts src/format.ts src/prompts.ts src/args.ts src/index.ts tests/schemas.test.ts tests/config.test.ts tests/args.test.ts tests/domain.test.ts tests/format.test.ts tests/prompts.test.ts
+git commit -m "feat: level/quickTask in PM turn, quickMaxQaRounds, --quick/--full"</code></pre>
+</div>
+
+<!-- ============================ TASK 3 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 3: flow ของงาน quick (requirements, build, deliver)</h3>
+<p class="meta"><strong>ไฟล์:</strong></p>
+<ul class="meta">
+  <li>แก้ไข: <code>src/phases/requirements.ts</code>, <code>src/phases/build.ts</code>, <code>src/phases/deliver.ts</code></li>
+  <li>เทสต์: <code>tests/phases/requirements.test.ts</code>, <code>tests/phases/build.test.ts</code>, <code>tests/phases/deliver.test.ts</code>, <code>tests/orchestrator.test.ts</code></li>
+</ul>
+<p class="meta"><strong>Interfaces:</strong></p>
+<ul class="meta">
+  <li>ใช้จาก (Consumes): <code>riskFlags</code>, <code>riskText</code> (Task 1); <code>QuickTask</code>, <code>Level</code>, <code>PmTurn.level/levelReason/quickTask</code>, <code>State.level/quickTask</code>, <code>config.quickMaxQaRounds</code>, <code>Deps.levelPreference</code>, <code>quickDesign</code>, <code>formatQuickTask</code> (Task 2); <code>initProgress(design, previous, maxRounds)</code> จาก <code>src/domain.ts</code>; <code>decide(deps, state, prompt, options, onTurn?)</code> จาก <code>src/io-util.ts</code></li>
+  <li>ส่งต่อ (Produces): log event <code>level.decided { level, by, reason, riskFlags }</code>; ตัวเลือก escalate <code>'full'</code> สำหรับงาน quick</li>
+</ul>
+<p>ข้อความ UI ที่ใช้ตรงตัว: prompt เลือกระดับ <code>ทำแบบไหน? (quick = ทำเลยแบบย่อ 1 task, full = ออกแบบก่อนแบบเต็ม, revise = แก้ requirements)</code>; คำเตือน <code>⚠ งานนี้แตะเรื่อง &lt;หมวดคั่นด้วย , &gt; — แนะนำ full (มีขั้นออกแบบและตรวจ Security)</code>; เหตุผลของ PM <code>ระดับที่ PM เสนอ: quick — &lt;levelReason&gt;</code>; hint ถึง PM ข้อความแรก <code>[ผู้ใช้ขอโหมด quick ถ้างานเข้าเกณฑ์]</code> / <code>[ผู้ใช้สั่ง --full: ต้องเป็น full เท่านั้น]</code></p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+<p>เพิ่มใน <code>tests/helpers/builders.ts</code>:</p>
+<pre><code>export const makeQuickTask = (): QuickTask =&gt; ({
+  title: 'แก้คำผิดหน้าแรก',
+  owner: 'frontend',
+  description: 'แก้คำว่า Hellp เป็น Hello ในหน้าแรก',
+  acceptanceCriteria: ['หน้าแรกแสดง Hello'],
+});
+
+export const quickProposal = (
+  requirements: Requirements = makeRequirements(),
+  quickTask: QuickTask = makeQuickTask(),
+): PmTurn =&gt; ({
+  message: 'งานนี้เล็ก',
+  status: 'proposal',
+  requirements,
+  level: 'quick',
+  levelReason: 'แก้ไฟล์เดียว',
+  quickTask,
+});</code></pre>
+<p>(เพิ่ม <code>QuickTask</code> ใน import type จาก <code>../../src/schemas</code>)</p>
+<p>เพิ่มใน <code>tests/phases/requirements.test.ts</code> (ใน describe เดิม; import <code>makeQuickTask, quickProposal</code> และ <code>DEFAULT_CONFIG</code> ถ้าจำเป็น):</p>
+<pre><code>  it('PM เสนอ quick แล้วเลือก quick -&gt; BUILD ด้วย design 1 task, รอบ QA = quickMaxQaRounds, log level.decided', async () =&gt; {
+    const events: { event: string; data?: Record&lt;string, unknown&gt; }[] = [];
+    const { deps, store, io } = makeDeps({ pm: [quickProposal()] }, ['แก้คำผิด', 'quick']);
+    deps.log = { log: (_level, event, data) =&gt; events.push({ event, data }) };
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(state.phase).toBe('BUILD');
+    expect(state.level).toBe('quick');
+    expect(state.quickTask).toEqual(makeQuickTask());
+    expect(state.design?.tasks.map((t) =&gt; t.id)).toEqual(['quick']);
+    expect(state.progress.quick).toMatchObject({ rounds: 0, maxRounds: 2, done: false });
+    expect(store.artifacts.get('design.json')).toEqual(state.design);
+    expect(store.artifacts.get('requirements.json')).toEqual(makeRequirements());
+    expect(io.said.join('\n')).toContain('--- งานแบบ quick (1 task) ---');
+    expect(io.said.join('\n')).toContain('ระดับที่ PM เสนอ: quick — แก้ไฟล์เดียว');
+    expect(events.find((e) =&gt; e.event === 'level.decided')?.data).toEqual({
+      level: 'quick',
+      by: 'pm',
+      reason: 'แก้ไฟล์เดียว',
+      riskFlags: [],
+    });
+  });
+
+  it('PM เสนอ quick แต่เลือก full -&gt; DESIGN, log by user', async () =&gt; {
+    const events: { event: string; data?: Record&lt;string, unknown&gt; }[] = [];
+    const { deps } = makeDeps({ pm: [quickProposal()] }, ['แก้คำผิด', 'full']);
+    deps.log = { log: (_level, event, data) =&gt; events.push({ event, data }) };
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(state.phase).toBe('DESIGN');
+    expect(state.level).toBe('full');
+    expect(state.quickTask).toBeUndefined();
+    expect(events.find((e) =&gt; e.event === 'level.decided')?.data).toMatchObject({ level: 'full', by: 'user' });
+  });
+
+  it('เจอคำเสี่ยง: เตือนและเรียง full ก่อน แต่ยังเลือก quick ได้', async () =&gt; {
+    const risky = { ...makeRequirements(), goal: 'เพิ่มปุ่ม login' };
+    const { deps, io } = makeDeps({ pm: [quickProposal(risky)] }, ['x', 'quick']);
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(io.said.join('\n')).toContain('⚠ งานนี้แตะเรื่อง auth — แนะนำ full (มีขั้นออกแบบและตรวจ Security)');
+    expect(state.level).toBe('quick');
+  });
+
+  it('revise จากตัวเลือกระดับ -&gt; ถามว่าอยากปรับอะไรแล้วคุยต่อ', async () =&gt; {
+    const { deps, runner } = makeDeps({ pm: [quickProposal(), proposal()] }, ['x', 'revise', 'ขอแบบเต็ม', 'confirm']);
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(pmInput(runner, 1).prompt).toBe('ขอแบบเต็ม');
+    expect(state.phase).toBe('DESIGN');
+    expect(state.level).toBe('full');
+  });
+
+  it('--full: ไม่เสนอ quick แม้ PM ส่ง quick มา และบอก PM ในข้อความแรก', async () =&gt; {
+    const { deps, runner, io } = makeDeps({ pm: [quickProposal()] }, ['แก้คำผิด', 'confirm']);
+    deps.levelPreference = 'full';
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(pmInput(runner, 0).prompt).toBe('[ผู้ใช้สั่ง --full: ต้องเป็น full เท่านั้น]\nแก้คำผิด');
+    expect(io.said.join('\n')).not.toContain('งานแบบ quick');
+    expect(state.phase).toBe('DESIGN');
+    expect(state.level).toBe('full');
+    expect(state.title).toBe('แก้คำผิด');
+  });
+
+  it('--quick: บอก PM ในข้อความแรก', async () =&gt; {
+    const { deps, runner } = makeDeps({ pm: [quickProposal()] }, ['แก้คำผิด', 'quick']);
+    deps.levelPreference = 'quick';
+    await runRequirements(deps, newState());
+    expect(pmInput(runner, 0).prompt).toBe('[ผู้ใช้ขอโหมด quick ถ้างานเข้าเกณฑ์]\nแก้คำผิด');
+  });</code></pre>
+<p>เพิ่มใน <code>tests/phases/build.test.ts</code> (import <code>quickDesign</code> จาก <code>../../src/domain</code>, <code>makeQuickTask</code>, <code>makeRequirements</code>, <code>initProgress</code>, <code>asking</code> ตามที่ต้องใช้):</p>
+<pre><code>  it('งาน quick: ไม่เรียก Security และ securityReviewed = false', async () =&gt; {
+    const design = quickDesign(makeRequirements(), makeQuickTask());
+    const state = buildState(design);
+    state.level = 'quick';
+    state.progress = initProgress(design, {}, 2);
+    const { deps, runner } = makeDeps({ qa: [passReport('quick')] }, []);
+    await runBuild(deps, state);
+
+    expect(runner.calls.map((c) =&gt; c.role)).toEqual(['frontend', 'qa']);
+    expect(state.progress.quick).toMatchObject({ done: true, securityReviewed: false });
+    expect(state.phase).toBe('DELIVER');
+  });
+
+  it('งาน quick ไม่ผ่านครบรอบ: เลือก full -&gt; ยกระดับไป DESIGN และ log', async () =&gt; {
+    const events: { event: string; data?: Record&lt;string, unknown&gt; }[] = [];
+    const design = quickDesign(makeRequirements(), makeQuickTask());
+    const state = buildState(design);
+    state.level = 'quick';
+    state.quickTask = makeQuickTask();
+    state.progress = initProgress(design, {}, 2);
+    const { deps, io } = makeDeps(
+      { qa: [failReport('quick'), failReport('quick')], pm: [asking('ค้างเรื่อง X')] },
+      ['full'],
+    );
+    deps.log = { log: (_level, event, data) =&gt; events.push({ event, data }) };
+    await runBuild(deps, state);
+
+    expect(state.phase).toBe('DESIGN');
+    expect(state.level).toBe('full');
+    expect(state.quickTask).toBeUndefined();
+    expect(io.asked.at(-1)).toContain('full = ยกระดับเป็นแบบเต็ม');
+    expect(events.find((e) =&gt; e.event === 'escalate.decision')?.data).toMatchObject({ decision: 'full' });
+    expect(events.find((e) =&gt; e.event === 'level.decided')?.data).toMatchObject({ level: 'full', by: 'user' });
+  });
+
+  it('งาน full: ตัวเลือก escalate ไม่มี full', async () =&gt; {
+    const state = buildState();
+    state.progress = initProgress(state.design!, {}, 1);
+    const { deps, io } = makeDeps({ qa: [failReport('api')], pm: [asking('ค้าง')] }, ['abort']);
+    await runBuild(deps, state);
+    expect(io.asked.at(-1)).not.toContain('full =');
+    expect(state.phase).toBe('ABORTED');
+  });</code></pre>
+<p>เพิ่มใน <code>tests/phases/deliver.test.ts</code>:</p>
+<pre><code>  it('งาน quick: บอก PM ว่าเป็นโหมด quick ที่ไม่มีขั้นออกแบบและ Security โดยตั้งใจ', async () =&gt; {
+    const design = quickDesign(makeRequirements(), makeQuickTask());
+    const state = buildState(design);
+    state.phase = 'DELIVER';
+    state.level = 'quick';
+    const { deps, runner } = makeDeps({ pm: [asking('สรุปส่งมอบ')] }, ['accept']);
+    await runDeliver(deps, state);
+    expect((runner.calls[0]!.input as { prompt: string }).prompt).toContain('โหมด quick');
+    expect(state.phase).toBe('DONE');
+  });</code></pre>
+<p>เพิ่มใน <code>tests/orchestrator.test.ts</code>:</p>
+<pre><code>  it('flow quick: requirements -&gt; build (ไม่มี planning/security) -&gt; deliver -&gt; DONE', async () =&gt; {
+    const { deps, runner } = makeDeps(
+      { pm: [quickProposal(), asking('สรุปส่งมอบ')], qa: [passReport('quick')] },
+      ['แก้คำผิด', 'quick', 'accept'],
+    );
+    const final = await runTeam(deps);
+    expect(final.phase).toBe('DONE');
+    expect(roles(runner.calls)).toEqual(['pm', 'frontend', 'qa', 'pm']);
+  });</code></pre>
+<p>รัน: <code>npx vitest run tests/phases tests/orchestrator.test.ts</code> — คาดหวัง: FAIL ที่ test ใหม่ (test เดิมต้องยังผ่าน)</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: <code>src/phases/requirements.ts</code></strong></span></p>
+<p>แทนที่ทั้งไฟล์:</p>
+<pre><code>import type { Deps } from '../deps';
+import { initProgress, quickDesign } from '../domain';
+import { formatQuickTask, formatRequirements } from '../format';
+import { askNonEmpty, decide } from '../io-util';
+import { nullLogger } from '../logger';
+import { riskFlags, riskText, type RiskCategory } from '../risk';
+import type { Level, PmTurn } from '../schemas';
+import type { State } from '../state';
+
+const LEVEL_HINT: Record&lt;Level, string&gt; = {
+  quick: '[ผู้ใช้ขอโหมด quick ถ้างานเข้าเกณฑ์]',
+  full: '[ผู้ใช้สั่ง --full: ต้องเป็น full เท่านั้น]',
+};
+
+const LEVEL_PROMPT = 'ทำแบบไหน? (quick = ทำเลยแบบย่อ 1 task, full = ออกแบบก่อนแบบเต็ม, revise = แก้ requirements)';
+
+export async function runRequirements(deps: Deps, state: State): Promise&lt;void&gt; {
+  const { io, runner, store } = deps;
+
+  const opening = state.pmSessionId
+    ? 'พิมพ์ข้อความถึง PM เพื่อคุยต่อ\n&gt; '
+    : 'คุณอยากได้ระบบอะไร? เล่า requirement ให้ PM ฟังได้เลย\n&gt; ';
+  let prompt = state.pendingPrompt ?? (await askNonEmpty(io, opening));
+  if (!state.title &amp;&amp; !state.pmSessionId) {
+    // save ก่อนเรียก PM: ถ้า Ctrl+C ระหว่าง PM ตอบ งานก็ยังมีชื่อ ไม่กลายเป็นงานเปล่า
+    state.title = Array.from(prompt).slice(0, 60).join('');
+    await store.save(state);
+  }
+  if (state.requirements) {
+    prompt = `requirements ปัจจุบัน:\n${JSON.stringify(state.requirements)}\n\nคำขอแก้ไขจาก user: ${prompt}`;
+  }
+  if (!state.pmSessionId &amp;&amp; deps.levelPreference) prompt = `${LEVEL_HINT[deps.levelPreference]}\n${prompt}`;
+  state.pendingPrompt = undefined;
+
+  for (;;) {
+    let response;
+    try {
+      response = await runner.pmTurn({ prompt, sessionId: state.pmSessionId });
+    } catch (e) {
+      // PM ล้ม (เช่นส่ง JSON ไม่ผ่านซ้ำ) ไม่ควรทำให้ทั้ง run หยุด: ให้ user ส่งข้อความเดิมซ้ำหรือพิมพ์ใหม่
+      io.say(
+        `\n[PM] PM ตอบไม่สำเร็จ (${e instanceof Error ? e.message : String(e)}) — ` +
+          'กด Enter เพื่อส่งข้อความเดิมอีกครั้ง หรือพิมพ์ข้อความใหม่\n',
+      );
+      const retry = (await io.ask('&gt; ')).trim();
+      if (retry !== '') prompt = retry;
+      continue;
+    }
+    let { turn } = response;
+    state.pmSessionId = response.sessionId;
+    await store.save(state);
+    io.say(`\n[PM] ${turn.message}\n`);
+
+    if (turn.status === 'proposal' &amp;&amp; turn.requirements) {
+      io.say(formatRequirements(turn.requirements));
+      if (offersQuick(deps, turn)) {
+        if (await decideLevel(deps, state, turn)) return;
+        prompt = await askNonEmpty(io, 'อยากปรับอะไร?\n&gt; ');
+        continue;
+      }
+      const decision = await decide(deps, state, 'ยืนยัน requirements นี้ไหม?', ['confirm', 'revise'] as const, (newTurn) =&gt; {
+        if (newTurn.status === 'proposal' &amp;&amp; newTurn.requirements) {
+          turn = newTurn;
+          io.say(formatRequirements(newTurn.requirements));
+        }
+      });
+      if (decision === 'confirm') {
+        state.requirements = turn.requirements!;
+        state.level = 'full';
+        state.quickTask = undefined;
+        state.phase = 'DESIGN';
+        await store.saveArtifact('requirements.json', turn.requirements!);
+        logLevel(deps, 'full', deps.levelPreference === 'full' ? 'user' : 'pm', turn.levelReason, []);
+        await store.save(state);
+        return;
+      }
+      prompt = await askNonEmpty(io, 'อยากปรับอะไร?\n&gt; ');
+      continue;
+    }
+    prompt = await askNonEmpty(io, '&gt; ');
+  }
+}
+
+function offersQuick(deps: Deps, turn: PmTurn): boolean {
+  return deps.levelPreference !== 'full' &amp;&amp; turn.level === 'quick' &amp;&amp; turn.quickTask !== undefined;
+}
+
+function logLevel(deps: Deps, level: Level, by: 'pm' | 'user', reason: string | undefined, flags: RiskCategory[]): void {
+  (deps.log ?? nullLogger).log('INFO', 'level.decided', { level, by, reason, riskFlags: flags });
+}
+
+/** PM เสนอ quick: ให้ user เลือก quick/full/revise — true = ตัดสินแล้ว (ไป BUILD หรือ DESIGN), false = revise */
+async function decideLevel(deps: Deps, state: State, first: PmTurn): Promise&lt;boolean&gt; {
+  const { io, store, config } = deps;
+  let turn = first;
+  const show = (t: PmTurn): void =&gt; {
+    if (t.quickTask) io.say(formatQuickTask(t.quickTask));
+    if (t.levelReason) io.say(`ระดับที่ PM เสนอ: ${t.level ?? 'full'} — ${t.levelReason}`);
+  };
+  show(turn);
+  const flags = riskFlags(riskText(turn.requirements!, turn.quickTask));
+  if (flags.length) io.say(`⚠ งานนี้แตะเรื่อง ${flags.join(', ')} — แนะนำ full (มีขั้นออกแบบและตรวจ Security)`);
+  const options: readonly ('quick' | 'full' | 'revise')[] = flags.length
+    ? ['full', 'quick', 'revise']
+    : ['quick', 'full', 'revise'];
+
+  const decision = await decide(deps, state, LEVEL_PROMPT, options, (newTurn) =&gt; {
+    if (newTurn.status === 'proposal' &amp;&amp; newTurn.requirements) {
+      turn = newTurn;
+      io.say(formatRequirements(newTurn.requirements));
+      show(newTurn);
+    }
+  });
+  if (decision === 'revise') return false;
+
+  const requirements = turn.requirements!;
+  state.requirements = requirements;
+  await store.saveArtifact('requirements.json', requirements);
+  if (decision === 'quick' &amp;&amp; turn.quickTask) {
+    const design = quickDesign(requirements, turn.quickTask);
+    state.level = 'quick';
+    state.quickTask = turn.quickTask;
+    state.design = design;
+    state.progress = initProgress(design, state.progress, config.quickMaxQaRounds);
+    state.phase = 'BUILD';
+    await store.saveArtifact('design.json', design);
+  } else {
+    state.level = 'full';
+    state.quickTask = undefined;
+    state.phase = 'DESIGN';
+  }
+  logLevel(deps, state.level, turn.level === state.level ? 'pm' : 'user', turn.levelReason, flags);
+  await store.save(state);
+  return true;
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: <code>src/phases/build.ts</code></strong></span></p>
+<ul class="meta">
+  <li>เปลี่ยน type: <code>type Outcome = 'done' | 'aborted' | 'escalated';</code> และ <code>type Decision = 'continue' | 'accept' | 'abort' | 'full';</code></li>
+  <li><code>runRound(deps, ctx, task, progress, skipSecurity: boolean)</code> — หลังบรรทัด <code>if (!isPass(qaReport)) return { report: qaReport, limitHit: false, securityReviewed: false };</code> เพิ่ม:</li>
+</ul>
+<pre><code>    // โหมด quick ไม่มี Security โดยตั้งใจ (งานเสี่ยงถูกกันไม่ให้เข้า quick ตั้งแต่ตอนจัดระดับ)
+    if (skipSecurity) return { report: qaReport, limitHit: false, securityReviewed: false };</code></pre>
+<ul class="meta">
+  <li><code>runBuild</code>: ประกาศ <code>const quick = state.level === 'quick';</code> แล้วแทนที่การเรียกในลูปด้วย:</li>
+</ul>
+<pre><code>    const outcome = await buildTask(deps, state, ctx, task, progress, quick);
+    if (outcome === 'aborted') {
+      state.phase = 'ABORTED';
+      await deps.store.save(state);
+      return;
+    }
+    if (outcome === 'escalated') {
+      await deps.store.save(state);
+      return;
+    }</code></pre>
+<ul class="meta">
+  <li><code>buildTask(deps, state, ctx, task, progress, quick: boolean)</code>: ส่ง <code>quick</code> ให้ <code>runRound(deps, ctx, task, progress, quick)</code> และ <code>escalate(deps, state, task, progress, quick)</code>; หลังบรรทัด <code>if (decision === 'abort') return 'aborted';</code> เพิ่ม:</li>
+</ul>
+<pre><code>    if (decision === 'full') {
+      state.level = 'full';
+      state.quickTask = undefined;
+      state.phase = 'DESIGN';
+      (deps.log ?? nullLogger).log('INFO', 'level.decided', {
+        level: 'full',
+        by: 'user',
+        reason: `QA ไม่ผ่านครบ ${progress.rounds} รอบในโหมด quick`,
+        riskFlags: [],
+      });
+      return 'escalated';
+    }</code></pre>
+<ul class="meta">
+  <li><code>escalate(deps, state, task, progress, quick: boolean)</code>: ใน prompt ถึง PM เปลี่ยนท้ายเป็น <code>quick ? 'สรุปให้ user ฟังเป็นภาษาไทยว่าค้างอะไร และอธิบายตัวเลือก: continue / accept / abort / full (ยกระดับเป็นแบบเต็ม: Planning ออกแบบใหม่ + ตรวจ Security)' : 'สรุปให้ user ฟังเป็นภาษาไทยว่าค้างอะไร และอธิบายตัวเลือก: continue / accept / abort'</code> และเปลี่ยนการเรียก <code>decide</code> เป็น:</li>
+</ul>
+<pre><code>  const question =
+    `task ${task.id} ไม่ผ่านครบ ${progress.rounds} รอบ (continue = ทำต่ออีก ${config.extraRoundsOnContinue} รอบ, accept = รับตามสภาพ, abort = ยกเลิก` +
+    (quick ? ', full = ยกระดับเป็นแบบเต็ม)' : ')');
+  const options: readonly Decision[] = quick ? ['continue', 'accept', 'abort', 'full'] : ['continue', 'accept', 'abort'];
+  return decide(deps, state, question, options);</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: <code>src/phases/deliver.ts</code></strong></span></p>
+<p>ก่อนเรียก <code>runner.pmTurn</code> สร้าง <code>const quickNote = state.level === 'quick' ? 'งานนี้ทำแบบโหมด quick: ไม่มีขั้นออกแบบและไม่มีการตรวจ Security โดยตั้งใจ (securityReviewed=false เป็นเรื่องปกติของโหมดนี้) ให้บอก user สั้น ๆ ' : '';</code> แล้วต่อ <code>quickNote</code> ไว้หน้าข้อความ prompt เดิม (<code>prompt: quickNote + "งานทั้งหมดจบรอบ BUILD แล้ว ..."</code>)</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+<p>รัน: <code>npx vitest run tests/phases tests/orchestrator.test.ts</code> แล้ว <code>npm test</code> และ <code>npm run typecheck</code> — คาดหวัง: ผ่านทั้งหมด</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: Commit</strong></span></p>
+<pre><code>git add src/phases/requirements.ts src/phases/build.ts src/phases/deliver.ts tests/helpers/builders.ts tests/phases/requirements.test.ts tests/phases/build.test.ts tests/phases/deliver.test.ts tests/orchestrator.test.ts
+git commit -m "feat: quick mode flow - PM triage, skip design/security, escalate to full"</code></pre>
+</div>
+
+<!-- ============================ TASK 4 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 4: แสดงระดับงานในหน้า log + README</h3>
+<p class="meta"><strong>ไฟล์:</strong></p>
+<ul class="meta">
+  <li>แก้ไข: <code>src/logview/parse-log.ts</code>, <code>src/logview/web/page.js</code>, <code>README.md</code></li>
+  <li>เทสต์: <code>tests/logview/parse-log.test.ts</code>, <code>tests/logview/page-dom.test.ts</code></li>
+</ul>
+<p class="meta"><strong>Interfaces:</strong></p>
+<ul class="meta">
+  <li>ใช้จาก (Consumes): log event <code>level.decided { level, by, reason, riskFlags }</code> (Task 3)</li>
+  <li>ส่งต่อ (Produces): <code>Run.level?: 'quick' | 'full'</code> (ค่าล่าสุดของ <code>level.decided</code> ในรอบนั้น)</li>
+</ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+<p><code>tests/logview/parse-log.test.ts</code> (ใน describe <code>parseLog</code>):</p>
+<pre><code>  it('level.decided -&gt; run.level ใช้ค่าล่าสุดในรอบ', () =&gt; {
+    const r = parseLog(
+      `${T} INFO  run.start {}\n${T} INFO  level.decided {"level":"quick","by":"pm","riskFlags":[]}\n${T} INFO  level.decided {"level":"full","by":"user","riskFlags":[]}`,
+    );
+    expect(r[0]!.level).toBe('full');
+    expect(parseLog(`${T} INFO  run.start {}`)[0]!.level).toBeUndefined();
+  });</code></pre>
+<p><code>tests/logview/page-dom.test.ts</code>: เพิ่ม test ที่ใช้ fixture เดิมแต่ตั้ง <code>level: 'quick'</code> ให้รอบแรก (clone <code>DATA</code> เช่น <code>const withLevel = { ...DATA, runs: [{ ...DATA.runs[0]!, level: 'quick' }, ...DATA.runs.slice(1)] }</code> แล้วโหลดด้วยฟังก์ชันโหลดเดียวกับ test อื่นในไฟล์ โดยปรับให้รับ data เป็นพารามิเตอร์ถ้ายังไม่รับ) และตรวจว่า <code>d.app.textContent</code> มี <code>ระดับงาน</code> และ <code>quick (แบบย่อ)</code> ส่วน fixture เดิมที่ไม่มี level ต้องแสดง <code>ระดับงาน</code> กับ <code>-</code></p>
+<p>รัน: <code>npx vitest run tests/logview</code> — คาดหวัง: FAIL ที่ test ใหม่</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: implementation</strong></span></p>
+<p><code>src/logview/parse-log.ts</code>: เพิ่มใน <code>interface Run</code> ว่า <code>/** ระดับงานล่าสุดที่ตัดสินในรอบนี้ (event level.decided) */ level?: 'quick' | 'full';</code> และใน <code>switch</code> ของ <code>apply()</code> เพิ่ม:</p>
+<pre><code>    case 'level.decided': {
+      const level = str(d.level);
+      if (level === 'quick' || level === 'full') run.level = level;
+      break;
+    }</code></pre>
+<p><code>src/logview/web/page.js</code>: เพิ่ม <code>@property {'quick'|'full'} [level]</code> ใน JSDoc typedef ของ Run และใน <code>renderSummary</code> เพิ่มบรรทัดหลัง stat <code>งาน (jobId)</code>:</p>
+<pre><code>    grid.appendChild(stat('ระดับงาน', run.level === 'quick' ? 'quick (แบบย่อ)' : run.level === 'full' ? 'full (แบบเต็ม)' : '-'));</code></pre>
+<p>(ถ้า <code>globals.d.ts</code> มี type ของ Run ด้วย ให้เพิ่ม <code>level?: 'quick' | 'full'</code> ที่นั่นด้วย)</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: README</strong></span></p>
+<p>ใน <code>README.md</code> เพิ่มหัวข้อก่อน <code>## flow การทำงาน</code>:</p>
+<pre><code>## ระดับงาน: quick / full
+PM จะจัดระดับงานให้ตอนเสนอ requirements:
+- **quick** — งานเล็กที่ชัดเจน (ประมาณ 1–3 ไฟล์ ไม่มี design/API/data model ใหม่) PM เสนองาน 1 task ให้ worker ทำเลย แล้ว QA รันเทสต์ทั้งหมด (สูงสุด 2 รอบ ปรับได้ด้วย `quickMaxQaRounds` ใน `agent-team.config.json`) ไม่มีขั้น Planning/REVIEW/Security จึงเร็วและถูกกว่ามาก
+- **full** — ขั้นตอนเต็มตาม flow ด้านล่าง
+ตอน PM เสนอ quick คุณเลือกได้ว่า `quick` / `full` / `revise` ถ้าคำขอแตะเรื่องเสี่ยง (login/สิทธิ์, secret/token, การชำระเงิน, ลบหรือย้ายข้อมูล, SQL, อัปโหลดไฟล์, รันคำสั่ง shell, CORS/webhook) จะมีคำเตือน ⚠ และแนะนำ full
+ถ้างาน quick ไม่ผ่าน QA ครบรอบ ตัวเลือกจะมี `full` เพิ่ม เพื่อยกระดับไปออกแบบใหม่แบบเต็ม (โค้ดที่ทำไปแล้วยังอยู่)
+
+    agent-team --quick   # บอก PM ว่าอยากได้ quick (ยังผ่านเกณฑ์และเช็กคำเสี่ยงตามปกติ)
+    agent-team --full    # ไม่เสนอ quick ใช้ขั้นตอนเต็มเสมอ</code></pre>
+<p>และในรายการ event ของหัวข้อ <code>## log</code> เพิ่ม <code>level.decided</code> (ระดับงานที่ตัดสิน: level, by, reason, riskFlags)</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+<p>รัน: <code>npm test</code> และ <code>npm run typecheck</code> — คาดหวัง: ผ่านทั้งหมด</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/logview/parse-log.ts src/logview/web/page.js src/logview/web/globals.d.ts tests/logview/parse-log.test.ts tests/logview/page-dom.test.ts README.md
+git commit -m "feat(logview): show job level; docs for quick/full"</code></pre>
+</div>
+
+</body>
+</html>

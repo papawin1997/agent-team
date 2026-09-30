@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scrutinize: multi-job resume v2</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --ink:#15181d; --muted:#5b6472; --line:#e2e6ec;
+    --blocker:#c62828; --blocker-bg:#fdecec;
+    --major:#e06c00; --major-bg:#fff4e6;
+    --nit:#6b7280; --nit-bg:#f1f3f5;
+    --ok:#2e7d32;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --bg:#14171c; --card:#1c2027; --ink:#e8eaee; --muted:#9aa4b2; --line:#2b313a;
+      --blocker-bg:#3a1c1c; --major-bg:#3a2a12; --nit-bg:#22262d;
+      --blocker:#ff6b6b; --major:#ffab4d; --nit:#9aa4b2; --ok:#6bd28f;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#14171c; --card:#1c2027; --ink:#e8eaee; --muted:#9aa4b2; --line:#2b313a;
+    --blocker-bg:#3a1c1c; --major-bg:#3a2a12; --nit-bg:#22262d;
+    --blocker:#ff6b6b; --major:#ffab4d; --nit:#9aa4b2; --ok:#6bd28f;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.7 "Segoe UI","Noto Sans Thai",system-ui,-apple-system,sans-serif;}
+  .wrap{max-width:900px;margin:0 auto;padding:40px 16px 72px}
+  header{border-bottom:2px solid var(--line);padding-bottom:18px;margin-bottom:28px}
+  h1{font-size:26px;margin:0 0 6px;line-height:1.35}
+  .sub{color:var(--muted);font-size:14px}
+  h2{font-size:19px;margin:36px 0 14px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  .intent{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px}
+  .intent p{margin:0 0 10px}
+  .intent p:last-child{margin:0}
+  .card{background:var(--card);border:1px solid var(--line);border-left-width:6px;
+    border-radius:10px;padding:18px 20px;margin:0 0 16px}
+  .card.blocker{border-left-color:var(--blocker);background:var(--blocker-bg)}
+  .card.major{border-left-color:var(--major);background:var(--major-bg)}
+  .card.nit{border-left-color:var(--nit);background:var(--nit-bg)}
+  .tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;padding:3px 9px;border-radius:999px;color:#fff;margin-bottom:10px}
+  .blocker .tag{background:var(--blocker)}
+  .major .tag{background:var(--major)}
+  .nit .tag{background:var(--nit)}
+  .card h3{margin:0 0 12px;font-size:16.5px;line-height:1.5}
+  .row{margin:11px 0}
+  .row b{display:block;font-size:12.5px;letter-spacing:.04em;color:var(--muted);
+    text-transform:uppercase;margin-bottom:3px}
+  code{font-family:"Cascadia Code",Consolas,monospace;font-size:13.5px;
+    background:rgba(127,127,127,.16);padding:1px 5px;border-radius:4px;word-break:break-word}
+  pre{font-family:"Cascadia Code",Consolas,monospace;font-size:13px;line-height:1.6;
+    background:rgba(127,127,127,.12);padding:12px 14px;border-radius:8px;overflow-x:auto;margin:8px 0}
+  ul{margin:6px 0;padding-left:22px}
+  li{margin:3px 0}
+  .verdict{display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+    background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px}
+  .badge{font-size:19px;font-weight:800;letter-spacing:.03em;padding:10px 22px;
+    border-radius:999px;color:#1a1a1a;background:#f2c94c;white-space:nowrap}
+  .verdict p{margin:0;flex:1;min-width:260px}
+  .checked{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px}
+  footer{margin-top:40px;color:var(--muted);font-size:13px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>Scrutinize (รอบ 2): Multi-job resume — design spec</h1>
+  <div class="sub">docs/superpowers/specs/2026-09-25-multi-job-resume-design.md @ 47ff71f · รีวิววันที่ 2026-09-25 · รอบก่อน: 2026-09-25-multi-job-resume-tb-scrutinize.html</div>
+</header>
+
+<h2>เจตนา</h2>
+<div class="intent">
+  <p>เหมือนรอบแรก คือเก็บงานได้หลายงานใน <code>jobs/&lt;id&gt;/</code> และมีเมนูให้เลือก r/d/n รอบนี้เพิ่ม <code>title</code>, <code>lastBuildAt</code>, lock ด้วย pid, การย้ายไฟล์ legacy ที่รันซ้ำได้ผลเดิม และเปลี่ยน <code>runTeam(deps)</code> ให้ไม่มี flag</p>
+  <p><b>มีวิธีง่ายกว่าไหม?</b> lock เป็นส่วนที่ซับซ้อนที่สุดที่เพิ่มเข้ามา แต่ยังคุ้ม เพราะถ้าไม่มี lock การกด <code>d</code> จะลบงานที่ process อื่นกำลังรันได้ ส่วนที่ตัดได้คือ fallback ในขั้น 1 ของ migration (ดู #2) เพราะเป็นโค้ดที่ไม่มีวันถูกเรียก</p>
+</div>
+
+<h2>findings รอบแรก: แก้ครบไหม</h2>
+<div class="checked">
+  <ul>
+    <li><b>#1 ชื่องาน/งานเปล่า</b> ✅ มี <code>title</code> และนิยาม "งานเปล่า" ที่ลบอัตโนมัติ กันลบงานที่ process อื่นเพิ่งสร้างด้วย lock ที่เขียนก่อน <code>state.json</code></li>
+    <li><b>#2 runTeam</b> ✅ ไม่มี flag แล้ว และระบุเทสต์ที่ต้องลบไว้ครบ 3 ตัว (เหลือเรื่องเล็ก ดู nit #5)</li>
+    <li><b>#3 lock</b> ✅ แต่ยังมีช่องโหว่ ดู major #1</li>
+    <li><b>#4 migration</b> ✅ ย้าย <code>state.json</code> เป็นอย่างสุดท้าย และใช้โฟลเดอร์เดิมต่อได้ ดู major #2 ประกอบ</li>
+    <li><b>#5 คำเตือน</b> ✅ เปลี่ยนมาใช้ <code>lastBuildAt</code> (มีจุดที่ตั้งค่าผิดเล็กน้อย ดู nit #3)</li>
+    <li><b>#6 ยืนยันลบ</b> ✅ ใช้ <code>io.ask</code> ตรง ๆ และรับ y/n เอง</li>
+    <li><b>#7 index.ts</b> ✅ เพิ่ม event <code>job.selected</code> และ jobId แบบ optional</li>
+    <li><b>#8 path เก่า</b> ✅ ลบข้อความเก่าและเพิ่มหัวข้อ README แล้ว</li>
+  </ul>
+</div>
+
+<h2>Findings ใหม่</h2>
+
+<div class="card major">
+  <span class="tag">major</span>
+  <h3>1. SIGINT handler ปล่อย lock ไม่ทัน ทำให้ lock ค้างทุกครั้งที่กด Ctrl+C และถ้า Windows เอา pid ไปใช้ซ้ำ งานจะติด "กำลังรันอยู่" ถาวร</h3>
+  <div class="row"><b>ทำไมสำคัญ</b>งานที่ติด lock จะเลือก <code>r</code>/<code>d</code> ไม่ได้ และ <code>--resume</code> ก็ข้ามงานนั้น spec ไม่มีทางให้ผู้ใช้ปลด lock เองเลย</div>
+  <div class="row"><b>หลักฐาน</b>
+    <ul>
+      <li>handler ใน <code>index.ts:47-53</code> ทำงานแบบ sync ทั้งหมดแล้วจบด้วย <code>process.exit(130)</code> แต่ spec ให้ <code>unlock(id): Promise&lt;void&gt;</code> ถูกเรียกใน handler นี้ ซึ่ง process จะ exit ก่อนที่ unlink จะเสร็จ ส่วนการปิดหน้าต่าง terminal (SIGHUP) ไม่ผ่าน handler และไม่ผ่าน <code>finally</code> เลย ผลคือ lock ค้างเป็นเรื่องปกติ ไม่ใช่กรณีพิเศษ</li>
+      <li>ระบบตัดสินว่า lock ค้างจาก <code>process.kill(pid,0)</code> อย่างเดียว ถ้า pid ถูก process อื่นเอาไปใช้ (ซึ่งเกิดบ่อยบน Windows) lock จะถูกมองว่ายังใช้อยู่ตลอด</li>
+    </ul>
+  </div>
+  <div class="row"><b>แนวทางแก้ไข</b>(ก) เพิ่ม <code>unlockSync(id)</code> ที่ใช้ <code>fs.rmSync(..., {force:true})</code> สำหรับเรียกใน SIGINT handler และลงทะเบียน SIGHUP ด้วย handler เดียวกัน (ข) ให้ lock เก็บ <code>{pid, startedAt}</code> แล้วตอนแสดงเมนูและตอนปฏิเสธ <code>r</code>/<code>d</code> ให้บอก path ของ <code>run.lock</code> ว่า "ถ้าแน่ใจว่าไม่ได้รันอยู่ ให้ลบไฟล์นี้" เป็นทางออกขั้นต่ำ แล้วเขียนเทสต์ "SIGINT แล้วไม่มี run.lock เหลือ"</div>
+</div>
+
+<div class="card major">
+  <span class="tag">major</span>
+  <h3>2. fallback ในขั้น 1 ของ migration ไม่มีวันถูกเรียกจากกรณีที่ตั้งใจไว้ แต่ถ้าเจอกรณีอื่นอาจทำให้โปรแกรมเริ่มไม่ได้เลย</h3>
+  <div class="row"><b>ทำไมสำคัญ</b>spec ให้ throw ตอนย้ายไฟล์ไม่สำเร็จ ถ้า fallback ไม่เจอโฟลเดอร์ แล้วผู้ implement เลือก throw โปรแกรมจะพังทุกครั้งที่เริ่มรัน และ user จะเริ่มงานใหม่ไม่ได้เลย</div>
+  <div class="row"><b>หลักฐาน</b>เพราะย้าย <code>state.json</code> เป็นอย่างสุดท้าย ถ้าล้มครึ่งทาง <code>state.json</code> จะยังอยู่ที่ root เสมอ รอบถัดไปจึงได้ id เดิมจาก mtime และขั้น 2 (ใช้โฟลเดอร์ที่ไม่มี <code>state.json</code> ต่อ) ก็รับมือได้แล้ว กรณี "มี artifact ที่ root แต่ไม่มี <code>state.json</code>" จึงเกิดจากการย้ายไฟล์ล้มไม่ได้ จะเกิดได้ก็ต่อเมื่อ user ลบ <code>state.json</code> เอง ซึ่ง spec ไม่ได้บอกว่าถ้าไม่เจอโฟลเดอร์ที่ไม่มี <code>state.json</code> ต้องทำอะไร (ถ้าเจอหลายโฟลเดอร์ เช่นโฟลเดอร์จาก <code>create()</code> ที่ crash หลังเขียน lock ก็ไม่ได้บอกว่าจะเลือกอันไหน)</div>
+  <div class="row"><b>แนวทางแก้ไข</b>ให้เริ่มย้ายเฉพาะเมื่อมี <code>state.json</code> ที่ root และตัด fallback ในขั้น 1 ออก ถ้าเจอ artifact ค้างที่ root แต่ไม่มี <code>state.json</code> ให้บันทึก WARN แล้วปล่อยไว้ ไม่ throw</div>
+</div>
+
+<div class="card nit">
+  <span class="tag">nit</span>
+  <h3>3. <code>lastBuildAt</code> ถูกตั้งตั้งแต่ตอนเข้า BUILD และตอนคุยกับ PM ในเฟส BUILD ด้วย</h3>
+  <div class="row"><b>ทำไมสำคัญ</b>คำเตือนจะขึ้นเกินจริงบ้าง แต่น้อยกว่ารอบแรกมาก</div>
+  <div class="row"><b>หลักฐาน</b>ตอนกด confirm ใน REVIEW (<code>design.ts</code> runReview) ระบบตั้ง <code>phase='BUILD'</code> แล้ว save ทันที ซึ่งยังไม่มีการแก้โค้ดเลย นอกจากนี้ <code>decide()</code> ตอน escalate (<code>io-util.ts:39</code>) และการกด continue (<code>build.ts:193</code>) ก็ save ในเฟส BUILD ด้วย</div>
+  <div class="row"><b>แนวทางแก้ไข</b>ยอมรับได้ถ้าเขียนไว้ใน spec ถ้าต้องการให้แม่นขึ้น ให้ตั้งค่าเฉพาะเมื่อ <code>Object.values(progress).some(p =&gt; p.rounds &gt; 0)</code> ซึ่งยังทำใน <code>save</code> ได้ ไม่ต้องแก้ build.ts</div>
+</div>
+
+<div class="card nit">
+  <span class="tag">nit</span>
+  <h3>4. ถ้า resume งาน legacy ที่คุยกับ PM ค้างไว้ ข้อความถัดไปที่ user พิมพ์จะกลายเป็น <code>title</code></h3>
+  <div class="row"><b>ทำไมสำคัญ</b>งานจะได้ชื่อไม่มีความหมาย เช่น "ต่อเลย" หรือ "โอเค"</div>
+  <div class="row"><b>หลักฐาน</b>เงื่อนไขที่ใช้คือ "ถ้า <code>state.title</code> ยังไม่มี" แต่งาน legacy ที่มี <code>pmSessionId</code> แล้ว จะขึ้นคำถาม "พิมพ์ข้อความถึง PM เพื่อคุยต่อ" (<code>requirements.ts:9</code>)</div>
+  <div class="row"><b>แนวทางแก้ไข</b>ตั้ง title เฉพาะเมื่อ <code>!state.title &amp;&amp; !state.pmSessionId</code></div>
+</div>
+
+<div class="card nit">
+  <span class="tag">nit</span>
+  <h3>5. เทสต์ <code>initial state is saved when first ask throws</code> จะพัง ถ้าใช้ <code>load() ?? newState()</code> โดยไม่ save</h3>
+  <div class="row"><b>ทำไมสำคัญ</b>เทสต์นี้ไม่อยู่ในรายการที่ spec บอกให้ลบหรือแก้ ผู้ implement จะเจอเทสต์แดงโดยไม่รู้ว่าต้องทำยังไง</div>
+  <div class="row"><b>หลักฐาน</b><code>tests/orchestrator.test.ts:216-224</code> ใช้ MemoryStore ที่ว่างอยู่ และคาดว่า <code>saves &gt;= 1</code></div>
+  <div class="row"><b>แนวทางแก้ไข</b>ระบุใน spec ว่า <code>if (!existing) await store.save(state)</code> ต้องคงไว้</div>
+</div>
+
+<div class="card nit">
+  <span class="tag">nit</span>
+  <h3>6. race ของ lock และ jobId เมื่อมี 2 process ทำพร้อมกัน</h3>
+  <div class="row"><b>ทำไมสำคัญ</b>มีโอกาสน้อย แต่ถ้าเกิด 2 process จะถือ lock เดียวกัน</div>
+  <div class="row"><b>หลักฐาน</b>ตอนเจอ lock ค้าง ขั้นตอนคือ "อ่าน pid → เช็ก → เขียนทับ" ซึ่งไม่ได้ทำในจังหวะเดียว (ไม่ atomic) ถ้า 2 process เจอ lock ค้างพร้อมกัน ทั้งคู่จะเขียนทับและคิดว่าตัวเองได้ lock นอกจากนี้ <code>create()</code> ในวินาทีเดียวกันต้องใช้ <code>mkdir</code> แบบไม่ recursive (ให้ EEXIST ถ้ามีแล้ว แล้วค่อยลอง suffix ถัดไป) ถึงจะไม่ชนกัน และ <code>process.kill</code> ที่ได้ <code>EPERM</code> ต้องถือว่า process ยังอยู่</div>
+  <div class="row"><b>แนวทางแก้ไข</b>ตอนเจอ lock ค้าง ให้ <code>unlink</code> ก่อนแล้วลอง <code>wx</code> อีกครั้ง (ไม่ใช่เขียนทับ) ให้ create ใช้ <code>mkdir</code> ไม่ recursive และเขียนเรื่อง EPERM ไว้ในหัวข้อ Lock</div>
+</div>
+
+<h2>สิ่งที่ไล่ตรวจแล้ว (ยืนยันว่าถูก)</h2>
+<div class="checked">
+  <ul>
+    <li>ตั้ง <code>lastBuildAt</code> ใน <code>save</code> ได้จริงโดยไม่ต้องแก้ build.ts เพราะหลังรอบที่ worker แก้โค้ด ระบบ save ในเฟส BUILD เสมอ (<code>build.ts:173/176</code>)</li>
+    <li>การลบงานเปล่าอัตโนมัติไม่ไปลบงานที่อีก process เพิ่งสร้าง เพราะ <code>create()</code> เขียน lock ก่อน <code>state.json</code> และ <code>list()</code> ข้ามโฟลเดอร์ที่ยังไม่มี state</li>
+    <li>งานที่ user ขอแก้ตอน DELIVER แล้ววนกลับไป REQUIREMENTS ไม่ถูกนับเป็นงานเปล่า เพราะมี <code>requirements</code> อยู่แล้ว</li>
+    <li>ถ้า stdin ถูกปิด (EOF) หรือเกิด error ระหว่างรัน โปรแกรมจะผ่าน <code>finally</code> ซึ่งเรียก unlock แบบ async ได้ทัน เพราะไม่มี <code>process.exit</code> มาตัดก่อน</li>
+    <li>เทสต์ <code>requirements.test.ts:42,105</code> ใช้ <code>&gt;=</code> จึงยังผ่านแม้ save เพิ่ม 1 ครั้งจาก title</li>
+  </ul>
+</div>
+
+<h2>Verdict</h2>
+<div class="verdict">
+  <span class="badge">fix-then-ship</span>
+  <p>findings รอบแรกแก้ครบแล้ว เหลือ SIGINT handler ที่ปล่อย lock แบบ async ไม่ทันก่อน exit และยังไม่มีทางให้ผู้ใช้ปลด lock เอง (#1) ซึ่งแก้ใน spec ได้ในไม่กี่บรรทัด ไม่ต้องรื้อ design</p>
+</div>
+
+<footer>tb-scrutinize · รอบ 2 · 2026-09-25</footer>
+</div>
+</body>
+</html>

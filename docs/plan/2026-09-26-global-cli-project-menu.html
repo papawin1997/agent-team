@@ -1,0 +1,936 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>Global CLI + Project Menu Implementation Plan</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; line-height: 1.55;
+         max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1f2933;
+         background: #f5f7fa; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  pre { background: #1f2933; color: #e4e7eb; padding: .9rem 1rem;
+        border-radius: 6px; overflow-x: auto; }
+  code { background: #e4e7eb; padding: .1rem .35rem; border-radius: 4px; }
+  pre code { background: none; padding: 0; color: inherit; }
+  .frame { border-left: 6px solid; border-radius: 8px; padding: 1rem 1.25rem;
+           margin: 1.25rem 0; background: #ffffff;
+           box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .frame-header     { border-color: #2563eb; background: #eff6ff; }
+  .frame-constraints{ border-color: #d97706; background: #fffbeb; }
+  .frame-task       { border-color: #059669; background: #ecfdf5; }
+  .frame h1, .frame h2, .frame h3 { margin-top: 0; }
+  .note { border-color: #7c3aed; background: #f5f3ff; }
+  .step { display: flex; gap: .5rem; align-items: baseline;
+          margin: .75rem 0 .25rem; }
+  .step input { transform: scale(1.2); margin-top: .15rem; }
+  .meta { color: #52606d; font-size: .9rem; }
+</style>
+</head>
+<body>
+
+<div class="frame frame-header">
+  <h1>Global CLI + Project Menu Implementation Plan</h1>
+  <p><strong>เป้าหมาย:</strong> ติดตั้ง <code>agent-team</code> เป็นคำสั่ง global ได้ทุกเครื่องจาก GitHub
+     แล้วพิมพ์ <code>agent-team</code> จาก terminal ไหนก็ได้ เพื่อเลือกโปรเจกต์ที่เคยใช้ หรือเพิ่มโปรเจกต์ใหม่ด้วย root path</p>
+  <p><strong>สถาปัตยกรรม:</strong> รายชื่อโปรเจกต์เก็บต่อเครื่องที่ <code>~/.agent-team/projects.json</code>
+     ผ่าน <code>ProjectRegistry</code> (<code>src/projects.ts</code>) เมนูเลือกโปรเจกต์ (<code>src/project-menu.ts</code>)
+     ทำงานก่อนเมนูเลือกงานเดิม (<code>src/job-menu.ts</code>) และคืน path ให้ <code>src/index.ts</code> ใช้แทน <code>--project</code>
+     คำสั่ง global มาจาก <code>bin/agent-team.mjs</code> ที่ register <code>tsx</code> แล้ว import <code>src/index.ts</code> (ไม่มีขั้น build)</p>
+  <p><strong>Tech Stack:</strong> Node.js ≥ 20, TypeScript (รันด้วย tsx), zod, vitest</p>
+</div>
+
+<div class="frame note">
+  <strong>For agentic workers:</strong> REQUIRED SUB-SKILL: Use
+  tb-subagent-driven-development (recommended) or
+  tb-executing-plans to implement this plan task-by-task. Steps keep
+  the <code>- [ ]</code> marker next to each checkbox for tracking.
+</div>
+
+<div class="frame frame-constraints">
+  <h2>Global Constraints</h2>
+  <ul>
+    <li>ติดตั้งด้วย <code>npm i -g github:papawin1997/agent-team</code> — ไม่ publish ขึ้น npm registry และไม่มีขั้น build/compile</li>
+    <li><code>tsx</code> ต้องอยู่ใน <code>dependencies</code> (npm ไม่ติดตั้ง devDependencies ตอน install แบบ global)</li>
+    <li>รายชื่อโปรเจกต์: <code>~/.agent-team/projects.json</code> รูปแบบ <code>{ "version": 1, "projects": [{ "path", "lastUsedAt" }] }</code> (<code>lastUsedAt</code> = ISO string) ห้ามเก็บ config อื่นไว้ที่นี่ (YAGNI)</li>
+    <li>เขียนไฟล์รายชื่อแบบ atomic (เขียน <code>.tmp</code> แล้ว rename) และบน Windows เทียบ path แบบไม่สนตัวพิมพ์ใหญ่เล็ก</li>
+    <li>ห้ามใช้ repo agent-team (<code>TEAM_ROOT</code> จาก <code>src/config.ts</code>) หรือโฟลเดอร์ข้างในเป็นโปรเจกต์ ทั้งตอนส่ง path มาเองและตอนกด <code>n</code></li>
+    <li><code>d&lt;เลข&gt;</code> ในเมนูโปรเจกต์เอาออกจากรายชื่อเท่านั้น ห้ามลบไฟล์/โฟลเดอร์จริง</li>
+    <li>ข้อความที่ผู้ใช้เห็นเป็นภาษาไทย ใช้คำว่า "โปรเจกต์" ให้ตรงกับข้อความเดิมในโค้ด/README</li>
+    <li><code>--project &lt;path&gt;</code> และ <code>--resume</code> แบบเดิมต้องใช้ได้เหมือนเดิม</li>
+    <li>ทุก task ต้องจบด้วย <code>npm test</code> และ <code>npm run typecheck</code> ผ่านทั้งคู่</li>
+  </ul>
+</div>
+
+<div class="frame note">
+  <h2>โครงสร้างไฟล์</h2>
+  <ul>
+    <li>สร้าง <code>src/projects.ts</code> — <code>ProjectRegistry</code> (อ่าน/เขียน <code>projects.json</code>), <code>samePath</code>, <code>teamRootError</code></li>
+    <li>สร้าง <code>src/project-menu.ts</code> — <code>selectProject</code> (เมนู + ถาม path ใหม่), <code>countPendingJobs</code></li>
+    <li>แก้ <code>src/io-util.ts</code> — ย้าย <code>confirmYesNo</code> มาจาก <code>src/job-menu.ts</code> เพื่อใช้ร่วมกัน</li>
+    <li>แก้ <code>src/job-menu.ts</code> — export <code>isPending</code>, import <code>confirmYesNo</code> จาก io-util</li>
+    <li>แก้ <code>src/format.ts</code> — export <code>localDateTime</code></li>
+    <li>แก้ <code>src/args.ts</code> — path แบบ positional, <code>-r</code>, <code>projectDir</code> ไม่บังคับ</li>
+    <li>แก้ <code>src/index.ts</code> — เรียกเมนูโปรเจกต์เมื่อไม่ได้ส่ง path, กัน TEAM_ROOT, touch รายชื่อ</li>
+    <li>สร้าง <code>bin/agent-team.mjs</code>, แก้ <code>package.json</code> (<code>bin</code>, ย้าย <code>tsx</code>)</li>
+    <li>แก้ <code>README.md</code> — วิธีติดตั้ง + วิธีใช้ + flow การทำงานตั้งแต่พิมพ์ <code>agent-team</code></li>
+  </ul>
+</div>
+
+<!-- ============================ TASK 1 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 1: ProjectRegistry (รายชื่อโปรเจกต์ต่อเครื่อง)</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/projects.ts</code></li>
+    <li>เทสต์: <code>tests/projects.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>TEAM_ROOT: string</code> จาก <code>src/config.ts</code></li>
+    <li>ส่งต่อ (Produces):
+      <code>interface ProjectEntry { path: string; lastUsedAt: string }</code>,
+      <code>class ProjectRegistry(file?: string, opts?: { now?: () =&gt; Date; warn?: (message: string) =&gt; void })</code>
+      มีเมธอด <code>list(): Promise&lt;ProjectEntry[]&gt;</code> (ใช้ล่าสุดก่อน),
+      <code>touch(dir: string): Promise&lt;void&gt;</code>, <code>remove(dir: string): Promise&lt;void&gt;</code>;
+      <code>defaultRegistryFile(): string</code>, <code>samePath(a: string, b: string): boolean</code>,
+      <code>teamRootError(dir: string, teamRoot?: string): string | undefined</code></li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+<pre><code>import { existsSync } from 'node:fs';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { ProjectRegistry, samePath, teamRootError } from '../src/projects';
+
+let dir: string;
+let file: string;
+let clock: Date;
+let warnings: string[];
+const registry = () =&gt; new ProjectRegistry(file, { now: () =&gt; clock, warn: (m) =&gt; warnings.push(m) });
+
+beforeEach(async () =&gt; {
+  dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-team-projects-'));
+  file = path.join(dir, 'home', 'projects.json');
+  clock = new Date('2026-09-26T05:00:00Z');
+  warnings = [];
+});
+
+describe('ProjectRegistry', () =&gt; {
+  it('ยังไม่มีไฟล์ -&gt; รายการว่าง', async () =&gt; {
+    expect(await registry().list()).toEqual([]);
+  });
+
+  it('touch เพิ่มโปรเจกต์ (สร้างโฟลเดอร์ของไฟล์ให้) และเรียงที่ใช้ล่าสุดก่อน', async () =&gt; {
+    const r = registry();
+    await r.touch(path.join(dir, 'a'));
+    clock = new Date('2026-09-26T06:00:00Z');
+    await r.touch(path.join(dir, 'b'));
+    expect(await r.list()).toEqual([
+      { path: path.join(dir, 'b'), lastUsedAt: '2026-09-26T06:00:00.000Z' },
+      { path: path.join(dir, 'a'), lastUsedAt: '2026-09-26T05:00:00.000Z' },
+    ]);
+  });
+
+  it('touch โปรเจกต์เดิมซ้ำ -&gt; อัปเดตเวลา ไม่เพิ่มแถวซ้ำ', async () =&gt; {
+    const r = registry();
+    await r.touch(path.join(dir, 'a'));
+    clock = new Date('2026-09-27T00:00:00Z');
+    await r.touch(path.join(dir, 'a'));
+    expect(await r.list()).toEqual([{ path: path.join(dir, 'a'), lastUsedAt: '2026-09-27T00:00:00.000Z' }]);
+  });
+
+  it('แปลง path เป็น absolute ก่อนเก็บ', async () =&gt; {
+    const r = registry();
+    await r.touch('rel/x');
+    expect((await r.list())[0]!.path).toBe(path.resolve('rel/x'));
+  });
+
+  it.runIf(process.platform === 'win32')('Windows: path ต่างตัวพิมพ์ใหญ่เล็กคือโปรเจกต์เดียวกัน', async () =&gt; {
+    const r = registry();
+    await r.touch(path.join(dir, 'Proj'));
+    await r.touch(path.join(dir, 'proj'));
+    expect(await r.list()).toHaveLength(1);
+    expect(samePath(path.join(dir, 'Proj'), path.join(dir, 'PROJ'))).toBe(true);
+  });
+
+  it('remove เอาออกจากรายการ แต่ไม่แตะโฟลเดอร์จริง', async () =&gt; {
+    const a = path.join(dir, 'a');
+    await fs.mkdir(a);
+    const r = registry();
+    await r.touch(a);
+    await r.remove(a);
+    expect(await r.list()).toEqual([]);
+    expect(existsSync(a)).toBe(true);
+  });
+
+  it('ไฟล์ JSON เสีย -&gt; ย้ายเป็น .bak, เตือน แล้วเริ่มรายการใหม่', async () =&gt; {
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, '{broken');
+    expect(await registry().list()).toEqual([]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('.bak');
+    expect(await fs.readFile(`${file}.bak`, 'utf8')).toBe('{broken');
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it('โครงสร้างไม่ตรง schema ถือว่าเสีย', async () =&gt; {
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, JSON.stringify({ version: 2, projects: [] }));
+    expect(await registry().list()).toEqual([]);
+    expect(warnings).toHaveLength(1);
+  });
+
+  it('เขียนแบบ atomic: ไม่เหลือไฟล์ .tmp', async () =&gt; {
+    await registry().touch(path.join(dir, 'a'));
+    expect(await fs.readdir(path.dirname(file))).toEqual(['projects.json']);
+  });
+});
+
+describe('teamRootError', () =&gt; {
+  const root = path.resolve('/team/agent-team');
+
+  it('path คือ repo agent-team หรืออยู่ข้างใน -&gt; ข้อความ error', () =&gt; {
+    expect(teamRootError(root, root)).toContain('agent-team');
+    expect(teamRootError(path.join(root, 'src'), root)).toBeDefined();
+  });
+
+  it('path อื่น (รวมโฟลเดอร์ชื่อคล้ายกัน) -&gt; undefined', () =&gt; {
+    expect(teamRootError(path.resolve('/team/agent-team-app'), root)).toBeUndefined();
+    expect(teamRootError(path.resolve('/other'), root)).toBeUndefined();
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/projects.test.ts</code><br>
+     คาดหวัง: FAIL ด้วย "Failed to resolve import '../src/projects'"</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p>สร้าง <code>src/projects.ts</code>:</p>
+<pre><code>import * as fsp from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { z } from 'zod';
+import { TEAM_ROOT } from './config';
+
+export interface ProjectEntry {
+  path: string;
+  /** ISO time ที่เปิดใช้ล่าสุด */
+  lastUsedAt: string;
+}
+
+export interface ProjectRegistryOptions {
+  now?: () =&gt; Date;
+  warn?: (message: string) =&gt; void;
+}
+
+const RegistryFileSchema = z.object({
+  version: z.literal(1),
+  projects: z.array(z.object({ path: z.string().min(1), lastUsedAt: z.string().min(1) })),
+});
+
+export const defaultRegistryFile = (): string =&gt; path.join(os.homedir(), '.agent-team', 'projects.json');
+
+/** Windows ไม่สนตัวพิมพ์ใหญ่เล็กของ path */
+const normalize = (p: string): string =&gt; {
+  const abs = path.resolve(p);
+  return process.platform === 'win32' ? abs.toLowerCase() : abs;
+};
+
+export const samePath = (a: string, b: string): boolean =&gt; normalize(a) === normalize(b);
+
+/** ห้ามให้ทีม agent ทำงานใน repo agent-team เอง (จะโหลด .claude/settings.json และแก้โค้ดของทีมได้) */
+export function teamRootError(dir: string, teamRoot: string = TEAM_ROOT): string | undefined {
+  const rel = path.relative(normalize(teamRoot), normalize(dir));
+  const inside = rel === '' || (!rel.startsWith('..') &amp;&amp; !path.isAbsolute(rel));
+  return inside
+    ? `ห้ามใช้ repo agent-team (${teamRoot}) เป็นโปรเจกต์ — เลือกโฟลเดอร์ของแอปที่จะให้ทีมทำงาน`
+    : undefined;
+}
+
+/** รายชื่อโปรเจกต์ที่เคยใช้บนเครื่องนี้ (~/.agent-team/projects.json) */
+export class ProjectRegistry {
+  readonly file: string;
+  private readonly now: () =&gt; Date;
+  private readonly warn: (message: string) =&gt; void;
+
+  constructor(file: string = defaultRegistryFile(), opts: ProjectRegistryOptions = {}) {
+    this.file = file;
+    this.now = opts.now ?? (() =&gt; new Date());
+    this.warn = opts.warn ?? (() =&gt; {});
+  }
+
+  /** เรียงที่ใช้ล่าสุดก่อน */
+  async list(): Promise&lt;ProjectEntry[]&gt; {
+    const projects = await this.load();
+    return projects.sort((a, b) =&gt; Date.parse(b.lastUsedAt) - Date.parse(a.lastUsedAt));
+  }
+
+  /** เพิ่มโปรเจกต์ หรืออัปเดตเวลาใช้ล่าสุดถ้ามีอยู่แล้ว */
+  async touch(dir: string): Promise&lt;void&gt; {
+    const abs = path.resolve(dir);
+    const rest = (await this.load()).filter((p) =&gt; !samePath(p.path, abs));
+    await this.save([...rest, { path: abs, lastUsedAt: this.now().toISOString() }]);
+  }
+
+  /** เอาออกจากรายชื่อเท่านั้น ไม่ลบไฟล์ของโปรเจกต์ */
+  async remove(dir: string): Promise&lt;void&gt; {
+    const projects = await this.load();
+    const rest = projects.filter((p) =&gt; !samePath(p.path, dir));
+    if (rest.length !== projects.length) await this.save(rest);
+  }
+
+  private async load(): Promise&lt;ProjectEntry[]&gt; {
+    let raw: string;
+    try {
+      raw = await fsp.readFile(this.file, 'utf8');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw e;
+    }
+    let data: unknown;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      data = undefined;
+    }
+    const parsed = RegistryFileSchema.safeParse(data);
+    if (parsed.success) return parsed.data.projects;
+    const backup = `${this.file}.bak`;
+    await fsp.rename(this.file, backup);
+    this.warn(`รายชื่อโปรเจกต์ ${this.file} อ่านไม่ได้ — ย้ายไปไว้ที่ ${backup} แล้วเริ่มรายชื่อใหม่`);
+    return [];
+  }
+
+  private async save(projects: ProjectEntry[]): Promise&lt;void&gt; {
+    await fsp.mkdir(path.dirname(this.file), { recursive: true });
+    const tmp = `${this.file}.${process.pid}.tmp`;
+    await fsp.writeFile(tmp, `${JSON.stringify({ version: 1, projects }, null, 2)}\n`, 'utf8');
+    await fsp.rename(tmp, this.file);
+  }
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/projects.test.ts</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS ทั้งหมด (test Windows ข้ามเองบน OS อื่น), typecheck ไม่มี error</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/projects.ts tests/projects.test.ts
+git commit -m "feat: add per-machine project registry"</code></pre>
+</div>
+
+<!-- ============================ TASK 2 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 2: เมนูเลือกโปรเจกต์ (selectProject)</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/project-menu.ts</code></li>
+    <li>แก้ไข: <code>src/io-util.ts</code> (เพิ่ม <code>confirmYesNo</code>), <code>src/job-menu.ts</code> (ลบ <code>confirmYesNo</code> เดิม, export <code>isPending</code>), <code>src/format.ts:57</code> (export <code>localDateTime</code>)</li>
+    <li>เทสต์: <code>tests/project-menu.test.ts</code> (และ <code>tests/job-menu.test.ts</code> เดิมต้องยังผ่าน)</li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>ProjectRegistry</code>, <code>ProjectEntry</code>, <code>teamRootError(dir, teamRoot?)</code> จาก Task 1;
+        <code>UserIO</code> จาก <code>src/deps.ts</code>; <code>JobRepository(projectDir).list(): Promise&lt;JobInfo[]&gt;</code> จาก <code>src/jobs.ts</code></li>
+    <li>ส่งต่อ (Produces):
+      <code>interface ProjectMenuDeps { registry: ProjectRegistry; io: UserIO; countPending?: (dir: string) =&gt; Promise&lt;number&gt;; teamRoot?: string }</code>,
+      <code>selectProject(deps: ProjectMenuDeps): Promise&lt;string | undefined&gt;</code> (path เต็ม หรือ <code>undefined</code> = ผู้ใช้ออก),
+      <code>countPendingJobs(dir: string): Promise&lt;number&gt;</code>,
+      <code>confirmYesNo(io: UserIO, question: string): Promise&lt;boolean&gt;</code> ใน <code>src/io-util.ts</code>,
+      <code>isPending(job: JobInfo): boolean</code> ใน <code>src/job-menu.ts</code>,
+      <code>localDateTime(d: Date): string</code> ใน <code>src/format.ts</code></li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: ย้าย helper ที่ต้องใช้ร่วมกัน (refactor ไม่เปลี่ยนพฤติกรรม)</strong></span></p>
+  <p>ใน <code>src/io-util.ts</code> เพิ่มต่อท้าย <code>askNonEmpty</code> (ย้ายมาจาก <code>src/job-menu.ts</code> ทั้งฟังก์ชัน):</p>
+<pre><code>export async function confirmYesNo(io: UserIO, question: string): Promise&lt;boolean&gt; {
+  for (;;) {
+    const answer = (await io.ask(question)).trim().toLowerCase();
+    if (answer === 'y' || answer === 'yes') return true;
+    if (answer === 'n' || answer === 'no') return false;
+    io.say('กรุณาตอบ y หรือ n');
+  }
+}</code></pre>
+  <p>ใน <code>src/job-menu.ts</code>: ลบฟังก์ชัน <code>confirmYesNo</code> เดิมออก, เพิ่ม import และ export <code>isPending</code>:</p>
+<pre><code>import { confirmYesNo } from './io-util';
+// ...
+export const isPending = (job: JobInfo): boolean =&gt;
+  job.state.phase !== 'DONE' &amp;&amp; job.state.phase !== 'ABORTED' &amp;&amp; !isEmptyJob(job.state);</code></pre>
+  <p>ใน <code>src/format.ts:57</code> เปลี่ยน <code>const localDateTime</code> เป็น <code>export const localDateTime</code></p>
+  <p>รัน: <code>npx vitest run tests/job-menu.test.ts tests/format.test.ts</code> — คาดหวัง: PASS (ไม่มีอะไรเปลี่ยนพฤติกรรม)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>สร้าง <code>tests/project-menu.test.ts</code>:</p>
+<pre><code>import { existsSync } from 'node:fs';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { JobRepository } from '../src/jobs';
+import { countPendingJobs, selectProject } from '../src/project-menu';
+import { ProjectRegistry } from '../src/projects';
+import { newState } from '../src/state';
+import { ScriptedIO } from './helpers/fakes';
+
+let dir: string;
+let clock: Date;
+let registry: ProjectRegistry;
+const pending = new Map&lt;string, number&gt;();
+const teamRoot = () =&gt; path.join(dir, 'agent-team');
+
+function run(answers: string[], countPending = async (p: string) =&gt; pending.get(p) ?? 0) {
+  const io = new ScriptedIO(answers);
+  return { io, result: selectProject({ registry, io, teamRoot: teamRoot(), countPending }) };
+}
+
+async function addProject(name: string, at: Date, create = true): Promise&lt;string&gt; {
+  const p = path.join(dir, name);
+  if (create) await fs.mkdir(p, { recursive: true });
+  clock = at;
+  await registry.touch(p);
+  return p;
+}
+
+beforeEach(async () =&gt; {
+  dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-team-projmenu-'));
+  clock = new Date(2026, 8, 26, 9, 0);
+  registry = new ProjectRegistry(path.join(dir, 'home', 'projects.json'), { now: () =&gt; clock });
+  pending.clear();
+});
+
+describe('selectProject', () =&gt; {
+  it('แสดงรายการ (ใช้ล่าสุดก่อน, งานค้าง, ⚠ โฟลเดอร์หาย) แล้วเลือกเลขได้ path', async () =&gt; {
+    const shop = await addProject('shop', new Date(2026, 8, 25, 10, 0));
+    await addProject('blog', new Date(2026, 8, 26, 8, 30));
+    await addProject('gone', new Date(2026, 8, 24, 7, 0), false);
+    pending.set(shop, 2);
+    const { io, result } = run(['2']);
+    expect(await result).toBe(shop);
+    const menu = io.said[0]!;
+    expect(menu).toContain('1) blog');
+    expect(menu).toContain('2) shop');
+    expect(menu).toContain('งานค้าง 2 · ใช้ล่าสุด 2026-09-25 10:00');
+    expect(menu).toMatch(/3\) gone .*⚠ ไม่พบโฟลเดอร์/);
+  });
+
+  it('ยังไม่มีโปรเจกต์ในรายชื่อ -&gt; ถาม root path ทันที', async () =&gt; {
+    const app = path.join(dir, 'app');
+    await fs.mkdir(app);
+    const { io, result } = run([app]);
+    expect(await result).toBe(app);
+    expect(io.asked[0]).toContain('root path');
+  });
+
+  it('รายชื่อว่างแล้วตอบว่าง -&gt; ออก (undefined)', async () =&gt; {
+    const { result } = run(['']);
+    expect(await result).toBeUndefined();
+  });
+
+  it('n + path ที่ยังไม่มี + ตอบ y -&gt; สร้างโฟลเดอร์แล้วคืน path', async () =&gt; {
+    await addProject('shop', clock);
+    const fresh = path.join(dir, 'new', 'app');
+    const { result } = run(['n', fresh, 'y']);
+    expect(await result).toBe(fresh);
+    expect(existsSync(fresh)).toBe(true);
+  });
+
+  it('ตอบ n ไม่สร้าง -&gt; ถาม path ใหม่ ตอบว่าง = กลับเมนู', async () =&gt; {
+    await addProject('shop', clock);
+    const fresh = path.join(dir, 'nope');
+    const { result } = run(['n', fresh, 'n', '', 'q']);
+    expect(await result).toBeUndefined();
+    expect(existsSync(fresh)).toBe(false);
+  });
+
+  it('path ที่ครอบด้วยเครื่องหมายคำพูด (Copy as path ของ Windows) ใช้ได้', async () =&gt; {
+    const app = path.join(dir, 'app');
+    await fs.mkdir(app);
+    const { result } = run([`"${app}"`]);
+    expect(await result).toBe(app);
+  });
+
+  it('path คือ repo agent-team -&gt; แจ้ง error แล้วถามใหม่', async () =&gt; {
+    await fs.mkdir(teamRoot());
+    const { io, result } = run([teamRoot(), '']);
+    expect(await result).toBeUndefined();
+    expect(io.said.join('\n')).toContain('ห้ามใช้ repo agent-team');
+  });
+
+  it('path เป็นไฟล์ -&gt; แจ้งว่าไม่ใช่โฟลเดอร์', async () =&gt; {
+    const f = path.join(dir, 'file.txt');
+    await fs.writeFile(f, 'x');
+    const { io, result } = run([f, '']);
+    expect(await result).toBeUndefined();
+    expect(io.said.join('\n')).toContain('ไม่ใช่โฟลเดอร์');
+  });
+
+  it('เลือกโปรเจกต์ที่โฟลเดอร์หาย -&gt; เตือนแล้วกลับเมนู', async () =&gt; {
+    await addProject('gone', clock, false);
+    const { io, result } = run(['1', 'q']);
+    expect(await result).toBeUndefined();
+    expect(io.said.join('\n')).toContain('d1');
+  });
+
+  it('d&lt;เลข&gt; เอาออกจากรายชื่อ แต่ไม่ลบโฟลเดอร์', async () =&gt; {
+    const shop = await addProject('shop', clock);
+    const { result } = run(['d1', '']);
+    expect(await result).toBeUndefined();
+    expect(await registry.list()).toEqual([]);
+    expect(existsSync(shop)).toBe(true);
+  });
+
+  it('พิมพ์ผิด -&gt; บอกวิธีใช้แล้วถามใหม่', async () =&gt; {
+    const shop = await addProject('shop', clock);
+    const { io, result } = run(['x', '9', '1']);
+    expect(await result).toBe(shop);
+    expect(io.said.filter((s) =&gt; s.includes('เลือกไม่ถูกต้อง'))).toHaveLength(2);
+  });
+
+  it('นับงานค้างไม่ได้ -&gt; แสดง ? แทน ไม่ทำให้เมนูล้ม', async () =&gt; {
+    await addProject('shop', clock);
+    const { io, result } = run(['q'], async () =&gt; {
+      throw new Error('boom');
+    });
+    expect(await result).toBeUndefined();
+    expect(io.said[0]).toContain('งานค้าง ?');
+  });
+});
+
+describe('countPendingJobs', () =&gt; {
+  it('นับเฉพาะงานค้างใน .agent-team/jobs และโปรเจกต์ที่ไม่มีงาน = 0', async () =&gt; {
+    const app = path.join(dir, 'app');
+    await fs.mkdir(app);
+    const repo = new JobRepository(app);
+    const { id, store } = await repo.create();
+    const s = newState();
+    s.title = 'งานทดสอบ';
+    await store.save(s);
+    await repo.unlock(id);
+    expect(await countPendingJobs(app)).toBe(1);
+    expect(await countPendingJobs(path.join(dir, 'none'))).toBe(0);
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/project-menu.test.ts</code><br>
+     คาดหวัง: FAIL ด้วย "Failed to resolve import '../src/project-menu'"</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: เขียน implementation</strong></span></p>
+  <p>สร้าง <code>src/project-menu.ts</code>:</p>
+<pre><code>import * as fs from 'node:fs';
+import * as fsp from 'node:fs/promises';
+import * as path from 'node:path';
+import type { UserIO } from './deps';
+import { localDateTime } from './format';
+import { confirmYesNo } from './io-util';
+import { isPending } from './job-menu';
+import { JobRepository } from './jobs';
+import { teamRootError, type ProjectEntry, type ProjectRegistry } from './projects';
+
+const MENU_HELP = 'เลือก: &lt;เลข&gt; = เปิดโปรเจกต์   n = โปรเจกต์ใหม่   d&lt;เลข&gt; = เอาออกจากเมนู   q = ออก';
+const ASK_PATH = 'ใส่ root path ของโปรเจกต์ (ว่าง = ยกเลิก)\n&gt; ';
+
+export interface ProjectMenuDeps {
+  registry: ProjectRegistry;
+  io: UserIO;
+  /** จำนวนงานค้างของโปรเจกต์ (เทสต์ส่งค่าปลอมได้) */
+  countPending?: (dir: string) =&gt; Promise&lt;number&gt;;
+  /** repo agent-team ที่ห้ามใช้เป็นโปรเจกต์ (ค่าเริ่มต้น TEAM_ROOT) */
+  teamRoot?: string;
+}
+
+export async function countPendingJobs(dir: string): Promise&lt;number&gt; {
+  return (await new JobRepository(dir).list()).filter(isPending).length;
+}
+
+const isDir = (p: string): boolean =&gt; fs.existsSync(p) &amp;&amp; fs.statSync(p).isDirectory();
+
+/** เลือกโปรเจกต์ตอนรัน agent-team โดยไม่ระบุ path: คืน path เต็ม หรือ undefined เมื่อผู้ใช้ออก */
+export async function selectProject(deps: ProjectMenuDeps): Promise&lt;string | undefined&gt; {
+  const { registry, io } = deps;
+  for (;;) {
+    const projects = await registry.list();
+    if (projects.length === 0) {
+      io.say('ยังไม่มีโปรเจกต์ในรายชื่อ');
+      return askNewProject(deps);
+    }
+    const counts = await Promise.all(projects.map((p) =&gt; safeCount(deps, p.path)));
+    io.say(renderMenu(projects, counts));
+    const answer = (await io.ask('&gt; ')).trim().toLowerCase();
+    if (answer === 'q' || answer === 'quit') return undefined;
+    if (answer === 'n' || answer === 'new') {
+      const dir = await askNewProject(deps);
+      if (dir) return dir;
+      continue;
+    }
+    const match = /^(d?)\s*(\d+)$/.exec(answer);
+    const project = match ? projects[Number(match[2]) - 1] : undefined;
+    if (!match || !project) {
+      io.say(`เลือกไม่ถูกต้อง — ${MENU_HELP}`);
+      continue;
+    }
+    if (match[1] === 'd') {
+      await registry.remove(project.path);
+      io.say(`เอา ${project.path} ออกจากเมนูแล้ว (ไฟล์ในโฟลเดอร์ยังอยู่ครบ)`);
+      continue;
+    }
+    if (!isDir(project.path)) {
+      io.say(`ไม่พบโฟลเดอร์ ${project.path} — ถ้าย้ายไปแล้วให้กด n ใส่ path ใหม่ หรือ d${match[2]} เพื่อเอาออกจากเมนู`);
+      continue;
+    }
+    return project.path;
+  }
+}
+
+async function safeCount(deps: ProjectMenuDeps, dir: string): Promise&lt;number | undefined&gt; {
+  if (!isDir(dir)) return undefined;
+  try {
+    return await (deps.countPending ?? countPendingJobs)(dir);
+  } catch {
+    return undefined;
+  }
+}
+
+function renderMenu(projects: readonly ProjectEntry[], counts: readonly (number | undefined)[]): string {
+  const lines = projects.map((p, i) =&gt; {
+    const name = path.basename(p.path) || p.path;
+    const detail = isDir(p.path)
+      ? `งานค้าง ${counts[i] ?? '?'} · ใช้ล่าสุด ${localDateTime(new Date(p.lastUsedAt))}`
+      : '⚠ ไม่พบโฟลเดอร์';
+    return `  ${i + 1}) ${name} — ${p.path} · ${detail}`;
+  });
+  return ['โปรเจกต์:', ...lines, MENU_HELP].join('\n');
+}
+
+/** ถาม root path จนได้โฟลเดอร์ที่ใช้ได้ คืน undefined เมื่อตอบว่าง (ยกเลิก) */
+async function askNewProject(deps: ProjectMenuDeps): Promise&lt;string | undefined&gt; {
+  const { io } = deps;
+  for (;;) {
+    // "Copy as path" ของ Windows ครอบ path ด้วย "
+    const raw = (await io.ask(ASK_PATH)).trim().replace(/^["']|["']$/g, '');
+    if (raw === '') return undefined;
+    const dir = path.resolve(raw);
+    const rootErr = teamRootError(dir, deps.teamRoot);
+    if (rootErr) {
+      io.say(rootErr);
+      continue;
+    }
+    if (fs.existsSync(dir)) {
+      if (isDir(dir)) return dir;
+      io.say(`${dir} ไม่ใช่โฟลเดอร์`);
+      continue;
+    }
+    if (!(await confirmYesNo(io, `ไม่พบโฟลเดอร์ ${dir} สร้างใหม่ไหม? (y/n)\n&gt; `))) continue;
+    await fsp.mkdir(dir, { recursive: true });
+    io.say(`สร้างโฟลเดอร์ ${dir} แล้ว`);
+    return dir;
+  }
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npm test</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS ทั้งหมด (รวม <code>tests/job-menu.test.ts</code> เดิม), typecheck ไม่มี error</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: Commit</strong></span></p>
+<pre><code>git add src/project-menu.ts src/io-util.ts src/job-menu.ts src/format.ts tests/project-menu.test.ts
+git commit -m "feat: add project selection menu"</code></pre>
+</div>
+
+<!-- ============================ TASK 3 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 3: args ใหม่ + ต่อสาย index.ts + คำสั่ง global <code>agent-team</code></h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/args.ts</code> (ทั้งไฟล์), <code>src/index.ts:14-40</code> (ต้นฟังก์ชัน <code>main</code>), <code>package.json</code></li>
+    <li>สร้าง: <code>bin/agent-team.mjs</code></li>
+    <li>เทสต์: <code>tests/args.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>ProjectRegistry</code>, <code>teamRootError</code> (Task 1); <code>selectProject({ registry, io })</code> (Task 2)</li>
+    <li>ส่งต่อ (Produces): <code>interface CliArgs { projectDir: string | undefined; resume: boolean }</code>
+        (<code>undefined</code> = ให้เลือกจากเมนูโปรเจกต์); คำสั่ง <code>agent-team</code> ผ่าน <code>package.json</code> <code>bin</code></li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: แก้ test ของ args ให้เป็นพฤติกรรมใหม่ (fail)</strong></span></p>
+  <p>แทนที่ <code>tests/args.test.ts</code> ทั้งไฟล์:</p>
+<pre><code>import * as path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { parseArgs } from '../src/args';
+
+describe('parseArgs', () =&gt; {
+  it('อ่าน --project และแปลงเป็นพาธเต็ม', () =&gt; {
+    expect(parseArgs(['--project', 'some/app'])).toEqual({
+      projectDir: path.resolve('some/app'),
+      resume: false,
+    });
+  });
+
+  it('อ่านรูปแบบ --project=พาธ', () =&gt; {
+    expect(parseArgs(['--project=some/app']).projectDir).toBe(path.resolve('some/app'));
+  });
+
+  it('รับ path แบบ positional', () =&gt; {
+    expect(parseArgs(['some/app']).projectDir).toBe(path.resolve('some/app'));
+    expect(parseArgs(['.']).projectDir).toBe(path.resolve('.'));
+  });
+
+  it('อ่าน --resume และตัวย่อ -r', () =&gt; {
+    expect(parseArgs(['--project', 'a', '--resume']).resume).toBe(true);
+    expect(parseArgs(['a', '-r']).resume).toBe(true);
+  });
+
+  it('ไม่ระบุโปรเจกต์ -&gt; projectDir เป็น undefined (ให้เลือกจากเมนู)', () =&gt; {
+    expect(parseArgs([])).toEqual({ projectDir: undefined, resume: false });
+    expect(parseArgs(['-r'])).toEqual({ projectDir: undefined, resume: true });
+  });
+
+  it('--project ที่ไม่มีค่า หรือค่าเป็น flag อื่น หรือว่าง -&gt; error', () =&gt; {
+    expect(() =&gt; parseArgs(['--project', '--resume'])).toThrow('--project');
+    expect(() =&gt; parseArgs(['--project', '-r'])).toThrow('--project');
+    expect(() =&gt; parseArgs(['--project'])).toThrow('--project');
+    expect(() =&gt; parseArgs(['--project='])).toThrow('--project');
+  });
+
+  it('ระบุโปรเจกต์มากกว่าหนึ่งครั้ง -&gt; error', () =&gt; {
+    expect(() =&gt; parseArgs(['a', 'b'])).toThrow('ครั้งเดียว');
+    expect(() =&gt; parseArgs(['--project', 'a', 'b'])).toThrow('ครั้งเดียว');
+  });
+
+  it('อาร์กิวเมนต์ที่ไม่รู้จัก -&gt; error', () =&gt; {
+    expect(() =&gt; parseArgs(['--project', 'a', '--nope'])).toThrow('--nope');
+    expect(() =&gt; parseArgs(['-x'])).toThrow('-x');
+  });
+});</code></pre>
+  <p>รัน: <code>npx vitest run tests/args.test.ts</code> — คาดหวัง: FAIL ที่ test positional, <code>-r</code>, และไม่ระบุโปรเจกต์</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: เขียน <code>src/args.ts</code> ใหม่</strong></span></p>
+<pre><code>import * as path from 'node:path';
+
+export interface CliArgs {
+  /** undefined = ให้เลือกจากเมนูโปรเจกต์ */
+  projectDir: string | undefined;
+  resume: boolean;
+}
+
+export function parseArgs(argv: string[]): CliArgs {
+  let projectDir: string | undefined;
+  let resume = false;
+  const setProject = (value: string): void =&gt; {
+    if (projectDir !== undefined) throw new Error('ระบุโปรเจกต์ได้ครั้งเดียว');
+    projectDir = value;
+  };
+  for (let i = 0; i &lt; argv.length; i++) {
+    const arg = argv[i] ?? '';
+    if (arg === '--resume' || arg === '-r') resume = true;
+    else if (arg === '--project') {
+      const value = argv[++i];
+      if (value === undefined || value === '' || value.startsWith('-')) throw new Error('ต้องระบุพาธหลัง --project');
+      setProject(value);
+    } else if (arg.startsWith('--project=')) {
+      const value = arg.slice('--project='.length);
+      if (value === '') throw new Error('ต้องระบุพาธหลัง --project');
+      setProject(value);
+    } else if (arg.startsWith('-')) throw new Error(`อาร์กิวเมนต์ไม่รู้จัก: ${arg}`);
+    else setProject(arg);
+  }
+  return { projectDir: projectDir === undefined ? undefined : path.resolve(projectDir), resume };
+}</code></pre>
+  <p>รัน: <code>npx vitest run tests/args.test.ts</code> — คาดหวัง: PASS
+     (<code>npm run typecheck</code> จะยัง error ที่ <code>src/index.ts</code> จนกว่าจะทำ Step 3)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: ต่อสาย <code>src/index.ts</code></strong></span></p>
+  <p>เพิ่ม import:</p>
+<pre><code>import { selectProject } from './project-menu';
+import { ProjectRegistry, teamRootError } from './projects';</code></pre>
+  <p>แทนที่ต้นฟังก์ชัน <code>main</code> ตั้งแต่ <code>const args = parseArgs(...)</code> จนถึงบรรทัด <code>const cli = new CliIO();</code> เดิม ด้วย:</p>
+<pre><code>async function main(): Promise&lt;void&gt; {
+  const args = parseArgs(process.argv.slice(2));
+  const cli = new CliIO();
+  // CliIO ส่ง Ctrl+C ต่อเป็น process 'SIGINT' แต่ handler หลักยังไม่ถูกตั้งตอนอยู่ในเมนูโปรเจกต์
+  const quitBeforeStart = (): void =&gt; {
+    cli.close();
+    process.exit(130);
+  };
+  process.on('SIGINT', quitBeforeStart);
+  const registry = new ProjectRegistry(undefined, { warn: (m) =&gt; cli.say(m) });
+  const projectDir = args.projectDir ?? (await selectProject({ registry, io: cli }));
+  if (!projectDir) {
+    cli.close();
+    return;
+  }
+  const rootError = teamRootError(projectDir);
+  if (rootError) {
+    console.error(rootError);
+    process.exit(1);
+  }
+  if (!fs.existsSync(projectDir) || !fs.statSync(projectDir).isDirectory()) {
+    console.error(`ไม่พบโฟลเดอร์โปรเจกต์: ${projectDir} (สร้างโฟลเดอร์ก่อน หรือรัน agent-team แล้วกด n เพื่อสร้าง)`);
+    process.exit(1);
+  }
+  try {
+    await registry.touch(projectDir);
+  } catch (e) {
+    cli.say(`บันทึกรายชื่อโปรเจกต์ไม่สำเร็จ (${e instanceof Error ? e.message : String(e)}) — ทำงานต่อได้ตามปกติ`);
+  }
+  process.off('SIGINT', quitBeforeStart);
+
+  const config = loadConfig();
+  const abortController = new AbortController();
+  const logFile = path.join(projectDir, '.agent-team', 'agent-team.log');
+  const logger = new FileLogger(logFile);
+  const io = new LoggingIO(cli, logger);</code></pre>
+  <p>จากนั้นแทน <code>args.projectDir</code> ที่เหลือทั้งหมดในไฟล์ด้วย <code>projectDir</code>
+     (ใน <code>logger.log('INFO', 'run.start', …)</code>, <code>new SdkRoleRunner({ projectDir: … })</code>, <code>new JobRepository(…)</code>)
+     และต้องไม่มี <code>const cli = new CliIO();</code> ซ้ำเป็นครั้งที่สอง</p>
+  <p>รัน: <code>npm run typecheck</code> แล้ว <code>npm test</code> — คาดหวัง: ผ่านทั้งคู่</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: สร้างคำสั่ง global</strong></span></p>
+  <p>สร้าง <code>bin/agent-team.mjs</code>:</p>
+<pre><code>#!/usr/bin/env node
+// entry ของคำสั่ง global `agent-team`: รันซอร์ส TypeScript ผ่าน tsx โดยไม่ต้อง build
+import { register } from 'tsx/esm/api';
+
+register();
+await import('../src/index.ts');</code></pre>
+  <p>แก้ <code>package.json</code>: เพิ่ม <code>"bin"</code> หลัง <code>"type"</code> และย้าย <code>tsx</code> จาก <code>devDependencies</code> ไป <code>dependencies</code> (version เดิม):</p>
+<pre><code>  "type": "module",
+  "bin": {
+    "agent-team": "bin/agent-team.mjs"
+  },
+  ...
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.278",
+    "tsx": "^4.23.13",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "typescript": "~5.9.3",
+    "vitest": "^4.1.11"
+  }</code></pre>
+  <p>รัน <code>npm install</code> เพื่ออัปเดต <code>package-lock.json</code></p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: ตรวจคำสั่งจริง (ไม่เรียก agent ไม่เสียโควตา)</strong></span></p>
+<pre><code>node bin/agent-team.mjs .
+# คาดหวัง: "ห้ามใช้ repo agent-team (...) เป็นโปรเจกต์ ..." และ exit code 1
+node bin/agent-team.mjs C:/agent-team-does-not-exist
+# คาดหวัง: "ไม่พบโฟลเดอร์โปรเจกต์: C:\agent-team-does-not-exist ..." และ exit code 1
+npm link
+agent-team --nope
+# คาดหวัง: "อาร์กิวเมนต์ไม่รู้จัก: --nope" (ยืนยันว่าคำสั่ง global ชี้มาที่ repo นี้)</code></pre>
+  <p>ทั้งสามคำสั่งจบก่อน touch รายชื่อ จึงไม่แตะ <code>~/.agent-team/projects.json</code> ของผู้ใช้
+     การทดสอบเมนูแบบ interactive (พิมพ์ <code>agent-team</code> เปล่า ๆ) ให้ผู้ใช้ลองเองหลัง merge</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: Commit</strong></span></p>
+<pre><code>git add src/args.ts src/index.ts bin/agent-team.mjs package.json package-lock.json tests/args.test.ts
+git commit -m "feat: global agent-team command with project menu"</code></pre>
+</div>
+
+<!-- ============================ TASK 4 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 4: README — วิธีติดตั้ง, วิธีใช้ และ flow การทำงาน</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>README.md</code> — แทนที่ตั้งแต่หัวข้อ <code>## วิธีใช้</code> จนถึงบรรทัดก่อน <code>## state</code> (รวมหัวข้อ <code>## flow</code> เดิม)</li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): คำสั่ง/เมนูจาก Task 1-3 (ข้อความต้องตรงกับที่โค้ดแสดงจริง)</li>
+    <li>ส่งต่อ (Produces): ไม่มี</li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียนส่วนใหม่ของ README</strong></span></p>
+  <p>แทนที่ช่วงดังกล่าวด้วยข้อความนี้ทั้งหมด (โค้ดบล็อกใน README ใช้การเยื้อง 4 ช่องตามสไตล์เดิมของไฟล์):</p>
+<pre><code>## ติดตั้ง
+ทุกเครื่อง (ต้องมี Node.js 20+ และ git):
+
+    npm i -g github:papawin1997/agent-team
+
+อัปเดตเป็นเวอร์ชันล่าสุด: รันคำสั่งเดิมซ้ำ · ถอนการติดตั้ง: `npm rm -g agent-team`
+ถ้า repo เป็น private เครื่องนั้นต้อง login GitHub ได้ (เช่น `gh auth login` หรือตั้ง SSH key)
+
+เครื่องที่พัฒนา agent-team เอง ใช้ `npm link` แทน (แก้โค้ดแล้วมีผลทันทีโดยไม่ต้องติดตั้งใหม่):
+
+    git clone https://github.com/papawin1997/agent-team.git
+    cd agent-team
+    npm install
+    npm link
+
+ตรวจว่า login Claude ใช้ได้: `npm run smoke:auth` (รันในโฟลเดอร์ repo)
+
+## วิธีใช้
+เปิด terminal ที่ไหนก็ได้ แล้วพิมพ์:
+
+    agent-team                  # เมนูเลือกโปรเจกต์ (แนะนำ)
+    agent-team .                # ใช้โฟลเดอร์ปัจจุบันเป็นโปรเจกต์ (ข้ามเมนูโปรเจกต์)
+    agent-team C:/path/to/app   # ระบุโปรเจกต์ตรง ๆ (เหมือน --project C:/path/to/app)
+    agent-team -r               # เลือกโปรเจกต์ แล้วทำต่องานค้างล่าสุดทันที
+    agent-team . -r             # ทำต่องานค้างล่าสุดของโฟลเดอร์ปัจจุบัน (-r = --resume)
+
+เมนูโปรเจกต์แสดงโปรเจกต์ที่เคยใช้บนเครื่องนี้ เรียงจากที่ใช้ล่าสุด:
+
+    โปรเจกต์:
+      1) shop-app — C:\work\shop-app · งานค้าง 2 · ใช้ล่าสุด 2026-09-26 14:03
+      2) blog — D:\blog · งานค้าง 0 · ใช้ล่าสุด 2026-09-23 09:10
+      3) old-app — C:\old · ⚠ ไม่พบโฟลเดอร์
+    เลือก: &lt;เลข&gt; = เปิดโปรเจกต์   n = โปรเจกต์ใหม่   d&lt;เลข&gt; = เอาออกจากเมนู   q = ออก
+
+- `n` ใส่ root path ของโปรเจกต์ ถ้ายังไม่มีโฟลเดอร์จะถามว่าสร้างใหม่ไหม (y/n) ถ้าโฟลเดอร์มีงานเก่าใน `.agent-team/` อยู่แล้วก็เห็นงานค้างเดิม
+- `d&lt;เลข&gt;` เอาออกจากเมนูเท่านั้น ไม่ลบไฟล์ของโปรเจกต์
+- รายชื่อเก็บต่อเครื่องที่ `~/.agent-team/projects.json` และถูกเพิ่มอัตโนมัติทุกครั้งที่รันกับโปรเจกต์ใด ๆ (รวมตอนระบุ path ตรง ๆ)
+- ใช้ repo agent-team เองเป็นโปรเจกต์ไม่ได้ (จะ error) เพราะทีมจะโหลด `.claude/settings.json` และแก้โค้ดของทีมเอง
+- `npm start -- --project &lt;path&gt;` ในโฟลเดอร์ repo ยังใช้ได้เหมือนเดิม
+
+เมื่อเลือกโปรเจกต์แล้ว ถ้ามีงานค้าง PM จะแสดงรายการงานค้างทั้งหมด (เป้าหมาย, เฟส, ความคืบหน้า, เวลารันล่าสุด) แล้วให้เลือก:
+`r&lt;เลข&gt;` ทำต่องานนั้น, `d&lt;เลข&gt;` ลบงานนั้น (ถามยืนยัน y/n แล้วลบถาวร), `n` เริ่มงานใหม่ (งานค้างเดิมยังอยู่)
+ถ้ามีงานอื่นแก้โค้ดหลังจากงานที่ค้างไว้ จะมีคำเตือน ⚠ ว่าโค้ดอาจเปลี่ยนไปแล้ว (ยังทำต่อได้)
+ถ้ามีงานอื่นกำลังรันอยู่ในโปรเจกต์เดียวกัน (อีกหน้าต่าง) `r`/`n` จะเตือนว่า worker อาจแก้ไฟล์ชนกันแล้วถาม y/n ก่อน
+`-r`/`--resume` ข้ามเมนูงานแล้วทำต่องานค้างที่รันล่าสุด และบอกชื่องานที่เลือก ถ้าไม่มีงานค้าง หรือมีงานอื่นกำลังรันอยู่ในโปรเจกต์นี้ จะ error (ไม่เริ่มงานซ้อน)
+Ctrl+C หยุดได้ทุกเมื่อ: state ถูกบันทึกทุกครั้งที่เปลี่ยน phase/รอบ จึงเสียอย่างมากแค่รอบที่กำลังทำอยู่ แล้วรันใหม่เลือกงานนี้จากเมนู หรือใช้ -r (stdin ที่ถูกปิด/pipe จะหยุดพร้อมข้อความ EOF ไม่ค้าง)
+ระหว่างที่ agent ทำงานจะมีบรรทัดสถานะ เช่น `⠹ [QA] T2: กำลังตรวจ 1m23s · อ่านไฟล์ src/api/user.ts` (เวลาที่ผ่านไป + สิ่งที่ agent ทำล่าสุด) ถ้า output ไม่ใช่ terminal (pipe/redirect) จะพิมพ์แค่ `[QA] T2: กำลังตรวจ...` บรรทัดเดียวตอนเริ่ม
+
+## flow การทำงาน
+ภาพรวมตั้งแต่พิมพ์คำสั่งจนส่งมอบงาน:
+
+    agent-team
+      └─ เลือกโปรเจกต์ (เลขในเมนู / n ใส่ root path ใหม่)      ← ข้ามได้ด้วย agent-team &lt;path&gt;
+          └─ เลือกงาน (r&lt;เลข&gt; ทำต่อ / n งานใหม่ / d&lt;เลข&gt; ลบ)   ← ข้ามได้ด้วย -r
+              └─ REQUIREMENTS → DESIGN → REVIEW → BUILD → DELIVER → เสร็จ
+                                  ↑__ขอแก้__|                |
+                                  ↑__________ขอแก้/เพิ่ม______|
+
+1. REQUIREMENTS: คุยกับ PM (ถามตอบ/เสนอไอเดีย) จนคุณกด confirm requirements
+2. DESIGN: Planning ออกแบบและแตก task (frontend / backend) จากนั้น Security ตรวจ design ครั้งเดียว
+   (แบบ advisory เท่านั้น — ถ้า Security ตรวจไม่สำเร็จก็ไม่ทำให้ทั้งรอบล้ม แค่ไม่มี securityNotes) แล้วแนบ securityNotes เข้า design
+3. REVIEW: PM สรุปแบบ (รวม securityNotes จาก Security) ให้คุณ confirm หรือขอแก้ (ขอแก้ = วนกลับข้อ 1-3 โดยข้อความที่ขอแก้จะส่งให้ทั้ง PM และ Planning)
+4. BUILD: worker ทำทีละ task ตามลำดับ dependency แล้ว QA ตรวจ และเมื่อ QA ผ่านแล้ว Security ตรวจต่ออีกรอบ (เฉพาะตอน QA ผ่านเท่านั้น เพื่อประหยัด API call)
+   QA ไม่ผ่าน หรือ Security เจอ blocker/major ให้ worker แก้ใหม่ (Security ไม่ผ่าน = เสียรอบเหมือน QA ไม่ผ่าน)
+   สูงสุด 5 รอบต่อ task ถ้าครบแล้วไม่ผ่าน PM จะถามคุณว่า
+   continue (ทำต่ออีก 5 รอบ) / accept (รับตามสภาพ) / abort
+5. DELIVER: PM ส่งมอบ ให้คุณตรวจรับ (accept) หรือขอแก้/เพิ่ม (change)
+
+ทุกขั้นหยุดได้ด้วย Ctrl+C แล้วกลับมาทำต่อด้วย `agent-team` → เลือกโปรเจกต์ → `r&lt;เลข&gt;` (หรือ `agent-team &lt;path&gt; -r`)</code></pre>
+  <p>ใน README ไฟล์จริงให้เขียน <code>&lt;</code> <code>&gt;</code> เป็นตัวอักษรปกติ (ที่เห็นเป็น escape เพราะอยู่ในไฟล์ HTML นี้)
+     และตรวจว่าบรรทัด <code>## ข้อกำหนดเบื้องต้น</code> ด้านบนไม่ซ้ำกับ <code>npm run smoke:auth</code> ในส่วนติดตั้งจนขัดกัน (คงไว้ได้ทั้งคู่)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: ตรวจความถูกต้องกับโค้ด</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/project-menu.test.ts</code> แล้วเทียบข้อความ <code>MENU_HELP</code> ใน <code>src/project-menu.ts</code>
+     และรูปแบบบรรทัดจาก <code>renderMenu</code> กับตัวอย่างเมนูใน README ให้ตรงกันตัวต่อตัว (หัว <code>โปรเจกต์:</code>, <code>  1) ชื่อ — path · งานค้าง N · ใช้ล่าสุด YYYY-MM-DD HH:MM</code>)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: Commit</strong></span></p>
+<pre><code>git add README.md
+git commit -m "docs: install from GitHub, project menu, and end-to-end flow"</code></pre>
+</div>
+
+</body>
+</html>

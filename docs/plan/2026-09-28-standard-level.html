@@ -1,0 +1,852 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>Standard level + escalation + risky-file Security Implementation Plan</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; line-height: 1.55;
+         max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1f2933;
+         background: #f5f7fa; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  pre { background: #1f2933; color: #e4e7eb; padding: .9rem 1rem;
+        border-radius: 6px; overflow-x: auto; }
+  code { background: #e4e7eb; padding: .1rem .35rem; border-radius: 4px; }
+  pre code { background: none; padding: 0; color: inherit; }
+  .frame { border-left: 6px solid; border-radius: 8px; padding: 1rem 1.25rem;
+           margin: 1.25rem 0; background: #ffffff;
+           box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .frame-header     { border-color: #2563eb; background: #eff6ff; }
+  .frame-constraints{ border-color: #d97706; background: #fffbeb; }
+  .frame-task       { border-color: #059669; background: #ecfdf5; }
+  .frame h1, .frame h2, .frame h3 { margin-top: 0; }
+  .note { border-color: #7c3aed; background: #f5f3ff; }
+  .step { display: flex; gap: .5rem; align-items: baseline;
+          margin: .75rem 0 .25rem; }
+  .step input { transform: scale(1.2); margin-top: .15rem; }
+  .meta { color: #52606d; font-size: .9rem; }
+</style>
+</head>
+<body>
+
+<div class="frame frame-header">
+  <h1>Standard level + escalation + risky-file Security Implementation Plan (โปรเจกต์ย่อย D)</h1>
+  <p><strong>เป้าหมาย:</strong> เพิ่มระดับงาน <code>standard</code> (มี Planning + REVIEW แต่ไม่มี Security ตรวจ design) ระหว่าง quick กับ full, เสนอยกระดับให้ผู้ใช้เลือก (quick ที่ QA ไม่ผ่าน → standard/full, standard ที่เจอคำเสี่ยงตอน REVIEW → full) และให้ quick/standard เรียก Security ตรวจ task เฉพาะเมื่อแตะไฟล์เสี่ยง</p>
+  <p><strong>สถาปัตยกรรม:</strong> <code>LevelSchema</code> เพิ่ม <code>standard</code>; logic ระดับงานรวมอยู่ใน <code>src/level.ts</code> (decideLevel/acceptDesignLevel/escalateLevel); ตรวจไฟล์เสี่ยงด้วยโมดูลใหม่ <code>src/risk-files.ts</code> (path rules) + <code>riskFlags</code> เดิมกับเนื้อหา diff ของ task; diff ของ task ใช้ <code>progress.startTree</code> (snapshot ก่อน worker รอบแรก) กับ <code>SnapshotProvider</code> ที่มีอยู่แล้ว</p>
+  <p><strong>Tech Stack:</strong> TypeScript + tsx, vitest, zod — ไม่เพิ่ม dependency</p>
+</div>
+
+<div class="frame note">
+  <strong>For agentic workers:</strong> REQUIRED SUB-SKILL: Use
+  tb-subagent-driven-development (recommended) or
+  tb-executing-plans to implement this plan task-by-task. Steps keep
+  the <code>- [ ]</code> marker next to each checkbox for tracking.
+</div>
+
+<div class="frame frame-constraints">
+  <h2>Global Constraints</h2>
+  <ul>
+    <li>ระดับงานมี 3 ค่าเท่านั้น: <code>quick</code> | <code>standard</code> | <code>full</code>; state เก่าที่ไม่มี <code>level</code> = full เหมือนเดิม</li>
+    <li>standard = Planning → PM สรุป + ผู้ใช้ยืนยัน (REVIEW) → BUILD โดย<strong>ไม่เรียก</strong> <code>runner.securityDesign</code>; QA รอบสูงสุด = <code>maxQaRounds</code> (continue เพิ่ม <code>extraRoundsOnContinue</code>) เหมือน full</li>
+    <li>Security ต่อ task: full = ทุก task ที่ QA ผ่านเหมือนเดิม; quick/standard = เฉพาะเมื่อ <code>riskyFiles</code> เจอไฟล์เสี่ยง (ไม่นับไฟล์เทสต์ตาม <code>TEST_PATH_PATTERNS</code>) หรือ <code>riskFlags</code> ของเนื้อหา diff ของ task ไม่ว่าง</li>
+    <li>การยกระดับเป็น "เสนอให้ผู้ใช้เลือก" เท่านั้น ไม่มีการยก/ลดระดับเอง: quick ที่ QA ไม่ผ่านครบรอบ → ตัวเลือก <code>continue / accept / abort / standard / full</code>; standard ที่ requirements+design มี risk flag ตอน REVIEW → ตัวเลือก <code>full / confirm / revise</code></li>
+    <li>ตัวเลือกระดับตอน PM เสนอ: PM เสนอ quick (มี quickTask) → <code>quick, standard, full, revise</code>; PM เสนอ standard → <code>standard, full, revise</code>; มี risk flag → ย้าย <code>full</code> ขึ้นหน้าสุด; PM เสนอ full → <code>confirm / revise</code> เหมือนเดิม</li>
+    <li><code>--quick</code> / <code>--standard</code> / <code>--full</code> ใส่ได้อย่างเดียว; <code>--standard</code> และ <code>--full</code> ไม่เสนอ quick; <code>--full</code> ไม่เสนอ standard ด้วย</li>
+    <li>ทุกการเปลี่ยนระดับ log <code>level.decided { level, by, reason, riskFlags }</code> เหมือนเดิม; การตัดสิน Security ต่อ task log <code>security.trigger { taskId, round, reason: 'level' | 'risky-files' | 'none', files, categories }</code></li>
+    <li>ข้อความ/คอมเมนต์ภาษาไทยตามสไตล์ repo; prompt ของ agent เป็นภาษาอังกฤษ</li>
+    <li>ห้ามรัน <code>agent-team</code> กับโปรเจกต์จริงหรือแบบโต้ตอบ (เรียกโมเดลเสียเงิน)</li>
+    <li>ปิดทุก task ด้วย <code>npm test</code> + <code>npm run typecheck</code> ผ่าน; commit message = subject, บรรทัดว่าง, แล้ว <code>Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;</code>; <code>git add</code> เฉพาะไฟล์ที่แก้</li>
+  </ul>
+</div>
+
+<!-- ============================ TASK 1 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 1: ตรวจไฟล์เสี่ยงจาก path (<code>src/risk-files.ts</code>)</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/risk-files.ts</code></li>
+    <li>เทสต์: <code>tests/risk-files.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>TEST_PATH_PATTERNS</code> จาก <code>src/config.ts</code>; <code>RiskCategory</code> จาก <code>src/risk.ts</code></li>
+    <li>ส่งต่อ (Produces): <code>type FileRiskCategory = RiskCategory | 'infra' | 'dependency'</code>; <code>interface RiskyFile { file: string; category: FileRiskCategory }</code>; <code>riskyFiles(paths: readonly string[]): RiskyFile[]</code> (หนึ่งไฟล์ได้หมวดแรกที่ตรง, ลำดับตาม input, ไม่ซ้ำ, path แปลง <code>\</code> เป็น <code>/</code>)</li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import { riskyFiles } from '../src/risk-files';
+
+describe('riskyFiles', () =&gt; {
+  it.each([
+    ['src/auth/login.ts', 'auth'],
+    ['src/middleware/session.ts', 'auth'],
+    ['server/permissions.py', 'auth'],
+    ['.env', 'secret'],
+    ['.env.production', 'secret'],
+    ['config/credentials.json', 'secret'],
+    ['certs/server.pem', 'secret'],
+    ['src/payment/stripe.ts', 'payment'],
+    ['app/billing/invoice.rb', 'payment'],
+    ['db/migrations/0003_add_users.sql', 'migration'],
+    ['prisma/schema.prisma', 'migration'],
+    ['queries/report.sql', 'migration'],
+    ['src/routes/upload.ts', 'upload'],
+    ['src/webhooks/github.ts', 'network'],
+    ['src/cors.ts', 'network'],
+    ['Dockerfile', 'infra'],
+    ['docker-compose.prod.yml', 'infra'],
+    ['.github/workflows/ci.yml', 'infra'],
+    ['package.json', 'dependency'],
+    ['backend/requirements.txt', 'dependency'],
+    ['go.mod', 'dependency'],
+  ])('%s → %s', (file, category) =&gt; {
+    expect(riskyFiles([file])).toEqual([{ file, category }]);
+  });
+
+  it.each([
+    'src/components/Button.tsx',
+    'src/pages/about.tsx',
+    'README.md',
+    'src/utils/format-date.ts',
+    'src/keyboard/shortcuts.ts',
+    'src/author/profile.tsx',
+  ])('%s → ไม่เสี่ยง', (file) =&gt; {
+    expect(riskyFiles([file])).toEqual([]);
+  });
+
+  it('ไม่นับไฟล์เทสต์', () =&gt; {
+    expect(riskyFiles(['tests/auth.test.ts', 'src/auth/login.spec.ts', '__tests__/payment.ts'])).toEqual([]);
+  });
+
+  it('แปลง path แบบ Windows, ไม่ซ้ำ, คงลำดับ', () =&gt; {
+    expect(riskyFiles(['src\\auth\\login.ts', 'README.md', 'src/auth/login.ts', 'package.json'])).toEqual([
+      { file: 'src/auth/login.ts', category: 'auth' },
+      { file: 'package.json', category: 'dependency' },
+    ]);
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/risk-files.test.ts</code><br>คาดหวัง: FAIL เพราะหา module ไม่เจอ</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+<pre><code>import { TEST_PATH_PATTERNS } from './config';
+import type { RiskCategory } from './risk';
+
+/** หมวดเสี่ยงของไฟล์: หมวดเดียวกับคำเสี่ยงใน requirements + infra/dependency ที่มีแต่ในระดับไฟล์ */
+export type FileRiskCategory = RiskCategory | 'infra' | 'dependency';
+
+export interface RiskyFile {
+  file: string;
+  category: FileRiskCategory;
+}
+
+/** ขอบของคำใน path: ต้นทาง / ท้ายทาง หรือ / _ . - เพื่อไม่ให้ "author" ถูกนับเป็น auth หรือ "keyboard" เป็น key */
+const B = '(^|[/_.-])';
+const E = '([/_.-]|$)';
+
+/** เรียงจากเฉพาะเจาะจงไปทั่วไป หนึ่งไฟล์ได้หมวดแรกที่ตรง */
+const RULES: readonly { category: FileRiskCategory; re: RegExp }[] = [
+  { category: 'secret', re: new RegExp(`(^|/)\\.env(\\.|$)|${B}(secrets?|credentials?|keys?|tokens?)${E}|\\.(pem|key|p12|pfx)$`, 'i') },
+  {
+    category: 'auth',
+    re: new RegExp(`${B}(auth|oauth|login|logout|signin|signup|session|sessions|jwt|passport|permission|permissions|rbac|acl|password|passwords)${E}`, 'i'),
+  },
+  { category: 'payment', re: new RegExp(`${B}(payment|payments|billing|checkout|stripe|paypal|invoice|invoices)${E}`, 'i') },
+  { category: 'migration', re: /(^|\/)migrations?\/|\.sql$|(^|\/)schema\.prisma$|(^|\/)db\/schema\./i },
+  { category: 'upload', re: new RegExp(`${B}(upload|uploads|uploader|multer)${E}`, 'i') },
+  { category: 'network', re: new RegExp(`${B}(cors|webhook|webhooks|proxy)${E}|(^|/)nginx[^/]*\\.conf$|(^|/)\\.htaccess$`, 'i') },
+  {
+    category: 'infra',
+    re: /(^|\/)dockerfile[^/]*$|(^|\/)(docker-)?compose[^/]*\.ya?ml$|(^|\/)\.github\/workflows\/|(^|\/)\.gitlab-ci\.ya?ml$|(^|\/)terraform\//i,
+  },
+  {
+    category: 'dependency',
+    re: /(^|\/)(package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb|requirements[^/]*\.txt|pyproject\.toml|poetry\.lock|go\.mod|go\.sum|Cargo\.toml|Cargo\.lock|Gemfile(\.lock)?|composer\.json)$/i,
+  },
+];
+
+const isTestFile = (file: string): boolean =&gt; TEST_PATH_PATTERNS.some((re) =&gt; re.test(file));
+
+/** ไฟล์ที่แตะเรื่องเสี่ยง (ดูจาก path อย่างเดียว) ใช้ตัดสินว่า task ระดับ quick/standard ต้องให้ Security ตรวจไหม */
+export function riskyFiles(paths: readonly string[]): RiskyFile[] {
+  const seen = new Set&lt;string&gt;();
+  const found: RiskyFile[] = [];
+  for (const raw of paths) {
+    const file = raw.replace(/\\/g, '/');
+    if (seen.has(file) || isTestFile(file)) continue;
+    seen.add(file);
+    const rule = RULES.find((r) =&gt; r.re.test(file));
+    if (rule) found.push({ file, category: rule.category });
+  }
+  return found;
+}</code></pre>
+  <p class="meta">ถ้าเคสใดในตารางเทสต์ไม่ตรงกับ regex ข้างบน ให้ปรับ regex ให้ผ่าน<strong>ทุกเคส</strong>ทั้งฝั่งเสี่ยงและไม่เสี่ยง (ห้ามลบเคสเทสต์) และจดการปรับไว้ใน report</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/risk-files.test.ts</code> แล้ว <code>npm run typecheck</code><br>คาดหวัง: PASS</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/risk-files.ts tests/risk-files.test.ts
+git commit -m "feat(risk): classify risky files by path" -m "Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;"</code></pre>
+</div>
+
+<!-- ============================ TASK 2 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 2: ค่า <code>standard</code> ใน schema, CLI, PM prompt, hint และการแสดงผล</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/schemas.ts</code> (<code>LevelSchema</code>)</li>
+    <li>แก้ไข: <code>src/args.ts</code> (<code>--standard</code>)</li>
+    <li>แก้ไข: <code>src/phases/requirements.ts</code> (<code>LEVEL_HINT</code>)</li>
+    <li>แก้ไข: <code>src/prompts.ts</code> (ส่วน Triage ของ <code>PM_PROMPT</code>)</li>
+    <li>แก้ไข: <code>src/format.ts</code> (tag ระดับใน <code>formatJobSummary</code>)</li>
+    <li>แก้ไข: <code>src/logview/parse-log.ts</code> (type + 2 จุดที่รับ level), <code>src/logview/web/page.js</code> (JSDoc type + ข้อความสถิติระดับงาน)</li>
+    <li>เทสต์: <code>tests/args.test.ts</code>, <code>tests/phases/requirements.test.ts</code>, <code>tests/format.test.ts</code>, <code>tests/logview/parse-log.test.ts</code>, <code>tests/prompts.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ส่งต่อ (Produces): <code>Level = 'quick' | 'standard' | 'full'</code>; <code>CliArgs.level</code> รับ <code>'standard'</code>; <code>LEVEL_HINT.standard = '[ผู้ใช้ขอโหมด standard: ไม่ใช้ quick]'</code></li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+<pre><code>// tests/args.test.ts — แทนเทสต์ '--quick / --full' เดิม
+  it('--quick / --standard / --full ใส่ได้อย่างเดียว', () =&gt; {
+    expect(parseArgs(['a', '--quick']).level).toBe('quick');
+    expect(parseArgs(['a', '--standard']).level).toBe('standard');
+    expect(parseArgs(['--full']).level).toBe('full');
+    expect(parseArgs(['--standard', '--standard']).level).toBe('standard');
+    expect(() =&gt; parseArgs(['--quick', '--full'])).toThrow('พร้อมกันไม่ได้');
+    expect(() =&gt; parseArgs(['--standard', '--full'])).toThrow('พร้อมกันไม่ได้');
+    expect(() =&gt; parseArgs(['logs', '--standard'])).toThrow('logs');
+  });
+  it('run --headless รับ --standard', () =&gt; {
+    expect(parseArgs(['run', '--headless', '--request', 'x', '--standard']).level).toBe('standard');
+  });
+
+// tests/phases/requirements.test.ts
+  it('--standard: บอก PM ในข้อความแรก', async () =&gt; {
+    const { deps, runner } = makeDeps({ pm: [proposal()] }, ['ทำหน้า profile', 'confirm']);
+    deps.levelPreference = 'standard';
+    await runRequirements(deps, newState());
+    expect(pmInput(runner, 0).prompt).toBe('[ผู้ใช้ขอโหมด standard: ไม่ใช้ quick]\nทำหน้า profile');
+  });
+
+// tests/prompts.test.ts
+  it('PM prompt อธิบายระดับ standard', () =&gt; {
+    expect(SYSTEM_PROMPTS.pm).toContain('"standard"');
+    expect(SYSTEM_PROMPTS.pm).toContain('"quick", "standard" or "full"');
+  });
+
+// tests/format.test.ts (ใน describe ของ formatJobSummary; ใช้ builder/JobInfo แบบเดียวกับเคส quick เดิม)
+  it('แสดง tag ระดับ standard เหมือน quick', () =&gt; {
+    // สร้าง JobInfo แบบเดียวกับเทสต์ quick tag เดิม แต่ state.level = 'standard'
+    // คาดหวัง: บรรทัดมี ' · standard'
+  });
+
+// tests/logview/parse-log.test.ts (ใช้รูปแบบบรรทัด log แบบเดียวกับเทสต์ level.decided เดิม)
+  it('level.decided ค่า standard ถูกเก็บเป็น run.level', () =&gt; {
+    // คาดหวัง: run.level === 'standard'
+  });</code></pre>
+  <p class="meta">สองเคสสุดท้ายให้เขียนตามรูปแบบเทสต์ quick/full ที่มีอยู่แล้วในไฟล์เดียวกัน (ค้นด้วย <code>grep -n "quick" tests/format.test.ts tests/logview/parse-log.test.ts</code>) ถ้าไฟล์เทสต์ใดไม่มีเคส level อยู่ก่อน ให้สร้างเคสใหม่จาก helper ที่ไฟล์นั้นใช้</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/args.test.ts tests/phases/requirements.test.ts tests/prompts.test.ts tests/format.test.ts tests/logview/parse-log.test.ts</code><br>คาดหวัง: FAIL เฉพาะเคสใหม่</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แก้โค้ด</strong></span></p>
+<pre><code>// src/schemas.ts
+export const LevelSchema = z.enum(['quick', 'standard', 'full']);
+
+// src/args.ts — แทน branch ของ --quick/--full
+    } else if (arg === '--quick' || arg === '--standard' || arg === '--full') {
+      const value: Level = arg === '--quick' ? 'quick' : arg === '--standard' ? 'standard' : 'full';
+      if (level !== undefined &amp;&amp; level !== value) throw new Error('ใช้ --quick / --standard / --full พร้อมกันไม่ได้ (เลือกอย่างเดียว)');
+      level = value;
+// และข้อความ error ของ logs เปลี่ยนเป็น '--quick/--standard/--full ใช้กับ agent-team logs ไม่ได้'
+
+// src/phases/requirements.ts
+const LEVEL_HINT: Record&lt;Level, string&gt; = {
+  quick: '[ผู้ใช้ขอโหมด quick ถ้างานเข้าเกณฑ์]',
+  standard: '[ผู้ใช้ขอโหมด standard: ไม่ใช้ quick]',
+  full: '[ผู้ใช้สั่ง --full: ต้องเป็น full เท่านั้น]',
+};
+
+// src/prompts.ts — ส่วน Triage ของ PM_PROMPT แทน 3 บรรทัดแรกของ Triage ด้วย
+  '- Also set "level" to "quick", "standard" or "full", and a short Thai "levelReason".',
+  '- "quick" means a small, well-understood change: roughly 1-3 files, no new architecture, API or data model.',
+  '- "standard" means a medium change that needs a design with several tasks (new endpoint, component or data model, several files) but no new system architecture.',
+  '- "full" is for new systems or architecture, and ALWAYS for anything that touches authentication/authorization, secrets or tokens, payments, deleting or migrating data, raw SQL, file upload, running shell commands, or networking/CORS/webhooks - even if the change is small.',
+// บรรทัด "For quick, also fill quickTask ... For full, omit quickTask." เปลี่ยนท้ายเป็น 'For "standard" and "full", omit quickTask.'
+// บรรทัด user preference เปลี่ยนเป็น
+  '- If the conversation says the user requires full, always use "full". If it says the user wants standard (no quick), use "standard" or "full". If it says the user prefers quick, use "quick" when the rules above allow it; otherwise the lowest level that fits and explain why in levelReason.',
+
+// src/format.ts ใน formatJobSummary
+  const levelTag = state.level === 'quick' || state.level === 'standard' ? ` · ${state.level}` : '';
+// (เปลี่ยนชื่อตัวแปร quickTag เป็น levelTag ในบรรทัดที่ใช้ด้วย)
+
+// src/logview/parse-log.ts
+  level?: 'quick' | 'standard' | 'full';
+// ทั้ง 2 จุด: if (level === 'quick' || level === 'standard' || level === 'full') run.level = level;
+
+// src/logview/web/page.js
+ * @property {'quick'|'standard'|'full'} [level]
+// บรรทัดสถิติ:
+const LEVEL_TEXT = { quick: 'quick (แบบย่อ)', standard: 'standard (มีออกแบบ ไม่ตรวจ Security design)', full: 'full (แบบเต็ม)' };
+    grid.appendChild(stat('ระดับงาน', LEVEL_TEXT[run.level] ?? '-'));</code></pre>
+  <p class="meta">หลังเปลี่ยน <code>LevelSchema</code> อาจมี <code>switch</code>/<code>Record&lt;Level, ...&gt;</code> อื่นที่ typecheck ฟ้อง — แก้ให้ครบโดยยึดความหมายของ standard ตาม Global Constraints (ตรรกะเลือก/ยกระดับจริงอยู่ Task 3 ห้ามทำล่วงหน้าเกินกว่าที่ต้องให้คอมไพล์ผ่าน)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: ชุดเดียวกับ Step 2 แล้ว <code>npm test</code> และ <code>npm run typecheck</code><br>คาดหวัง: PASS ทั้งหมด</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/schemas.ts src/args.ts src/phases/requirements.ts src/prompts.ts src/format.ts src/logview/parse-log.ts src/logview/web/page.js tests/args.test.ts tests/phases/requirements.test.ts tests/prompts.test.ts tests/format.test.ts tests/logview/parse-log.test.ts
+git commit -m "feat(level): add standard level to schema, CLI, PM triage and display" -m "Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;"</code></pre>
+</div>
+
+<!-- ============================ TASK 3 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 3: เลือกระดับตอน PM เสนอ (<code>src/level.ts</code>)</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/level.ts</code>, <code>src/phases/requirements.ts</code> (จุดเรียก offersQuick/decideLevel)</li>
+    <li>แก้ไข: <code>tests/helpers/builders.ts</code> (เพิ่ม <code>standardProposal</code>)</li>
+    <li>เทสต์: <code>tests/phases/requirements.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>Level</code> 3 ค่า (Task 2)</li>
+    <li>ส่งต่อ (Produces): <code>offersChoice(deps, turn): boolean</code> (แทน <code>offersQuick</code> ที่จุดเรียกใน requirements.ts; <code>offersQuick</code> ยังคงอยู่เป็น helper ภายใน); <code>acceptDesignLevel(deps, state, turn, level: 'standard' | 'full', flags?, by?)</code> (แทน <code>acceptFull</code>; <code>acceptFull</code> เรียกผ่านตัวนี้ด้วย level full); <code>levelOptions(turn, flags, deps): LevelChoice[]</code> โดย <code>type LevelChoice = 'quick' | 'standard' | 'full' | 'revise'</code>; builder <code>standardProposal(requirements = makeRequirements())</code> คืน PmTurn status proposal, level 'standard', levelReason 'หลายไฟล์'</li>
+  </ul>
+
+  <p>พฤติกรรม:</p>
+  <ul>
+    <li><code>offersQuick(deps, turn)</code> = <code>turn.level === 'quick' &amp;&amp; turn.quickTask &amp;&amp; levelPreference ∉ {standard, full}</code>; <code>offersStandard(deps, turn)</code> = <code>turn.level === 'standard' &amp;&amp; levelPreference !== 'full'</code>; <code>offersChoice</code> = อย่างใดอย่างหนึ่ง</li>
+    <li><code>levelOptions</code>: quick ถูกเสนอ → <code>['quick','standard','full','revise']</code>, standard ถูกเสนอ → <code>['standard','full','revise']</code> (ถ้า levelPreference = standard แต่ PM ส่ง quick มา: ถือว่าเสนอ standard); มี flags → ย้าย <code>'full'</code> ไปหน้าสุด</li>
+    <li><code>decideLevel</code> ใช้ <code>levelOptions</code> แทนการ hard-code; ตรรกะ "ความเสี่ยงโผล่ระหว่างตัดสินใจ" ใช้กับการเลือกที่ไม่ใช่ full (ทั้ง quick และ standard): เตือนแล้วถามซ้ำด้วยตัวเลือกที่ full ขึ้นก่อน 1 ครั้ง</li>
+    <li>เลือก <code>quick</code> แต่ turn ล่าสุดไม่เสนอ quick แล้ว → เหมือนเดิม (บอก user แล้ว confirmAsFull ถ้า PM เสนอ full) — ถ้า PM เปลี่ยนเป็นเสนอ standard ให้ถามยืนยันด้วยตัวเลือกใหม่ของ turn นั้นแทน</li>
+    <li>เลือก <code>standard</code> → <code>acceptDesignLevel(..., 'standard')</code>: ล้าง design สังเคราะห์ของ quick (<code>clearStaleQuickDesign</code>), <code>state.level='standard'</code>, <code>phase='DESIGN'</code>, บันทึก requirements, log level.decided (by pm ถ้าตรงกับ turn.level ไม่งั้น user)</li>
+    <li>เลือก <code>full</code> → เหมือนเดิม</li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail — <code>tests/phases/requirements.test.ts</code></strong></span></p>
+<pre><code>  it('PM เสนอ standard แล้ว user เลือก standard -&gt; DESIGN ด้วย level standard, log by pm', async () =&gt; {
+    const events: { event: string; data?: Record&lt;string, unknown&gt; }[] = [];
+    const { deps, io } = makeDeps({ pm: [standardProposal()] }, ['ทำหน้า profile', 'standard']);
+    deps.log = { log: (_l, event, data) =&gt; void events.push({ event, data }) };
+    const state = newState();
+    await runRequirements(deps, state);
+
+    expect(state.phase).toBe('DESIGN');
+    expect(state.level).toBe('standard');
+    expect(io.asked.at(-1)).toContain('standard');
+    expect(events.find((e) =&gt; e.event === 'level.decided')?.data).toMatchObject({ level: 'standard', by: 'pm' });
+  });
+
+  it('PM เสนอ standard: ตัวเลือกไม่มี quick (พิมพ์ quick = ถาม PM แทนการเลือก)', async () =&gt; {
+    const { deps, runner } = makeDeps({ pm: [standardProposal(), asking('ต้องเลือก standard หรือ full')] }, ['x', 'quick', 'full']);
+    const state = newState();
+    await runRequirements(deps, state);
+    expect((runner.calls[1]!.input as PmInput).prompt).toContain('quick');
+    expect(state.level).toBe('full');
+  });
+
+  it('PM เสนอ quick: เลือก standard ได้ -&gt; DESIGN, log by user', async () =&gt; {
+    const events: { event: string; data?: Record&lt;string, unknown&gt; }[] = [];
+    const { deps } = makeDeps({ pm: [quickProposal()] }, ['แก้คำผิด', 'standard']);
+    deps.log = { log: (_l, event, data) =&gt; void events.push({ event, data }) };
+    const state = newState();
+    await runRequirements(deps, state);
+    expect(state.level).toBe('standard');
+    expect(state.phase).toBe('DESIGN');
+    expect(state.quickTask).toBeUndefined();
+    expect(events.find((e) =&gt; e.event === 'level.decided')?.data).toMatchObject({ level: 'standard', by: 'user' });
+  });
+
+  it('PM เสนอ standard แต่เจอคำเสี่ยง: เตือนและ full ขึ้นก่อน', async () =&gt; {
+    const risky = { ...makeRequirements(), goal: 'เพิ่มหน้า login' };
+    const { deps, io } = makeDeps({ pm: [standardProposal(risky)] }, ['x', '1']);
+    const state = newState();
+    await runRequirements(deps, state);
+    expect(io.said.join('\n')).toContain('⚠ งานนี้แตะเรื่อง auth');
+    expect(state.level).toBe('full');
+  });
+
+  it('--standard: PM ส่ง quick มาก็ไม่เสนอ quick (ตัวเลือก standard/full/revise)', async () =&gt; {
+    const { deps } = makeDeps({ pm: [quickProposal()] }, ['x', '1']);
+    deps.levelPreference = 'standard';
+    const state = newState();
+    await runRequirements(deps, state);
+    expect(state.level).toBe('standard');
+  });
+
+  it('--full: PM ส่ง standard มาก็ถามยืนยันแบบ full เท่านั้น', async () =&gt; {
+    const { deps } = makeDeps({ pm: [standardProposal()] }, ['x', 'confirm']);
+    deps.levelPreference = 'full';
+    const state = newState();
+    await runRequirements(deps, state);
+    expect(state.level).toBe('full');
+  });</code></pre>
+  <p class="meta">builder ใหม่ใน <code>tests/helpers/builders.ts</code> (ถัดจาก <code>quickProposal</code>):</p>
+<pre><code>export const standardProposal = (requirements: Requirements = makeRequirements()): PmTurn =&gt; ({
+  message: 'สรุป requirements',
+  status: 'proposal',
+  requirements,
+  level: 'standard',
+  levelReason: 'หลายไฟล์',
+});</code></pre>
+  <p class="meta">เทสต์เดิมทุกเคสของ quick/full ต้องผ่านต่อ ถ้าเคสไหนตอบด้วยเลขลำดับตัวเลือก (เช่น '2') แล้วลำดับเปลี่ยนเพราะมี standard แทรก ให้ปรับเป็นตอบด้วยชื่อ option แล้วจดใน report</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/phases/requirements.test.ts</code><br>คาดหวัง: FAIL เฉพาะเคสใหม่</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แก้ <code>src/level.ts</code></strong></span></p>
+<pre><code>const LEVEL_PROMPT =
+  'ทำแบบไหน? (quick = ทำเลยแบบย่อ 1 task, standard = ออกแบบก่อนแต่ไม่ตรวจ Security design, full = ออกแบบก่อนแบบเต็ม, revise = แก้ requirements)';
+
+export type LevelChoice = 'quick' | 'standard' | 'full' | 'revise';
+
+export function offersQuick(deps: Deps, turn: PmTurn): boolean {
+  const pref = deps.levelPreference;
+  return pref !== 'full' &amp;&amp; pref !== 'standard' &amp;&amp; turn.level === 'quick' &amp;&amp; turn.quickTask !== undefined;
+}
+
+/** PM เสนอ standard (หรือเสนอ quick แต่ user ขอ --standard ซึ่งแปลว่าไม่เอา quick) */
+function offersStandard(deps: Deps, turn: PmTurn): boolean {
+  if (deps.levelPreference === 'full') return false;
+  if (turn.level === 'standard') return true;
+  return deps.levelPreference === 'standard' &amp;&amp; turn.level === 'quick';
+}
+
+/** มีตัวเลือกระดับให้ user เลือก (ไม่ใช่ full ตรง ๆ ซึ่งใช้ confirmAsFull) */
+export function offersChoice(deps: Deps, turn: PmTurn): boolean {
+  return offersQuick(deps, turn) || offersStandard(deps, turn);
+}
+
+export function levelOptions(deps: Deps, turn: PmTurn, flags: readonly RiskCategory[]): LevelChoice[] {
+  const base: LevelChoice[] = offersQuick(deps, turn)
+    ? ['quick', 'standard', 'full', 'revise']
+    : ['standard', 'full', 'revise'];
+  return flags.length ? ['full', ...base.filter((o) =&gt; o !== 'full')] : base;
+}
+
+/** ยอมรับ turn นี้เป็นงานที่มีขั้นออกแบบ (standard/full): ล้าง design สังเคราะห์ของ quick แล้วไป DESIGN */
+export async function acceptDesignLevel(
+  deps: Deps,
+  state: State,
+  turn: PmTurn,
+  level: 'standard' | 'full',
+  flags: readonly RiskCategory[] = [],
+  by?: 'pm' | 'user',
+): Promise&lt;void&gt; {
+  const { store, levelPreference } = deps;
+  clearStaleQuickDesign(state);
+  state.requirements = turn.requirements!;
+  state.level = level;
+  state.quickTask = undefined;
+  state.phase = 'DESIGN';
+  await store.saveArtifact('requirements.json', turn.requirements!);
+  const decidedBy = by ?? (levelPreference === level || turn.level === level ? 'pm' : 'user');
+  logLevelDecided(deps, level, levelPreference === level ? 'user' : decidedBy, turn.levelReason, flags);
+  await store.save(state);
+}
+
+export async function acceptFull(deps: Deps, state: State, turn: PmTurn, flags: readonly RiskCategory[] = []): Promise&lt;void&gt; {
+  await acceptDesignLevel(deps, state, turn, 'full', flags);
+}</code></pre>
+  <p class="meta"><code>acceptFull</code> เดิม log <code>by: levelPreference === 'full' ? 'user' : 'pm'</code> — ตรรกะ decidedBy ข้างบนให้ผลเดียวกันสำหรับ full ที่ PM เสนอ (turn.level full → pm; --full → user) ให้เทสต์เดิมของ log by ยืนยัน</p>
+  <p>ใน <code>decideLevel</code>:</p>
+  <ul>
+    <li><code>show()</code> แสดง quickTask เฉพาะเมื่อมี และข้อความ "ระดับที่ PM เสนอ" ใช้ <code>t.level ?? 'full'</code> เหมือนเดิม</li>
+    <li>แทน <code>options</code> hard-code ด้วย <code>let options = levelOptions(deps, turn, flags)</code> และใน <code>onTurn</code> คำนวณ options ใหม่จาก turn ล่าสุด (เก็บลงตัวแปร) — การถามครั้งแรกใช้ options ของ turn แรก</li>
+    <li>เงื่อนไขถามซ้ำเมื่อความเสี่ยงโผล่ระหว่างตัดสินใจ: เปลี่ยนจาก <code>decision === 'quick' &amp;&amp; offersQuick(...)</code> เป็น <code>(decision === 'quick' || decision === 'standard') &amp;&amp; offersChoice(deps, turn) &amp;&amp; riskAppearedMidDecision</code> และถามซ้ำด้วย <code>levelOptions(deps, turn, flags)</code> (ซึ่ง full ขึ้นก่อนเพราะ flags ไม่ว่าง)</li>
+    <li>ถ้าเลือก <code>quick</code> แต่ <code>!offersQuick(deps, turn)</code>: ถ้า <code>offersStandard(deps, turn)</code> → <code>io.say('PM เปลี่ยนข้อเสนอเป็น standard แล้ว')</code> แล้ว <code>return decideLevel(deps, state, turn, userRisk)</code> (ถามใหม่ด้วยตัวเลือกของ turn นั้น); ไม่งั้นเหมือนเดิม (<code>'PM เปลี่ยนข้อเสนอเป็น full แล้ว'</code> + confirmAsFull)</li>
+    <li>ถ้าเลือก <code>standard</code> → <code>await acceptDesignLevel(deps, state, turn, 'standard', flags); return true;</code></li>
+    <li>เลือก <code>quick</code> (ยังเสนออยู่) → เหมือนเดิม; เลือก <code>full</code> → เส้นทาง full เดิม</li>
+  </ul>
+  <p>ใน <code>src/phases/requirements.ts</code>: เปลี่ยน <code>if (offersQuick(deps, turn))</code> เป็น <code>if (offersChoice(deps, turn))</code> และ import ตาม</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/phases/requirements.test.ts tests/orchestrator.test.ts</code> แล้ว <code>npm test</code> และ <code>npm run typecheck</code><br>คาดหวัง: PASS ทั้งหมด</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/level.ts src/phases/requirements.ts tests/helpers/builders.ts tests/phases/requirements.test.ts
+git commit -m "feat(level): let the user pick quick/standard/full when PM triages" -m "Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;"</code></pre>
+</div>
+
+<!-- ============================ TASK 4 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 4: DESIGN/REVIEW ของ standard + เสนอยก standard → full</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/phases/design.ts</code></li>
+    <li>แก้ไข: <code>src/risk.ts</code> (เพิ่ม <code>designRiskText</code>)</li>
+    <li>เทสต์: <code>tests/phases/design.test.ts</code>, <code>tests/risk.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>logLevelDecided</code> จาก <code>src/level.ts</code>; <code>riskFlags</code>, <code>riskText</code>, <code>mergeRiskFlags</code> จาก <code>src/risk.ts</code></li>
+    <li>ส่งต่อ (Produces): <code>designRiskText(design: Design): string</code> (architecture + ทุก task title/description/acceptanceCriteria + apiContract/dataModel ถ้ามี, ต่อด้วย <code>\n</code>)</li>
+  </ul>
+
+  <p>พฤติกรรม:</p>
+  <ul>
+    <li><code>runDesign</code>: <code>state.level === 'standard'</code> → ไม่เรียก <code>runner.securityDesign</code> และตั้ง <code>state.design = { ...design }</code> โดยไม่มี key <code>securityNotes</code>; ระดับอื่นเหมือนเดิม (ย้ายโค้ดตรวจ design ไปเป็น helper <code>reviewDesignSecurity(deps, design, requirements): Promise&lt;string[] | undefined&gt;</code> ในไฟล์เดียวกัน ใช้ซ้ำใน REVIEW)</li>
+    <li><code>formatDesign</code> ของ standard: ไม่มี <code>securityNotes</code> จะขึ้นข้อความ "Security ตรวจไม่สำเร็จ" ซึ่งผิดความหมาย → ใน <code>src/format.ts</code> ให้รับพารามิเตอร์ที่สอง <code>opts?: { level?: Level }</code> และถ้า level เป็น standard ให้แสดง <code>'  (ระดับ standard ไม่มีการตรวจ Security ของ design)'</code> แทน (เพิ่ม <code>src/format.ts</code> + <code>tests/format.test.ts</code> ในไฟล์ที่แก้ของ task นี้)</li>
+    <li><code>runReview</code> เมื่อ <code>state.level === 'standard'</code>: <code>flags = mergeRiskFlags(riskFlags(riskText(requirements)), riskFlags(designRiskText(design)))</code>; ถ้า flags ไม่ว่าง → <code>io.say(`⚠ requirements/design แตะเรื่อง ${flags.join(', ')} — แนะนำ full (Security ตรวจ design และทุก task)`)</code> แล้วถามด้วยตัวเลือก <code>['full', 'confirm', 'revise']</code>; ไม่มี flags → <code>['confirm', 'revise']</code> เหมือนเดิม</li>
+    <li>เลือก <code>full</code>: <code>state.level = 'full'</code>, <code>securityNotes = await reviewDesignSecurity(...)</code>, <code>state.design = { ...design, securityNotes }</code>, save artifact <code>design.json</code>, <code>logLevelDecided(deps, 'full', 'user', 'standard เจอคำเสี่ยงตอน REVIEW', flags)</code>, save state, แสดง <code>formatDesign(state.design, { level: 'full' })</code> แล้วถาม <code>['confirm', 'revise']</code> (ผลลัพธ์ของ confirm/revise เหมือนเดิม)</li>
+    <li>ระดับ full/quick: REVIEW เหมือนเดิมทุกอย่าง</li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+<pre><code>// tests/risk.test.ts
+describe('designRiskText', () =&gt; {
+  it('รวม architecture และข้อความของทุก task', () =&gt; {
+    const design = makeDesign([makeTask('api'), { ...makeTask('login'), title: 'หน้า login', description: 'เพิ่ม session' }]);
+    const text = designRiskText({ ...design, architecture: 'ใช้ Express' });
+    expect(text).toContain('ใช้ Express');
+    expect(text).toContain('หน้า login');
+    expect(riskFlags(text)).toContain('auth');
+  });
+});
+
+// tests/phases/design.test.ts
+describe('ระดับ standard', () =&gt; {
+  it('runDesign ไม่เรียก securityDesign และ design ไม่มี securityNotes', async () =&gt; {
+    const { deps, runner } = makeDeps({ plans: [makeDesign()] }, []);
+    const state = { ...newState(), requirements: makeRequirements(), level: 'standard' as const, phase: 'DESIGN' as const };
+    await runDesign(deps, state);
+    expect(runner.calls.map((c) =&gt; c.role)).toEqual(['planning']);
+    expect(state.design).not.toHaveProperty('securityNotes');
+    expect(state.phase).toBe('REVIEW');
+  });
+
+  it('REVIEW ไม่มีคำเสี่ยง: ตัวเลือก confirm/revise เหมือนเดิม', async () =&gt; {
+    const { deps, io } = makeDeps({ pm: [asking('สรุป design')] }, ['confirm']);
+    const state = { ...buildState(), level: 'standard' as const, phase: 'REVIEW' as const };
+    await runReview(deps, state);
+    expect(state.phase).toBe('BUILD');
+    expect(io.said.join('\n')).not.toContain('⚠');
+  });
+
+  it('REVIEW เจอคำเสี่ยง: เตือน เสนอ full ก่อน เลือก full → เรียก Security ตรวจ design, level full, แล้ว confirm', async () =&gt; {
+    const events: { event: string; data?: Record&lt;string, unknown&gt; }[] = [];
+    const { deps, runner, io } = makeDeps(
+      { pm: [asking('สรุป design')], securityDesign: [['hash password']] },
+      ['full', 'confirm'],
+    );
+    deps.log = { log: (_l, event, data) =&gt; void events.push({ event, data }) };
+    const state = {
+      ...buildState(),
+      requirements: { ...makeRequirements(), goal: 'ระบบ login' },
+      level: 'standard' as const,
+      phase: 'REVIEW' as const,
+    };
+    await runReview(deps, state);
+
+    expect(io.said.join('\n')).toContain('แนะนำ full');
+    expect(io.asked[0]).toContain('full');
+    expect(runner.calls.filter((c) =&gt; c.role === 'security')).toHaveLength(1);
+    expect(state.level).toBe('full');
+    expect(state.design?.securityNotes).toEqual(['hash password']);
+    expect(state.phase).toBe('BUILD');
+    expect(events.find((e) =&gt; e.event === 'level.decided')?.data).toMatchObject({ level: 'full', by: 'user' });
+  });
+
+  it('REVIEW เจอคำเสี่ยงแต่ user confirm แบบ standard ได้', async () =&gt; {
+    const { deps, runner } = makeDeps({ pm: [asking('สรุป design')] }, ['confirm']);
+    const state = {
+      ...buildState(),
+      requirements: { ...makeRequirements(), goal: 'ระบบ login' },
+      level: 'standard' as const,
+      phase: 'REVIEW' as const,
+    };
+    await runReview(deps, state);
+    expect(state.level).toBe('standard');
+    expect(state.phase).toBe('BUILD');
+    expect(runner.calls.filter((c) =&gt; c.role === 'security')).toHaveLength(0);
+  });
+});</code></pre>
+  <p class="meta">import ให้ครบตามที่ไฟล์เทสต์ต้องใช้ (<code>runDesign, runReview</code>, <code>newState</code>, builders); ถ้า <code>buildState()</code> ตั้ง phase เป็น BUILD อยู่แล้ว การ spread แล้วทับ phase ตามตัวอย่างใช้ได้; <code>io.asked</code> ของ ScriptedIO เก็บ prompt ของ chooseOrText ด้วย ใช้ตรวจว่าคำถามมีคำว่า full ได้ ถ้าคำถามไม่ได้ใส่รายชื่อตัวเลือก ให้ตรวจลำดับตัวเลือกด้วยการตอบ '1' แทนและจดใน report</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/phases/design.test.ts tests/risk.test.ts tests/format.test.ts</code><br>คาดหวัง: FAIL เฉพาะเคสใหม่</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แก้โค้ด</strong></span></p>
+<pre><code>// src/risk.ts
+/** ข้อความของ design ที่ใช้ตรวจความเสี่ยงตอน REVIEW ของงาน standard */
+export function designRiskText(design: Design): string {
+  const parts: string[] = [design.architecture];
+  for (const task of design.tasks) parts.push(task.title, task.description, ...task.acceptanceCriteria);
+  if (design.apiContract) parts.push(typeof design.apiContract === 'string' ? design.apiContract : JSON.stringify(design.apiContract));
+  if (design.dataModel) parts.push(typeof design.dataModel === 'string' ? design.dataModel : JSON.stringify(design.dataModel));
+  return parts.join('\n');
+}
+
+// src/phases/design.ts
+async function reviewDesignSecurity(deps: Deps, design: Design, requirements: Requirements): Promise&lt;string[] | undefined&gt; {
+  try {
+    return await deps.runner.securityDesign({ design, requirements });
+  } catch (e) {
+    (deps.log ?? nullLogger).log('WARN', 'security.design_failed', { reason: String(e) });
+    deps.io.say(`[Security] ตรวจ design ไม่สำเร็จ (${String(e)}) — ยังไม่มีผลตรวจความปลอดภัยของ design นี้`);
+    return undefined;
+  }
+}
+
+// ใน runDesign แทนบล็อก securityNotes เดิม
+    if (state.level === 'standard') {
+      // standard ไม่มี Security ตรวจ design (Security ตรวจเฉพาะ task ที่แตะไฟล์เสี่ยงตอน BUILD)
+      state.design = { ...design };
+      delete state.design.securityNotes;
+    } else {
+      const securityNotes = await reviewDesignSecurity(deps, design, state.requirements);
+      state.design = { ...design, securityNotes };
+    }
+
+// ใน runReview หลัง io.say(formatDesign(design, { level: state.level }))
+  let options: readonly ('full' | 'confirm' | 'revise')[] = ['confirm', 'revise'];
+  const flags =
+    state.level === 'standard' &amp;&amp; state.requirements
+      ? mergeRiskFlags(riskFlags(riskText(state.requirements)), riskFlags(designRiskText(design)))
+      : [];
+  if (flags.length) {
+    io.say(`⚠ requirements/design แตะเรื่อง ${flags.join(', ')} — แนะนำ full (Security ตรวจ design และทุก task)`);
+    options = ['full', 'confirm', 'revise'];
+  }
+  let decision = await decide(deps, state, 'ยืนยันแบบนี้ไหม?', options);
+  if (decision === 'full') {
+    const securityNotes = await reviewDesignSecurity(deps, design, state.requirements!);
+    state.level = 'full';
+    state.design = { ...design, securityNotes };
+    await store.saveArtifact('design.json', state.design);
+    logLevelDecided(deps, 'full', 'user', 'standard เจอคำเสี่ยงตอน REVIEW', flags);
+    await store.save(state);
+    io.say(formatDesign(state.design, { level: 'full' }));
+    decision = await decide(deps, state, 'ยืนยันแบบนี้ไหม?', ['confirm', 'revise'] as const);
+  }
+  // จากนี้ใช้ state.design (อาจมี securityNotes ใหม่) ใน initProgress และส่วน confirm/revise เดิม</code></pre>
+  <p class="meta">ตรวจชื่อ field จริงของ <code>Design</code> (<code>architecture</code>, <code>apiContract</code>, <code>dataModel</code>, <code>tasks[].acceptanceCriteria</code>) ใน <code>src/schemas.ts</code> แล้วปรับ <code>designRiskText</code> ให้ตรง type (ถ้า field เป็น string อยู่แล้วไม่ต้อง JSON.stringify); <code>design.ts</code> import <code>logLevelDecided</code> จาก <code>../level</code> ต้องไม่ทำให้เกิด import วน (level.ts ไม่ import phases)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/phases/design.test.ts tests/risk.test.ts tests/format.test.ts</code> แล้ว <code>npm test</code> และ <code>npm run typecheck</code><br>คาดหวัง: PASS ทั้งหมด</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/phases/design.ts src/risk.ts src/format.ts tests/phases/design.test.ts tests/risk.test.ts tests/format.test.ts
+git commit -m "feat(level): standard skips design security review; offer full at REVIEW when risky" -m "Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;"</code></pre>
+</div>
+
+<!-- ============================ TASK 5 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 5: BUILD — Security ตามไฟล์เสี่ยง + quick เสนอยกเป็น standard + เอกสาร</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/state.ts</code> (<code>TaskProgress.startTree?</code>), <code>src/phases/build.ts</code>, <code>src/level.ts</code> (<code>escalateToFull</code> → <code>escalateLevel</code>, <code>restoreBaseDesign</code> ลบ <code>startTree</code>)</li>
+    <li>แก้ไข: <code>README.md</code> (หัวข้อระดับงาน), <code>claude-skill/agent-team/SKILL.md</code> (<code>[--quick|--standard|--full]</code>)</li>
+    <li>เทสต์: <code>tests/phases/build.test.ts</code>, <code>tests/install-skill.test.ts</code> ถ้าเทสต์ SKILL ตรวจข้อความ flag</li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>riskyFiles</code> (Task 1), <code>riskFlags</code>, <code>Deps.snapshots</code>/<code>trySnapshot</code>/<code>tryDiff</code> ที่มีอยู่ใน build.ts, <code>progress.reviewedTree</code></li>
+    <li>ส่งต่อ (Produces): <code>escalateLevel(deps, state, task, progress, level: 'standard' | 'full'): void</code>; <code>TaskProgress.startTree?: string</code></li>
+  </ul>
+
+  <p>พฤติกรรม:</p>
+  <ul>
+    <li><code>runRound</code>: ถ้า <code>progress.rounds === 0 &amp;&amp; progress.startTree === undefined</code> → <code>progress.startTree = await trySnapshot(...)</code> <strong>ก่อน</strong> <code>runWorker</code></li>
+    <li>ตอน QA ผ่าน (ก่อนถึง step security): <code>state.level === 'full'</code> หรือไม่มี level → เรียก Security เหมือนเดิม (log <code>security.trigger</code> reason <code>'level'</code>); quick/standard → หาไฟล์ของ task = union ของ <code>result.filesChanged</code> กับ <code>files</code> จาก <code>tryDiff(deps, task, round, progress.startTree, after)</code> (เมื่อมีทั้งคู่) → <code>risky = riskyFiles(files)</code>, <code>contentFlags = riskFlags(taskDiff?.diff ?? '')</code>; มีอย่างใดอย่างหนึ่ง → <code>io.say(`[Security] ${task.id}: ตรวจเพราะแตะ ${รายการ file (category) สูงสุด 5 รายการ + ", …" ถ้าเกิน}${contentFlags.length ? ` / เนื้อหาเกี่ยวกับ ${contentFlags.join(', ')}` : ''}`)</code> แล้วเรียก Security (reason <code>'risky-files'</code>, <code>files</code> = ไฟล์เสี่ยง, <code>categories</code> = หมวดไม่ซ้ำ รวม contentFlags); ไม่มี → ข้าม (reason <code>'none'</code>) และ securityReviewed = false</li>
+    <li>พารามิเตอร์ <code>skipSecurity</code>/<code>quick</code> เดิมที่ใช้ตัดสิน security ให้แทนด้วยการตัดสินตามข้างบน (ส่วนที่ใช้ <code>quick</code> กับจำนวนรอบ continue และตัวเลือก escalate ยังใช้ <code>state.level === 'quick'</code>)</li>
+    <li><code>escalate</code> สำหรับ quick: options <code>['continue', 'accept', 'abort', 'standard', 'full']</code>, คำถามต่อท้าย <code>', standard = ยกระดับเป็น standard (แนะนำ: Planning ออกแบบใหม่ ไม่ตรวจ Security design), full = ยกระดับเป็นแบบเต็ม)'</code>, prompt ถึง PM อธิบายทั้ง standard และ full; decision <code>'standard'</code>/<code>'full'</code> → <code>escalateLevel(deps, state, task, progress, decision)</code> แล้ว <code>return 'escalated'</code></li>
+    <li><code>escalateLevel</code> = <code>escalateToFull</code> เดิมที่ตั้ง <code>state.level = level</code> และ log <code>logLevelDecided(deps, level, 'user', `QA ไม่ผ่านครบ ${progress.rounds} รอบในโหมด quick`, [])</code>; designFeedback เหมือนเดิม</li>
+    <li><code>restoreBaseDesign</code>: ลบ <code>startTree</code> ด้วย (ที่เดียวกับที่ลบ reviewedTree)</li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail — ท้าย <code>tests/phases/build.test.ts</code></strong></span></p>
+<pre><code>describe('runBuild: Security ตามไฟล์เสี่ยง (quick/standard)', () =&gt; {
+  /** snapshot ปลอมที่ diff ระหว่าง startTree กับรอบล่าสุดคืนไฟล์ที่กำหนด */
+  const snapsWithFiles = (files: string[], diff = '') =&gt; {
+    let n = 0;
+    return {
+      snapshot: async () =&gt; `t${++n}`,
+      diff: async () =&gt; ({ diff, files, truncated: false }),
+    };
+  };
+
+  it('standard ไม่แตะไฟล์เสี่ยง: ไม่เรียก Security, log security.trigger none', async () =&gt; {
+    const events: { event: string; data?: Record&lt;string, unknown&gt; }[] = [];
+    const { deps, runner } = makeDeps({ qa: [passReport('api')] }, []);
+    deps.snapshots = snapsWithFiles(['src/components/Button.tsx']);
+    deps.log = { log: (_l, event, data) =&gt; void events.push({ event, data }) };
+    const state = { ...buildState(single()), level: 'standard' as const };
+    await runBuild(deps, state);
+    expect(roles(runner.calls)).toEqual(['backend', 'qa']);
+    expect(state.progress.api?.securityReviewed).toBe(false);
+    expect(events.find((e) =&gt; e.event === 'security.trigger')?.data).toMatchObject({ taskId: 'api', reason: 'none' });
+  });
+
+  it('standard แตะ src/auth/login.ts: เรียก Security พร้อมบอกเหตุผล', async () =&gt; {
+    const { deps, runner, io } = makeDeps({ qa: [passReport('api')] }, []);
+    deps.snapshots = snapsWithFiles(['src/auth/login.ts']);
+    const state = { ...buildState(single()), level: 'standard' as const };
+    await runBuild(deps, state);
+    expect(roles(runner.calls)).toEqual(['backend', 'qa', 'security']);
+    expect(io.said.join('\n')).toContain('ตรวจเพราะแตะ src/auth/login.ts (auth)');
+  });
+
+  it('quick: filesChanged ของ worker ก็นับ (ไม่มี snapshots)', async () =&gt; {
+    const { deps, runner } = makeDeps({ qa: [passReport('quick')] }, []);
+    const task = { ...makeTask('quick'), id: 'quick' };
+    const state = { ...buildState(makeDesign([task])), level: 'quick' as const };
+    // FakeRunner รายงาน filesChanged = ['src/quick.ts'] ซึ่งไม่เสี่ยง
+    await runBuild(deps, state);
+    expect(roles(runner.calls)).not.toContain('security');
+  });
+
+  it('เนื้อหา diff มีคำเสี่ยง (child_process) แม้ชื่อไฟล์ธรรมดา: เรียก Security', async () =&gt; {
+    const { deps, runner } = makeDeps({ qa: [passReport('api')] }, []);
+    deps.snapshots = snapsWithFiles(['src/tools/run.ts'], "+import { exec } from 'child_process';");
+    const state = { ...buildState(single()), level: 'standard' as const };
+    await runBuild(deps, state);
+    expect(roles(runner.calls)).toContain('security');
+  });
+
+  it('full: เรียก Security ทุก task เหมือนเดิม และเก็บ startTree ตอนรอบแรก', async () =&gt; {
+    const { deps, runner } = makeDeps({ qa: [passReport('api')] }, []);
+    deps.snapshots = snapsWithFiles(['README.md']);
+    const state = buildState(single());
+    await runBuild(deps, state);
+    expect(roles(runner.calls)).toEqual(['backend', 'qa', 'security']);
+    expect(state.progress.api?.startTree).toBe('t1');
+  });
+});
+
+describe('runBuild: quick เสนอยกเป็น standard', () =&gt; {
+  it('quick ไม่ผ่านครบรอบ เลือก standard → DESIGN ด้วย level standard, log by user', async () =&gt; {
+    const events: { event: string; data?: Record&lt;string, unknown&gt; }[] = [];
+    const task = { ...makeTask('quick'), id: 'quick' };
+    const { deps } = makeDeps(
+      { qa: fails('quick', 2), pm: [asking('ค้าง 2 รอบ')] },
+      ['standard'],
+    );
+    deps.log = { log: (_l, event, data) =&gt; void events.push({ event, data }) };
+    const state = { ...buildState(makeDesign([task])), level: 'quick' as const };
+    state.progress.quick = { ...state.progress.quick!, maxRounds: 2 };
+    await runBuild(deps, state);
+    expect(state.phase).toBe('DESIGN');
+    expect(state.level).toBe('standard');
+    expect(state.designFeedback).toContain('ไม่ผ่าน QA');
+    expect(events.find((e) =&gt; e.event === 'level.decided')?.data).toMatchObject({ level: 'standard', by: 'user' });
+  });
+});</code></pre>
+  <p class="meta">เคส quick เดิมใน build.test.ts ที่ตรวจว่า "งาน quick ไม่เรียก Security" ยังต้องผ่าน (FakeRunner รายงานไฟล์ <code>src/&lt;id&gt;.ts</code> ซึ่งไม่เสี่ยง); เคส escalate ของ quick ที่ตรวจรายการตัวเลือกหรือข้อความคำถามเดิม ให้ปรับตามตัวเลือกใหม่และจดใน report; ถ้า <code>buildState</code>/<code>makeTask</code> ไม่รองรับ id 'quick' แบบนี้ ให้ดูเทสต์ "งาน quick" ที่มีอยู่แล้ว (บรรทัด ~333-434) และสร้าง state แบบเดียวกัน</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/phases/build.test.ts</code><br>คาดหวัง: FAIL เฉพาะเคสใหม่</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แก้โค้ด</strong></span></p>
+<pre><code>// src/state.ts ใน TaskProgress
+  /** snapshot ก่อน worker รอบแรกของ task นี้ ใช้หาไฟล์ทั้งหมดที่ task แตะ (ตัดสิน Security ของ quick/standard) */
+  startTree?: string;
+
+// src/phases/build.ts — helper ใหม่
+const MAX_LISTED_FILES = 5;
+
+interface SecurityDecision {
+  run: boolean;
+  reason: 'level' | 'risky-files' | 'none';
+  files: string[];
+  categories: string[];
+  note?: string;
+}
+
+async function decideSecurity(
+  deps: Deps,
+  state: State,
+  task: Task,
+  progress: TaskProgress,
+  round: number,
+  result: WorkerResult,
+  after: string | undefined,
+): Promise&lt;SecurityDecision&gt; {
+  if (state.level !== 'quick' &amp;&amp; state.level !== 'standard') return { run: true, reason: 'level', files: [], categories: [] };
+  const taskDiff =
+    progress.startTree !== undefined &amp;&amp; after !== undefined
+      ? await tryDiff(deps, task, round, progress.startTree, after)
+      : undefined;
+  const files = [...new Set([...result.filesChanged, ...(taskDiff?.files ?? [])])];
+  const risky = riskyFiles(files);
+  const contentFlags = riskFlags(taskDiff?.diff ?? '');
+  if (risky.length === 0 &amp;&amp; contentFlags.length === 0) return { run: false, reason: 'none', files: [], categories: [] };
+  const listed = risky.slice(0, MAX_LISTED_FILES).map((r) =&gt; `${r.file} (${r.category})`).join(', ');
+  const more = risky.length &gt; MAX_LISTED_FILES ? ', …' : '';
+  const content = contentFlags.length ? `${listed ? ' / ' : ''}เนื้อหาเกี่ยวกับ ${contentFlags.join(', ')}` : '';
+  return {
+    run: true,
+    reason: 'risky-files',
+    files: risky.map((r) =&gt; r.file),
+    categories: [...new Set([...risky.map((r) =&gt; r.category), ...contentFlags])],
+    note: `[Security] ${task.id}: ตรวจเพราะแตะ ${listed}${more}${content}`,
+  };
+}
+// ใน runRound: รับ state แทน skipSecurity; ก่อน runWorker
+//   if (progress.rounds === 0 &amp;&amp; progress.startTree === undefined) progress.startTree = await trySnapshot(deps, task, round);
+// หลัง QA ผ่าน แทน `if (skipSecurity) return ...`:
+//   const security = await decideSecurity(deps, state, task, progress, round, result, after);
+//   log.log('INFO', 'security.trigger', { taskId: task.id, round, reason: security.reason, files: security.files, categories: security.categories });
+//   if (!security.run) return { report: qaReport, limitHit: false, securityReviewed: false };
+//   if (security.note) io.say(security.note);
+//   ... step = 'security' แล้วโค้ด security เดิม</code></pre>
+  <p class="meta">หมายเหตุ: <code>startTree</code> ที่ได้ก่อนรอบแรกอาจเป็น tree เดียวกับ baseline ของ QA ในโค้ดปัจจุบัน — ห้ามเปลี่ยนตรรกะ <code>reviewedTree</code>/<code>lastRoundLimit</code> ที่มีอยู่; ตัวแปร <code>after</code> ใน runRound (snapshot หลัง worker) ใช้ร่วมกับ decideSecurity ได้เลย ถ้าตั้งชื่อต่างจากนี้ให้ใช้ชื่อจริงในไฟล์</p>
+<pre><code>// src/level.ts — แทน escalateToFull
+export function escalateLevel(
+  deps: Deps,
+  state: State,
+  task: Task,
+  progress: TaskProgress,
+  level: 'standard' | 'full',
+): void {
+  state.level = level;
+  state.quickTask = undefined;
+  state.phase = 'DESIGN';
+  restoreBaseDesign(state);
+  state.designFeedback =
+    `ลองทำแบบ quick (task "${task.title}") แล้วไม่ผ่าน QA ครบ ${progress.rounds} รอบ ` +
+    `ปัญหาที่ค้าง: ${JSON.stringify(progress.lastReport?.issues ?? [])} — ` +
+    'โค้ดที่ worker ทำไปแล้วยังอยู่ในโปรเจกต์ ให้ออกแบบใหม่โดยใช้หรือแก้โค้ดนั้นตามสมควร';
+  logLevelDecided(deps, level, 'user', `QA ไม่ผ่านครบ ${progress.rounds} รอบในโหมด quick`, []);
+}
+// restoreBaseDesign: ใน loop ที่ลบ reviewedTree เพิ่ม `delete progress.startTree;`</code></pre>
+  <p class="meta"><code>type Decision</code> ใน build.ts เพิ่ม <code>'standard'</code>; จุดเรียก <code>escalateToFull</code> ใน build.ts เปลี่ยนเป็น <code>escalateLevel(..., decision)</code> สำหรับทั้ง standard และ full</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: เอกสาร</strong></span></p>
+  <p>README หัวข้อ <code>## ระดับงาน: quick / full</code> → เปลี่ยนเป็น <code>## ระดับงาน: quick / standard / full</code> และเพิ่ม:</p>
+<pre><code>- **standard** — งานขนาดกลาง (หลายไฟล์/หลาย task แต่ไม่ใช่ระบบใหม่) มี Planning และให้คุณยืนยัน design แต่ไม่มี Security ตรวจ design ส่วน Security ตรวจ task เฉพาะที่แตะไฟล์เสี่ยง
+
+Security ใน quick/standard: หลัง QA ผ่าน ถ้า task แตะไฟล์เสี่ยง (auth/session/permission, .env/secret/key, payment, migration/sql/schema, upload, cors/webhook/proxy, Dockerfile/compose/CI, dependency manifest) หรือ diff มีคำเสี่ยง (เช่น child_process, raw SQL) จะเรียก Security ตรวจ task นั้นพร้อมบอกเหตุผล ไฟล์เทสต์ไม่นับ (ดูใน log: security.trigger)
+
+ยกระดับ (คุณเป็นคนเลือกเสมอ ไม่มีการลดระดับเอง):
+- quick ไม่ผ่าน QA ครบรอบ → เลือก standard (แนะนำ) หรือ full ได้ นอกจาก continue/accept/abort
+- standard ที่ requirements/design มีคำเสี่ยง → ตอนยืนยัน design จะเตือน ⚠ และมีตัวเลือก full (Security ตรวจ design ทันทีโดยไม่ต้องออกแบบใหม่)
+
+    agent-team --standard   # ไม่เสนอ quick (standard หรือ full)</code></pre>
+  <p class="meta">SKILL.md: ทุกที่ที่เขียน <code>[--quick|--full]</code> เป็น <code>[--quick|--standard|--full]</code>; README ส่วน headless ก็เช่นกัน</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/phases/build.test.ts</code> แล้ว <code>npm test</code> และ <code>npm run typecheck</code><br>คาดหวัง: PASS ทั้งหมด</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: Commit</strong></span></p>
+<pre><code>git add src/state.ts src/phases/build.ts src/level.ts README.md claude-skill/agent-team/SKILL.md tests/phases/build.test.ts
+git commit -m "feat(build): risky-file Security for quick/standard and offer standard when quick fails" -m "Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;"</code></pre>
+</div>
+
+</body>
+</html>

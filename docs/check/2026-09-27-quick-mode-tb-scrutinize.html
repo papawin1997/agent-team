@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scrutinize: quick mode</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --fg:#1f2933; --muted:#616e7c; --border:#d9dee5; --code:#eef1f5;
+          --blocker:#c62828; --major:#d97706; --nit:#7b8794; --fts:#b58900; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#12161c; --card:#1b2129; --fg:#e4e8ee; --muted:#9aa5b1; --border:#2e3742; --code:#232b35; } }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.7 -apple-system,"Segoe UI","Noto Sans Thai",sans-serif; }
+  main { max-width:900px; margin:0 auto; padding:24px 16px; }
+  h1 { font-size:22px; margin:0 0 4px; line-height:1.35; } h2 { font-size:17px; margin:28px 0 10px; }
+  .muted { color:var(--muted); }
+  code { background:var(--code); padding:1px 5px; border-radius:4px; font-size:13px; }
+  pre { background:var(--code); padding:8px 10px; border-radius:6px; font-size:13px; overflow-x:auto; }
+  .card { background:var(--card); border:1px solid var(--border); border-left:6px solid var(--nit); border-radius:8px; padding:12px 16px; margin:12px 0; }
+  .card.major { border-left-color:var(--major); } .card.blocker { border-left-color:var(--blocker); }
+  .card h3 { margin:0 0 6px; font-size:15px; line-height:1.5; }
+  .sev { display:inline-block; font-size:11px; font-weight:bold; color:#fff; padding:1px 8px; border-radius:10px; margin-right:6px; background:var(--nit); }
+  .major .sev { background:var(--major); } .blocker .sev { background:var(--blocker); }
+  dt { font-weight:bold; font-size:13px; color:var(--muted); margin-top:6px; } dd { margin:0; }
+  .verdict { display:inline-block; background:var(--fts); color:#fff; font-weight:bold; padding:6px 14px; border-radius:16px; }
+  ul { padding-left:20px; }
+</style>
+</head>
+<body>
+<main>
+<h1>Scrutinize: โหมด quick + PM จัดระดับงาน</h1>
+<div class="muted">2026-09-27 · branch feat/quick-mode · 36ae4bd..aac3c2c · plan: docs/plan/2026-09-27-quick-mode.html</div>
+
+<h2>เจตนา</h2>
+<p>ให้งานเล็กเดินทางลัด: 1 task → worker → QA (≤2 รอบ) → ส่งมอบ ไม่ผ่าน Planning/REVIEW/Security ส่วนงานใหญ่หรืองานเสี่ยงยังเดินแบบเต็ม โดยให้ PM จัดระดับ และมีการเช็กคำเสี่ยงช่วยกันไว้อีกชั้น</p>
+<p><strong>มีวิธีที่ง่ายกว่าไหม:</strong></p>
+<ul>
+  <li><strong>ทางที่ง่ายสุด:</strong> มีแค่ <code>--quick</code> ที่ผู้ใช้สั่งเอง ไม่ต้องมี PM จัดระดับ ไม่ต้องจัดการกรณี PM เสนอใหม่กลางทาง และไม่ต้องมี baseDesign</li>
+  <li><strong>ทำไมไม่เลือกทางนั้น:</strong> ผู้ใช้ตั้งใจเลือกให้ PM จัดระดับเพื่อให้ระบบตัดสินใจแทน และผลลัพธ์ก็ทำได้ตามนั้น</li>
+  <li><strong>ต้นทุน:</strong> branch นี้เพิ่มโค้ดประมาณ 1,300 บรรทัด และ <code>requirements.ts</code> โตเป็น 240 บรรทัด มีฟังก์ชันตัดสินระดับ 5–6 ตัวพันกันอยู่ (<code>decideLevel</code>, <code>confirmAsFull</code>, <code>acceptFull</code>, <code>clearStaleQuickDesign</code>, <code>restoreBaseDesign</code>)</li>
+  <li><strong>ควรทำก่อนโปรเจกต์ย่อย D:</strong> D (ยกระดับอัตโนมัติ + standard) จะมาเพิ่มในจุดเดียวกัน จึงควรแยกเรื่องระดับงานออกเป็น module ของตัวเอง (ดู nit ข้อสุดท้าย)</li>
+</ul>
+
+<h2>ไล่แล้วยืนยัน</h2>
+<ul>
+  <li><strong>เทสต์:</strong> <code>npm test</code> ผ่าน 882 เทสต์ และ typecheck ไม่มี error (รันเองหลัง commit <code>aac3c2c</code>)</li>
+  <li><strong>งาน full → ขอแก้ → quick → ขอแก้ → full:</strong>
+    <ul>
+      <li>ตอนรับ quick: <code>requirements.ts:213-223</code> เก็บ design และ progress เดิมไว้ใน <code>baseDesign</code>/<code>baseProgress</code> ครั้งเดียว (ไม่เขียนทับ)</li>
+      <li>design ของ quick สร้างจาก architecture/apiContract เดิม</li>
+      <li>ตอนกลับไป full: <code>restoreBaseDesign</code> (<code>domain.ts:84-92</code>) คืน design เดิมให้ Planning เป็น previousDesign และคืน progress เดิม task ที่ไม่เปลี่ยนจึงไม่ถูก build ใหม่</li>
+    </ul></li>
+  <li><strong>ยกระดับ quick → full ตอน escalate:</strong> <code>build.ts:205-217</code> คืน base design ถ้ามี ถ้าไม่มีก็ล้างทิ้ง แล้วใส่บริบทลงใน <code>designFeedback</code></li>
+  <li><strong>งาน quick ที่ resume ตอนอยู่ใน BUILD:</strong> <code>runBuild</code> อ่าน <code>state.level</code> ที่บันทึกไว้ จึงยังข้าม Security ต่อได้ถูก</li>
+  <li><strong>ข้อความที่ผู้ใช้พิมพ์เอง:</strong> ถูกเช็กคำเสี่ยงด้วย (<code>requirements.ts:20-31</code>, :162)</li>
+</ul>
+
+<h2>Findings</h2>
+
+<div class="card major">
+  <h3><span class="sev">MAJOR</span>การเช็ก SQL ไม่จับ SQL จริงที่พบบ่อย (<code>src/risk.ts:53</code>)</h3>
+  <dl>
+    <dt>ทำไมสำคัญ</dt>
+    <dd>งาน quick ข้าม Security และการเช็กคำเสี่ยงเป็นชั้นเดียวที่ไม่ขึ้นกับการตัดสินของ PM ช่องว่างระหว่าง <code>select</code>/<code>update</code> กับ <code>from</code>/<code>set</code> ที่ยอมให้ไม่เกิน 8 ตัวอักษร ทำให้ query ที่มีรายชื่อคอลัมน์หรือชื่อตารางยาวหลุดทั้งหมด</dd>
+    <dt>หลักฐาน (probe ด้วย tsx บนโค้ดจริง)</dt>
+    <dd><pre>[]      | SELECT id, name, email FROM users
+[]      | update user_profiles set email
+["sql"] | select * from orders
+["sql"] | UPDATE users SET role = 1</pre>
+      regex ปัจจุบัน: <code>\bselect\b[^\n]{0,8}?\bfrom\b</code> และ <code>\bupdate\b[^\n]{0,8}?\bset\b</code></dd>
+    <dt>แนวทางแก้ไข</dt>
+    <dd>เปลี่ยนจากจำกัดความยาวช่องว่าง มาใช้รูปแบบ token ของ SQL เช่น <code>\bselect\s+(\*|[\w.]+(\s*,\s*[\w.]+)*)\s+from\s+[\w.]+</code> และ <code>\bupdate\s+[\w.]+\s+set\s+[\w.]+\s*=</code> ซึ่งยังไม่จับ "select a color from the palette" และ "update the header text and set color" แล้วเพิ่มตัวอย่างสองบรรทัดแรกของ probe เข้าเทสต์</dd>
+  </dl>
+</div>
+
+<div class="card">
+  <h3><span class="sev">NIT</span>หมวด delete ภาษาไทย (มี "ลบ" + "ทุก"/"ทั้งหมด" ตรงไหนก็ได้) จับงานแก้ไขทั่วไปเยอะ</h3>
+  <dl>
+    <dt>ทำไมสำคัญ</dt><dd>คำเตือนขึ้นบ่อยเกินจนผู้ใช้เลิกสนใจ ซึ่งทำให้คำเตือนที่เป็นเรื่องจริงอ่อนค่าลง</dd>
+    <dt>หลักฐาน</dt><dd><pre>["delete"] | แก้ปุ่มให้ทุกหน้าลบเงาออก
+["delete"] | ลบ console.log ทุกไฟล์
+["delete"] | ลบ todo ได้ทุกรายการ</pre></dd>
+    <dt>แนวทางแก้ไข</dt><dd>เลือกได้สองแบบ:
+      <ul>
+        <li>ให้ "ลบ" ต้องอยู่ใกล้คำที่หมายถึงข้อมูล เช่น ข้อมูล, ผู้ใช้, ลูกค้า, บัญชี, ตาราง, ฐานข้อมูล</li>
+        <li>ให้ "ทั้งหมด"/"ทุก" ต้องตามหลัง "ลบ" ภายในประมาณ 20 ตัวอักษร</li>
+      </ul>
+      แล้วเพิ่มสามบรรทัดใน probe เป็นเทสต์กรณีที่ต้องไม่ถูกจับ</dd>
+  </dl>
+</div>
+
+<div class="card">
+  <h3><span class="sev">NIT</span><code>deps.levelHintSent</code> เก็บ state ไว้ใน object ของ dependency (<code>requirements.ts:42-44</code>)</h3>
+  <dl>
+    <dt>ทำไมสำคัญ</dt><dd><code>Deps</code> คือของที่ส่งเข้ามาจากข้างนอก การเก็บ flag ไว้ในนั้นทำให้พฤติกรรมขึ้นกับว่า object ถูกใช้ซ้ำหรือเปล่า เช่นเทสต์ที่ใช้ deps ชุดเดียวหลายครั้ง หรือ runner แบบ headless ในโปรเจกต์ย่อย B ที่อาจรันหลายงานต่อ process</dd>
+    <dt>หลักฐาน</dt><dd><code>if (deps.levelPreference &amp;&amp; !deps.levelHintSent) { … deps.levelHintSent = true; }</code></dd>
+    <dt>แนวทางแก้ไข</dt><dd>ให้ <code>runTeam</code> ถือ flag นี้ไว้เป็นตัวแปรของการรันแต่ละครั้ง แล้วส่งเข้า <code>runRequirements</code> หรือเก็บไว้ใน <code>state</code> ในฐานะ "ส่ง hint แล้วในรอบรันนี้"</dd>
+  </dl>
+</div>
+
+<div class="card">
+  <h3><span class="sev">NIT</span>คำเสี่ยงจากข้อความผู้ใช้สะสมเฉพาะรอบรันปัจจุบัน และไม่ลดลงเมื่อผู้ใช้ถอนคำขอ</h3>
+  <dl>
+    <dt>ทำไมสำคัญ</dt><dd>
+      <ul>
+        <li>ถ้า resume งานกลางการคุยกับ PM ข้อความเสี่ยงที่พิมพ์ในรอบก่อนจะไม่ถูกนับ</li>
+        <li>ถ้าผู้ใช้พิมพ์ "ไม่เอา login แล้ว" ก็ยังถูกเตือนเรื่อง auth ต่อ</li>
+      </ul>
+      ทั้งสองกรณีเป็นแค่คำเตือน ผลกระทบจึงต่ำ</dd>
+    <dt>หลักฐาน</dt><dd><code>userRisk</code> เป็นตัวแปรใน <code>runRequirements</code> (:22) ที่เริ่มว่างทุกครั้งที่เรียก และมีแต่ <code>mergeRiskFlags</code> ไม่มีการลบ</dd>
+    <dt>แนวทางแก้ไข</dt><dd>บันทึกข้อจำกัดนี้ไว้ใน README (คำเตือนเป็นแบบ best-effort อยู่แล้ว) หรือเก็บ <code>userRisk</code> ลง state เพื่อให้คงอยู่หลัง resume</dd>
+  </dl>
+</div>
+
+<div class="card">
+  <h3><span class="sev">NIT</span>แยก logic ตัดสินระดับงานออกจาก <code>requirements.ts</code> ก่อนเริ่มโปรเจกต์ย่อย D</h3>
+  <dl>
+    <dt>ทำไมสำคัญ</dt><dd>D จะเพิ่มระดับ standard และการยกระดับอัตโนมัติในจุดเดียวกัน ถ้าไม่แยกตอนนี้ ไฟล์ phase จะกลายเป็นที่รวมกฎของระดับงานทั้งหมด</dd>
+    <dt>หลักฐาน</dt><dd><code>requirements.ts</code> 240 บรรทัด ในนั้นมีฟังก์ชันเรื่องระดับ 5 ตัว ส่วน <code>build.ts</code> ก็มี logic ยกระดับ/คืน base design แยกอยู่อีกชุด</dd>
+    <dt>แนวทางแก้ไข</dt><dd>สร้าง <code>src/level/</code> หรือขยาย <code>src/level.ts</code> ให้รวม <code>decideLevel</code>, <code>acceptQuick</code>, <code>acceptFull</code>, <code>escalateToFull</code> และ <code>restoreBaseDesign</code> ไว้ด้วยกัน แล้วให้ phase เรียกใช้ ไม่ต้องเปลี่ยนพฤติกรรม</dd>
+  </dl>
+</div>
+
+<h2>Verdict</h2>
+<p><span class="verdict">fix-then-ship</span></p>
+<p>เหตุผลหลัก: flow ของ quick, การยกระดับ, baseDesign และการ resume ไล่แล้วถูกต้อง แต่การเช็ก SQL ซึ่งเป็นชั้นป้องกันเดียวที่ไม่ขึ้นกับ PM สำหรับงานที่ข้าม Security ยังหลุด query จริงที่พบบ่อย แก้ regex พร้อมเทสต์ได้ในไม่กี่บรรทัด ส่วน nit ทำพร้อมกันหรือเก็บไปทำก่อนเริ่ม D ก็ได้</p>
+</main>
+</body>
+</html>

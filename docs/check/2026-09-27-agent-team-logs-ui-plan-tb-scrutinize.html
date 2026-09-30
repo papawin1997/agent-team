@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scrutinize: logs UI plan</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --fg:#1f2933; --muted:#616e7c; --border:#d9dee5; --code:#eef1f5;
+          --blocker:#c62828; --major:#d97706; --nit:#7b8794; --fts:#b58900; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#12161c; --card:#1b2129; --fg:#e4e8ee; --muted:#9aa5b1; --border:#2e3742; --code:#232b35; } }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.7 -apple-system,"Segoe UI","Noto Sans Thai",sans-serif; }
+  main { max-width:900px; margin:0 auto; padding:24px 16px; }
+  h1 { font-size:22px; margin:0 0 4px; line-height:1.35; } h2 { font-size:17px; margin:28px 0 10px; }
+  .muted { color:var(--muted); }
+  code { background:var(--code); padding:1px 5px; border-radius:4px; font-size:13px; }
+  .card { background:var(--card); border:1px solid var(--border); border-left:6px solid var(--nit); border-radius:8px; padding:12px 16px; margin:12px 0; }
+  .card.major { border-left-color:var(--major); } .card.blocker { border-left-color:var(--blocker); }
+  .card h3 { margin:0 0 6px; font-size:15px; line-height:1.5; }
+  .sev { display:inline-block; font-size:11px; font-weight:bold; color:#fff; padding:1px 8px; border-radius:10px; margin-right:6px; background:var(--nit); }
+  .major .sev { background:var(--major); } .blocker .sev { background:var(--blocker); }
+  dt { font-weight:bold; font-size:13px; color:var(--muted); margin-top:6px; } dd { margin:0; }
+  .verdict { display:inline-block; background:var(--fts); color:#fff; font-weight:bold; padding:6px 14px; border-radius:16px; }
+  ul { padding-left:20px; }
+</style>
+</head>
+<body>
+<main>
+<h1>Scrutinize: plan <code>2026-09-27-agent-team-logs-ui.html</code></h1>
+<div class="muted">2026-09-27 · review ตัว plan เทียบกับโค้ดปัจจุบันบน main (f5c4d32) — ยังไม่มีโค้ดใหม่</div>
+
+<h2>เจตนา</h2>
+<p>ทำให้หน้า <code>agent-team logs</code> ใช้งานได้เมื่อ log ยาว (กรอง/เรียง/แบ่งหน้า 10/20/50), แยก agent แต่ละ role ด้วยสี/ไอคอน และจัด typography ให้อ่านภาษาไทยสบายตา</p>
+<p><strong>มีวิธีที่ง่ายกว่าไหม:</strong> มีบางส่วน:</p>
+<ul>
+  <li>ส่วนการเรียก agent: โปรเจกต์จริง (<code>mail-sender</code>) มี 11 call ต่อรอบ ตัวกรองกับการเรียงอย่างเดียวก็แก้ปัญหาได้เกือบหมด ส่วน pagination ของ call คุ้มเฉพาะงาน BUILD ใหญ่ที่มี QA หลายรอบ</li>
+  <li>Timeline ได้ประโยชน์จาก pagination ชัดกว่า</li>
+</ul>
+<p>ผู้ใช้ขอ pagination ทั้งสองส่วนเอง plan จึงไม่ผิดตรงนี้ แค่บันทึกไว้ให้รู้ว่าเป็นส่วนที่ตัดได้ถ้าอยากให้งานเล็กลง</p>
+
+<h2>ไล่แล้วยืนยันว่าเข้ากับโค้ดจริง</h2>
+<ul>
+  <li><strong><code>render.test.ts</code> เดิม:</strong> ตรวจ <code>data.defaultRun</code>, <code>next.defaultRun</code>, <code>document.hidden</code>, <code>(ไม่ได้เรียก agent)</code> และจำนวน <code>&lt;/script&gt;</code> ซึ่ง plan แก้จาก 3 เป็น 4 ครบทั้งสองที่ และ PAGE_JS ใหม่ยังมีข้อความที่เทสต์เดิมต้องการครบ</li>
+  <li><strong>รัน JS จาก plan ได้:</strong> ดึง <code>LIST_JS</code>/<code>PAGE_JS</code> ออกจาก brief มา <code>new Function</code> แล้ว parse ผ่าน ไม่มี <code>${</code> และไม่มี <code>&lt;/script</code></li>
+  <li><strong>ค่าที่เทสต์คาดไว้ถูกต้อง:</strong> ไล่ค่าที่คาดใน <code>list-assets.test.ts</code> ด้วยมือ ครบทั้งลำดับ duration/cost/turns แบบค่าว่างอยู่ท้าย, <code>pageOfCall</code> (23→หน้า 3 / desc→หน้า 1 / ถูกกรอง→0) และการค้นหา <code>BOOM</code>/<code>AGENT.RESULT</code></li>
+  <li><strong>DOM test:</strong> ค่าที่คาดไว้สอดคล้องกับข้อมูล fixture (qa 13 / backend 12, ปุ่มกระโดด <code>#24 ⚙️ backend</code>, หน้า 2/2) และหลังแก้ใน plan แล้ว เทสต์ป้าย role ค้นเฉพาะภายใน <code>&lt;details&gt;</code> จึงไม่ผ่านเพราะไปเจอป้ายในการ์ด</li>
+  <li><strong>ลำดับ script:</strong> <code>LIST_JS</code> ประกาศ <code>var AgentTeamList</code> ใน classic script จึงเป็น property ของ <code>window</code> และ <code>PAGE_JS</code> ที่โหลดทีหลังเรียกใช้ผ่าน <code>window.AgentTeamList</code> ได้</li>
+</ul>
+
+<h2>Findings</h2>
+
+<div class="card major">
+  <h3><span class="sev">MAJOR</span>Task 2 ยังโหลดฟอนต์จาก Google Fonts ซึ่งขัดกับทิศทางล่าสุด (ฝังฟอนต์) และกติกา offline/ไม่เรียกภายนอกเดิม</h3>
+  <dl>
+    <dt>ทำไมสำคัญ</dt>
+    <dd>
+      <ul>
+        <li><strong>request ออกไปทุกครั้ง:</strong> <code>logs.html</code> เป็นไฟล์ที่เปิดจาก <code>file://</code> และส่งต่อให้คนอื่นได้ ทุกครั้งที่เปิดจะส่ง request ไป fonts.googleapis.com/gstatic ซึ่งบอกได้ว่ามีคนเปิดดู log ของโปรเจกต์นี้เมื่อไร</li>
+        <li><strong>หน้าตาไม่ตรงกัน:</strong> เครื่องที่ offline หรือถูกบล็อกจะได้ฟอนต์คนละแบบ ซึ่งขัดกับเป้าหมาย "เหมือนกันทุกเครื่อง" ของ typography</li>
+        <li><strong>ต้องแก้หลายที่:</strong> README (Task 3 Step 5) และเทสต์ใน Task 2 ผูกกับลิงก์ Google ไว้ทั้งหมด</li>
+      </ul></dd>
+    <dt>หลักฐาน</dt>
+    <dd>Task 2 Step 3 เพิ่ม <code>&lt;link rel="stylesheet" href=FONT_STYLESHEET&gt;</code> + preconnect, เทสต์ Step 1 ตรวจ <code>fonts.googleapis.com</code>, README bullet ที่ 3 ใน Task 3 บอกว่า "มี request ไป fonts.googleapis.com"</dd>
+    <dt>แนวทางแก้ไข</dt>
+    <dd>เขียน Task 2 ใหม่ให้ฝังฟอนต์:
+      <ul>
+        <li>เก็บ woff2 แบบ variable 3 ไฟล์ที่ <code>assets/fonts/</code>: Noto Sans Thai (thai ~31KB), Inter (latin ~48KB), JetBrains Mono (latin ~31KB) พร้อม <code>OFL.txt</code></li>
+        <li>เพิ่ม <code>"assets"</code> ใน <code>"files"</code> ของ <code>package.json</code> (ตอนนี้มีแค่ bin/src/skills/scripts/tsconfig.json — ถ้าลืม เครื่องที่ติดตั้งจาก GitHub จะไม่มีฟอนต์โดยไม่มี error อะไรบอก)</li>
+        <li><code>render.ts</code> อ่านไฟล์จาก <code>TEAM_ROOT/assets/fonts</code> แล้วสร้าง <code>@font-face</code> แบบ base64 พร้อม <code>unicode-range</code> อ่านครั้งเดียวแล้ว cache ถ้าหาไฟล์ไม่เจอให้ข้ามไป</li>
+        <li>เทสต์: ตรวจว่ามี <code>@font-face</code> 3 ชุดและไม่มี <code>http</code> ใน HTML</li>
+        <li>README: บอกว่าฟอนต์ฝังในไฟล์และ offline ได้</li>
+      </ul></dd>
+  </dl>
+</div>
+
+<div class="card">
+  <h3><span class="sev">NIT</span>ช่องค้นหา timeline re-render ทั้งหน้าทุกตัวอักษรที่พิมพ์</h3>
+  <dl>
+    <dt>ทำไมสำคัญ</dt>
+    <dd><code>search.oninput</code> → <code>render()</code> สร้าง DOM ใหม่ทั้งหน้า (การ์ด, timeline) และแทนที่ input เดิม กรณีทั่วไป plan กู้ focus และตำแหน่งเคอร์เซอร์ได้แล้ว แต่ IME ที่มี composition จะถูกตัดกลางคำเมื่อ element ถูกแทนที่ (แป้นไทย Kedmanee ไม่ได้ใช้ composition จึงไม่กระทบคนส่วนใหญ่) และหน้าที่เลือก 50 รายการต่อหน้าจะหน่วงทุกครั้งที่กดแป้น</dd>
+    <dt>หลักฐาน</dt>
+    <dd>Task 3 Step 3: <code>search.oninput = function () { st.query = search.value; st.page = 1; render(); }</code> และ <code>render()</code> ทำ <code>app.textContent = ''</code></dd>
+    <dt>แนวทางแก้ไข</dt>
+    <dd>ข้ามการ render ระหว่าง <code>compositionstart</code>–<code>compositionend</code> และหน่วง render ด้วย <code>setTimeout</code> ประมาณ 150ms หลังพิมพ์ตัวสุดท้าย</dd>
+  </dl>
+</div>
+
+<div class="card">
+  <h3><span class="sev">NIT</span>ขนาดตัวอักษรของ input/select 14px ทำให้ iOS Safari ซูมหน้าเองเมื่อแตะช่องค้นหา</h3>
+  <dl>
+    <dt>ทำไมสำคัญ</dt><dd>design บอกว่ารองรับมือถือ แต่ iOS จะซูมเข้าเมื่อ focus ช่องที่ขนาดตัวอักษรต่ำกว่า 16px ทำให้ layout กระโดด</dd>
+    <dt>หลักฐาน</dt><dd>Task 2 PAGE_CSS: <code>select,button,input{font-size:var(--fs-small)}</code> ซึ่ง <code>--fs-small:.875rem</code> คือ 14px</dd>
+    <dt>แนวทางแก้ไข</dt><dd>ตั้ง <code>input[type=search]{font-size:max(16px,var(--fs-body))}</code> หรือใช้ <code>--fs-body</code> กับ input</dd>
+  </dl>
+</div>
+
+<div class="card">
+  <h3><span class="sev">NIT</span>สีของ qa/security ใกล้กับสี warn/error ต่างจากที่ design บอกไว้</h3>
+  <dl>
+    <dt>ทำไมสำคัญ</dt><dd>ใน timeline ป้าย <code>🔍 qa</code> สีส้มจะวางติดกับป้าย <code>WARN</code> สีส้ม และ <code>🛡️ security</code> สีแดง rose จะวางติดกับ <code>ERROR</code> สีแดง ทำให้อ่านสถานะผิดได้</dd>
+    <dt>หลักฐาน</dt><dd>Task 2 PAGE_CSS: <code>--r-qa:#c2410c</code> เทียบกับ <code>--warn:#a15c00</code> และ <code>--r-security:#9f1239</code> เทียบกับ <code>--err:#c62828</code></dd>
+    <dt>แนวทางแก้ไข</dt><dd>ทำให้ป้าย role เป็นสีเต็ม (พื้นสี role ตัวอักษรขาว) ส่วน level ยังเป็นตัวอักษรสีเหมือนเดิม หรือเลื่อน qa ไปโทนเหลืองอำพัน/น้ำตาล และ security ไปโทนม่วงแดงเข้ม (เช่น <code>#86198f</code>)</dd>
+  </dl>
+</div>
+
+<h2>Verdict</h2>
+<p><span class="verdict">fix-then-ship</span></p>
+<p>เหตุผลหลัก: Task 2 ยังผูกกับ Google Fonts ซึ่งขัดกับทิศทางฝังฟอนต์ที่เพิ่งคุยกัน และกติกาเดิมที่ให้เปิด offline ได้โดยไม่ส่ง request ออกไป ควรเขียน Task 2 และ README ใหม่ก่อนเริ่มลงมือ ส่วน nit สามข้อแก้ไปพร้อมกันใน plan ได้ ใช้แรงน้อย</p>
+</main>
+</body>
+</html>

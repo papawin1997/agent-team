@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>Agent Activity Spinner Implementation Plan</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; line-height: 1.55;
+         max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1f2933;
+         background: #f5f7fa; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  pre { background: #1f2933; color: #e4e7eb; padding: .9rem 1rem;
+        border-radius: 6px; overflow-x: auto; }
+  code { background: #e4e7eb; padding: .1rem .35rem; border-radius: 4px; }
+  pre code { background: none; padding: 0; color: inherit; }
+  .frame { border-left: 6px solid; border-radius: 8px; padding: 1rem 1.25rem;
+           margin: 1.25rem 0; background: #ffffff;
+           box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .frame-header     { border-color: #2563eb; background: #eff6ff; }
+  .frame-constraints{ border-color: #d97706; background: #fffbeb; }
+  .frame-task       { border-color: #059669; background: #ecfdf5; }
+  .frame h1, .frame h2, .frame h3 { margin-top: 0; }
+  .note { border-color: #7c3aed; background: #f5f3ff; }
+  .step { display: flex; gap: .5rem; align-items: baseline;
+          margin: .75rem 0 .25rem; }
+  .step input { transform: scale(1.2); margin-top: .15rem; }
+  .meta { color: #52606d; font-size: .9rem; }
+</style>
+</head>
+<body>
+
+<div class="frame frame-header">
+  <h1>Agent Activity Spinner Implementation Plan</h1>
+  <p><strong>เป้าหมาย:</strong> ระหว่างที่ agent (PM/Planning/Worker/QA/Security) ทำงาน ให้ terminal แสดงบรรทัดสถานะที่หมุนอยู่ พร้อมเวลาที่ผ่านไปและ tool ล่าสุดที่ agent ใช้ เพื่อให้ user รู้ว่าระบบไม่ได้ค้าง</p>
+  <p><strong>สถาปัตยกรรม:</strong> ไฟล์ใหม่ <code>src/activity.ts</code> มี <code>describeToolUse</code> (แปลง tool call เป็นข้อความไทยสั้น ๆ), <code>agentLabel</code>, <code>formatElapsed</code> และ class <code>Spinner</code> (วาดบรรทัดเดียวทับที่เดิมทุก 100ms) <code>SdkRoleRunner.once()</code> ซึ่งเป็นจุดเดียวที่เรียกทุก agent จะเรียก <code>status.start → update (ทุก tool_use) → stop (ใน finally)</code> <code>CliIO</code> ถือ <code>Spinner</code> เอง จึงลบบรรทัด spinner ก่อน <code>say</code> แล้ววาดใหม่ได้ ข้อความไม่ทับกัน และ <code>index.ts</code> ส่ง <code>cli.status</code> ให้ runner ตรง ๆ (ไม่ผ่าน <code>LoggingIO</code> เฟรม spinner จึงไม่ลง log)</p>
+  <p><strong>Tech Stack:</strong> TypeScript, Node.js, vitest, <code>@anthropic-ai/claude-agent-sdk</code> (ไม่มี dependency ใหม่)</p>
+</div>
+
+<div class="frame note">
+  <strong>For agentic workers:</strong> REQUIRED SUB-SKILL: Use
+  tb-subagent-driven-development (recommended) or
+  tb-executing-plans to implement this plan task-by-task. Steps keep
+  the <code>- [ ]</code> marker next to each checkbox for tracking.
+</div>
+
+<div class="frame frame-constraints">
+  <h2>Global Constraints</h2>
+  <ul>
+    <li>branch: <code>feat/agent-activity-spinner</code> แตกจาก <code>main</code></li>
+    <li>ห้ามเพิ่ม dependency ใหม่ใน <code>package.json</code> (ไม่ใช้ <code>ora</code> หรือ library spinner อื่น)</li>
+    <li>ข้อความที่ user เห็นเป็นภาษาไทย รูปแบบ label ต้องตรงตาม <code>agentLabel</code> ใน Task 1 ทุกตัวอักษร</li>
+    <li>เฟรม spinner ห้ามผ่าน <code>LoggingIO</code> / <code>FileLogger</code> (ห้ามลง <code>agent-team.log</code>) log ของ agent ยังใช้ <code>agent.start</code>/<code>agent.result</code> เดิม</li>
+    <li>output ที่ไม่ใช่ terminal (pipe/redirect): ไม่มี escape code ไม่หมุน พิมพ์เฉพาะ <code>${label}...</code> หนึ่งบรรทัดตอน start</li>
+    <li>ลำดับ escape สำหรับลบบรรทัด: <code>'\r\x1b[2K'</code> (ใช้ค่าคงที่ <code>ERASE_LINE</code> จาก <code>src/activity.ts</code>)</li>
+    <li>ก่อน commit ทุกครั้ง: <code>npm test</code> และ <code>npm run typecheck</code> ต้องผ่านทั้งหมด</li>
+    <li>stage เฉพาะไฟล์ที่ระบุ (ห้าม <code>git add -A</code>) และข้อความ commit ต้องจบด้วย trailer สองบรรทัดนี้ตรงตัว:<br>
+      <code>Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;</code><br>
+      <code>Claude-Session: https://claude.ai/code/session_011wanyjFhT4BaXN3JDTa5Gk</code></li>
+  </ul>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 1: <code>src/activity.ts</code> — describeToolUse, agentLabel, formatElapsed, Spinner</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/activity.ts</code></li>
+    <li>เทสต์: <code>tests/activity.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>RoleName</code> จาก <code>src/config.ts</code> (<code>'pm' | 'planning' | 'frontend' | 'backend' | 'qa' | 'security'</code>)</li>
+    <li>ส่งต่อ (Produces):
+      <code>interface StatusSink { start(label: string): void; update(detail: string): void; stop(): void }</code>,
+      <code>nullStatus: StatusSink</code>,
+      <code>ERASE_LINE = '\r\x1b[2K'</code>,
+      <code>describeToolUse(name: string, input: unknown): string</code>,
+      <code>agentLabel(role: RoleName, taskId?: string): string</code>,
+      <code>formatElapsed(ms: number): string</code>,
+      <code>class Spinner implements StatusSink</code> (constructor รับ <code>SpinnerOptions</code>; เมธอดเพิ่ม <code>clear(): void</code>, <code>redraw(): void</code>, getter <code>active: boolean</code>)</li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>สร้าง <code>tests/activity.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import { agentLabel, describeToolUse, ERASE_LINE, formatElapsed, Spinner } from '../src/activity';
+
+describe('describeToolUse', () =&gt; {
+  it.each([
+    ['Read', { file_path: 'src/a.ts' }, 'อ่านไฟล์ src/a.ts'],
+    ['Edit', { file_path: 'src/a.ts' }, 'แก้ไฟล์ src/a.ts'],
+    ['MultiEdit', { file_path: 'src/a.ts' }, 'แก้ไฟล์ src/a.ts'],
+    ['Write', { file_path: 'src/b.ts' }, 'แก้ไฟล์ src/b.ts'],
+    ['Bash', { command: 'npm   test\n  -- --run' }, 'รันคำสั่ง npm test -- --run'],
+    ['Grep', { pattern: 'createUser' }, 'ค้นหา createUser'],
+    ['Glob', { pattern: 'src/**/*.ts' }, 'ค้นหา src/**/*.ts'],
+    ['Skill', { skill: 'tdd' }, 'ใช้ skill tdd'],
+    ['StructuredOutput', { verdict: 'PASS' }, 'สรุปผลลัพธ์'],
+    ['WebFetch', { url: 'https://x' }, 'ใช้ tool WebFetch'],
+    ['Read', undefined, 'อ่านไฟล์'],
+    ['Bash', { command: '   ' }, 'รันคำสั่ง'],
+  ])('%s %j -&gt; %s', (name, input, expected) =&gt; {
+    expect(describeToolUse(name, input)).toBe(expected);
+  });
+
+  it('path ยาวตัดส่วนหน้าทิ้ง เก็บชื่อไฟล์ท้ายไว้ (รวม 60 ตัวอักษร)', () =&gt; {
+    const file = `${'a/'.repeat(50)}user.ts`;
+    const out = describeToolUse('Read', { file_path: file });
+    const shown = out.slice('อ่านไฟล์ '.length);
+    expect(shown.startsWith('…')).toBe(true);
+    expect(shown.endsWith('/user.ts')).toBe(true);
+    expect(Array.from(shown)).toHaveLength(60);
+  });
+
+  it('คำสั่งยาวตัดส่วนท้ายทิ้ง (รวม 60 ตัวอักษร)', () =&gt; {
+    const out = describeToolUse('Bash', { command: `echo ${'x'.repeat(100)}` });
+    const shown = out.slice('รันคำสั่ง '.length);
+    expect(shown.startsWith('echo ')).toBe(true);
+    expect(shown.endsWith('…')).toBe(true);
+    expect(Array.from(shown)).toHaveLength(60);
+  });
+});
+
+describe('agentLabel', () =&gt; {
+  it.each([
+    ['pm', undefined, '[PM] กำลังคิด'],
+    ['planning', undefined, '[Planning] กำลังออกแบบ'],
+    ['backend', 'T2', '[backend] T2: กำลังทำงาน'],
+    ['frontend', 'ui', '[frontend] ui: กำลังทำงาน'],
+    ['qa', 'T2', '[QA] T2: กำลังตรวจ'],
+    ['security', 'T2', '[Security] T2: กำลังตรวจความปลอดภัย'],
+    ['security', undefined, '[Security] กำลังตรวจ design'],
+  ] as const)('%s %s -&gt; %s', (role, taskId, expected) =&gt; {
+    expect(agentLabel(role, taskId)).toBe(expected);
+  });
+});
+
+describe('formatElapsed', () =&gt; {
+  it.each([
+    [0, '0m00s'],
+    [999, '0m00s'],
+    [83_000, '1m23s'],
+    [3_600_000, '60m00s'],
+  ])('%d -&gt; %s', (ms, expected) =&gt; {
+    expect(formatElapsed(ms)).toBe(expected);
+  });
+});
+
+describe('Spinner', () =&gt; {
+  function setup(opts: { tty?: boolean; columns?: number } = {}) {
+    const writes: string[] = [];
+    let time = 0;
+    let tick: (() =&gt; void) | undefined;
+    const cleared: unknown[] = [];
+    const spinner = new Spinner({
+      output: {
+        write: (s: string) =&gt; {
+          writes.push(s);
+          return true;
+        },
+      } as unknown as NodeJS.WritableStream,
+      tty: opts.tty ?? true,
+      columns: () =&gt; opts.columns,
+      now: () =&gt; time,
+      setInterval: (fn) =&gt; {
+        tick = fn;
+        return 'h';
+      },
+      clearInterval: (h) =&gt; {
+        cleared.push(h);
+        tick = undefined;
+      },
+    });
+    const advance = (ms: number) =&gt; {
+      time += ms;
+      tick?.();
+    };
+    return { spinner, writes, advance, cleared, hasTimer: () =&gt; tick !== undefined };
+  }
+
+  it('terminal: วาดบรรทัดเดียวทับที่เดิม พร้อม frame เวลา และ detail', () =&gt; {
+    const { spinner, writes, advance } = setup();
+    spinner.start('[QA] T2: กำลังตรวจ');
+    expect(writes.at(-1)).toBe(`${ERASE_LINE}⠋ [QA] T2: กำลังตรวจ 0m00s`);
+    advance(83_000);
+    expect(writes.at(-1)).toBe(`${ERASE_LINE}⠙ [QA] T2: กำลังตรวจ 1m23s`);
+    spinner.update('อ่านไฟล์ a.ts');
+    expect(writes.at(-1)).toBe(`${ERASE_LINE}⠙ [QA] T2: กำลังตรวจ 1m23s · อ่านไฟล์ a.ts`);
+    expect(writes.join('')).not.toContain('\n');
+    expect(spinner.active).toBe(true);
+  });
+
+  it('stop ลบบรรทัดและหยุด timer', () =&gt; {
+    const { spinner, writes, advance, cleared, hasTimer } = setup();
+    spinner.start('[PM] กำลังคิด');
+    spinner.stop();
+    expect(writes.at(-1)).toBe(ERASE_LINE);
+    expect(cleared).toEqual(['h']);
+    expect(hasTimer()).toBe(false);
+    expect(spinner.active).toBe(false);
+    const count = writes.length;
+    advance(1000);
+    spinner.update('อ่านไฟล์ a.ts');
+    spinner.stop();
+    expect(writes).toHaveLength(count);
+  });
+
+  it('ตัดบรรทัดไม่ให้เกินความกว้าง terminal - 1', () =&gt; {
+    const { spinner, writes } = setup({ columns: 20 });
+    spinner.start(`[backend] ${'ก'.repeat(50)}`);
+    const line = writes.at(-1)!.slice(ERASE_LINE.length);
+    expect(Array.from(line)).toHaveLength(19);
+    expect(line.endsWith('…')).toBe(true);
+  });
+
+  it('clear ลบบรรทัดชั่วคราว redraw วาดกลับ และหลัง stop ทั้งสองไม่เขียนอะไร', () =&gt; {
+    const { spinner, writes } = setup();
+    spinner.start('[PM] กำลังคิด');
+    spinner.clear();
+    expect(writes.at(-1)).toBe(ERASE_LINE);
+    spinner.clear();
+    expect(writes.filter((w) =&gt; w === ERASE_LINE)).toHaveLength(1);
+    spinner.redraw();
+    expect(writes.at(-1)).toBe(`${ERASE_LINE}⠋ [PM] กำลังคิด 0m00s`);
+    spinner.stop();
+    const count = writes.length;
+    spinner.redraw();
+    spinner.clear();
+    expect(writes).toHaveLength(count);
+  });
+
+  it('start ซ้อนระหว่างที่หมุนอยู่ หยุดตัวเก่าก่อน', () =&gt; {
+    const { spinner, writes, cleared } = setup();
+    spinner.start('[QA] T1: กำลังตรวจ');
+    spinner.update('อ่านไฟล์ a.ts');
+    spinner.start('[Security] T1: กำลังตรวจความปลอดภัย');
+    expect(cleared).toEqual(['h']);
+    expect(writes.at(-1)).toBe(`${ERASE_LINE}⠋ [Security] T1: กำลังตรวจความปลอดภัย 0m00s`);
+  });
+
+  it('ไม่ใช่ terminal: พิมพ์บรรทัดเดียวตอน start ไม่หมุน ไม่มี escape code', () =&gt; {
+    const { spinner, writes, advance, hasTimer } = setup({ tty: false });
+    spinner.start('[PM] กำลังคิด');
+    spinner.update('อ่านไฟล์ a.ts');
+    advance(5000);
+    spinner.clear();
+    spinner.redraw();
+    spinner.stop();
+    expect(writes).toEqual(['[PM] กำลังคิด...\n']);
+    expect(hasTimer()).toBe(false);
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/activity.test.ts</code><br>
+     คาดหวัง: FAIL เพราะหา module <code>../src/activity</code> ไม่เจอ</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p>สร้าง <code>src/activity.ts</code>:</p>
+<pre><code>import type { RoleName } from './config';
+
+/** รับสถานะของ agent ที่กำลังทำงาน (CliIO แสดงเป็น spinner) */
+export interface StatusSink {
+  start(label: string): void;
+  update(detail: string): void;
+  stop(): void;
+}
+
+export const nullStatus: StatusSink = { start: () =&gt; {}, update: () =&gt; {}, stop: () =&gt; {} };
+
+/** carriage return + ลบทั้งบรรทัด */
+export const ERASE_LINE = '\r\x1b[2K';
+
+const MAX_DETAIL = 60;
+const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const FRAME_MS = 100;
+
+const oneLine = (text: string): string =&gt; text.replace(/\s+/g, ' ').trim();
+
+/** ตัดท้าย: คำสั่ง/pattern ส่วนต้นสำคัญกว่า */
+function head(text: string, max = MAX_DETAIL): string {
+  const chars = Array.from(oneLine(text));
+  return chars.length &gt; max ? `${chars.slice(0, max - 1).join('')}…` : chars.join('');
+}
+
+/** ตัดหัว: path ชื่อไฟล์ท้ายสุดสำคัญกว่า */
+function tail(text: string, max = MAX_DETAIL): string {
+  const chars = Array.from(oneLine(text));
+  return chars.length &gt; max ? `…${chars.slice(chars.length - max + 1).join('')}` : chars.join('');
+}
+
+const str = (v: unknown): string | undefined =&gt; (typeof v === 'string' &amp;&amp; v.trim() !== '' ? v : undefined);
+
+/** แปลง tool_use ของ agent เป็นข้อความสั้น ๆ สำหรับบรรทัดสถานะ */
+export function describeToolUse(name: string, input: unknown): string {
+  const args = (input ?? {}) as Record&lt;string, unknown&gt;;
+  const file = str(args.file_path) ?? str(args.notebook_path);
+  switch (name) {
+    case 'Read':
+      return file ? `อ่านไฟล์ ${tail(file)}` : 'อ่านไฟล์';
+    case 'Edit':
+    case 'MultiEdit':
+    case 'Write':
+    case 'NotebookEdit':
+      return file ? `แก้ไฟล์ ${tail(file)}` : 'แก้ไฟล์';
+    case 'Bash': {
+      const command = str(args.command);
+      return command ? `รันคำสั่ง ${head(command)}` : 'รันคำสั่ง';
+    }
+    case 'Grep':
+    case 'Glob': {
+      const pattern = str(args.pattern);
+      return pattern ? `ค้นหา ${head(pattern)}` : 'ค้นหา';
+    }
+    case 'Skill': {
+      const skill = str(args.skill);
+      return skill ? `ใช้ skill ${head(skill)}` : 'ใช้ skill';
+    }
+    case 'StructuredOutput':
+      return 'สรุปผลลัพธ์';
+    default:
+      return `ใช้ tool ${name}`;
+  }
+}
+
+/** ชื่อที่ขึ้นในบรรทัดสถานะ worker ใช้ชื่อ role ตรง ๆ เหมือนข้อความใน phases/build.ts */
+export function agentLabel(role: RoleName, taskId?: string): string {
+  const task = taskId ? ` ${taskId}:` : '';
+  switch (role) {
+    case 'pm':
+      return '[PM] กำลังคิด';
+    case 'planning':
+      return '[Planning] กำลังออกแบบ';
+    case 'qa':
+      return `[QA]${task} กำลังตรวจ`;
+    case 'security':
+      return taskId ? `[Security]${task} กำลังตรวจความปลอดภัย` : '[Security] กำลังตรวจ design';
+    default:
+      return `[${role}]${task} กำลังทำงาน`;
+  }
+}
+
+export function formatElapsed(ms: number): string {
+  const total = Math.floor(ms / 1000);
+  return `${Math.floor(total / 60)}m${String(total % 60).padStart(2, '0')}s`;
+}
+
+export interface SpinnerOptions {
+  output: NodeJS.WritableStream;
+  /** false = ไม่หมุน พิมพ์บรรทัดเดียวตอน start (pipe/redirect) */
+  tty: boolean;
+  /** ความกว้าง terminal (undefined = ไม่ตัด) */
+  columns?: () =&gt; number | undefined;
+  now?: () =&gt; number;
+  setInterval?: (fn: () =&gt; void, ms: number) =&gt; unknown;
+  clearInterval?: (handle: unknown) =&gt; void;
+}
+
+/** บรรทัดสถานะบรรทัดเดียวที่วาดทับที่เดิม: "⠹ [QA] T2: กำลังตรวจ 1m23s · อ่านไฟล์ a.ts" */
+export class Spinner implements StatusSink {
+  private label: string | undefined;
+  private detail: string | undefined;
+  private startedAt = 0;
+  private frame = 0;
+  private timer: unknown;
+  private drawn = false;
+  private readonly now: () =&gt; number;
+  private readonly setTimer: (fn: () =&gt; void, ms: number) =&gt; unknown;
+  private readonly clearTimer: (handle: unknown) =&gt; void;
+
+  constructor(private readonly opts: SpinnerOptions) {
+    this.now = opts.now ?? Date.now;
+    this.setTimer = opts.setInterval ?? ((fn, ms) =&gt; setInterval(fn, ms).unref());
+    this.clearTimer = opts.clearInterval ?? ((handle) =&gt; clearInterval(handle as NodeJS.Timeout));
+  }
+
+  get active(): boolean {
+    return this.label !== undefined;
+  }
+
+  start(label: string): void {
+    this.stop();
+    this.label = label;
+    this.startedAt = this.now();
+    this.frame = 0;
+    if (!this.opts.tty) {
+      this.opts.output.write(`${label}...\n`);
+      return;
+    }
+    this.render();
+    this.timer = this.setTimer(() =&gt; {
+      this.frame++;
+      this.render();
+    }, FRAME_MS);
+  }
+
+  update(detail: string): void {
+    if (!this.active) return;
+    this.detail = detail;
+    if (this.opts.tty) this.render();
+  }
+
+  stop(): void {
+    if (this.timer !== undefined) {
+      this.clearTimer(this.timer);
+      this.timer = undefined;
+    }
+    this.clear();
+    this.label = undefined;
+    this.detail = undefined;
+  }
+
+  /** ลบบรรทัด spinner ชั่วคราว ก่อนพิมพ์ข้อความอื่น */
+  clear(): void {
+    if (!this.drawn) return;
+    this.opts.output.write(ERASE_LINE);
+    this.drawn = false;
+  }
+
+  /** วาดกลับหลังพิมพ์ข้อความอื่น ถ้ายังหมุนอยู่ */
+  redraw(): void {
+    if (this.opts.tty &amp;&amp; this.active) this.render();
+  }
+
+  private render(): void {
+    const frame = FRAMES[this.frame % FRAMES.length];
+    const elapsed = formatElapsed(this.now() - this.startedAt);
+    const detail = this.detail ? ` · ${this.detail}` : '';
+    this.opts.output.write(`${ERASE_LINE}${this.fit(`${frame} ${this.label} ${elapsed}${detail}`)}`);
+    this.drawn = true;
+  }
+
+  /** ตัดให้สั้นกว่าความกว้าง terminal 1 ตัว ไม่ให้ขึ้นบรรทัดใหม่เอง (นับเป็น code point) */
+  private fit(line: string): string {
+    const columns = this.opts.columns?.();
+    if (!columns) return line;
+    const chars = Array.from(line);
+    const max = columns - 1;
+    return chars.length &gt; max ? `${chars.slice(0, max - 1).join('')}…` : line;
+  }
+}</code></pre>
+  <p>หมายเหตุ: <code>.unref()</code> ใน timer ค่าเริ่มต้นทำให้ spinner ไม่กันไม่ให้ process จบเอง</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/activity.test.ts</code><br>
+     คาดหวัง: PASS ทุกข้อ</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: รันทั้งชุดแล้ว Commit</strong></span></p>
+<pre><code>npm test &amp;&amp; npm run typecheck
+git add src/activity.ts tests/activity.test.ts
+git commit -F - &lt;&lt;'EOF'
+feat: add activity spinner and tool-use descriptions
+
+Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;
+Claude-Session: https://claude.ai/code/session_011wanyjFhT4BaXN3JDTa5Gk
+EOF</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 2: SdkRoleRunner รายงานสถานะระหว่าง agent ทำงาน</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/runner.ts</code> (import, <code>SdkRunnerDeps</code>, constructor, ทุก public method, <code>runValidated</code>, <code>withRetry</code>, <code>once</code>)</li>
+    <li>เทสต์: <code>tests/runner.test.ts</code> (เพิ่ม describe ใหม่ท้ายไฟล์)</li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>StatusSink</code>, <code>nullStatus</code>, <code>describeToolUse(name, input)</code>, <code>agentLabel(role, taskId?)</code> จาก <code>src/activity.ts</code> (Task 1)</li>
+    <li>ส่งต่อ (Produces): <code>SdkRunnerDeps.status?: StatusSink</code> (Task 3 ส่ง <code>cli.status</code> เข้ามาทางนี้)</li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>เพิ่มท้าย <code>tests/runner.test.ts</code> (ใช้ <code>DEFAULT_CONFIG</code>, <code>SdkRoleRunner</code>, <code>makeDesign</code>, <code>makeRequirements</code>, <code>makeTask</code>, <code>initMsg</code>, <code>okResult</code>, <code>errResult</code>, <code>validTurn</code>, type <code>Msg</code> ที่มีอยู่แล้วในไฟล์):</p>
+<pre><code>describe('SdkRoleRunner: สถานะระหว่าง agent ทำงาน', () =&gt; {
+  function runnerWithStatus(scripts: Array&lt;Msg[] | Error&gt;) {
+    const events: string[] = [];
+    const queryFn = (() =&gt; {
+      const script = scripts.shift();
+      if (!script) throw new Error('queryFn: script หมด');
+      return (async function* () {
+        if (script instanceof Error) throw script;
+        for (const message of script) yield message;
+      })();
+    }) as never;
+    const runner = new SdkRoleRunner({
+      projectDir: 'proj',
+      config: DEFAULT_CONFIG,
+      queryFn,
+      sleep: async () =&gt; {},
+      status: {
+        start: (label) =&gt; void events.push(`start ${label}`),
+        update: (detail) =&gt; void events.push(`update ${detail}`),
+        stop: () =&gt; void events.push('stop'),
+      },
+    });
+    return { runner, events };
+  }
+
+  const toolUse = (name: string, input: unknown): Msg =&gt; ({
+    type: 'assistant',
+    session_id: 's1',
+    parent_tool_use_id: null,
+    message: { content: [{ type: 'text', text: 'ขอดูไฟล์ก่อน' }, { type: 'tool_use', id: 't1', name, input }] },
+  });
+
+  it('start → update ทุก tool_use → stop', async () =&gt; {
+    const { runner, events } = runnerWithStatus([
+      [initMsg(), toolUse('Read', { file_path: 'src/a.ts' }), toolUse('Bash', { command: 'npm test' }), okResult(validTurn)],
+    ]);
+
+    await runner.pmTurn({ prompt: 'hi' });
+
+    expect(events).toEqual([
+      'start [PM] กำลังคิด',
+      'update อ่านไฟล์ src/a.ts',
+      'update รันคำสั่ง npm test',
+      'stop',
+    ]);
+  });
+
+  it('label ของ worker และ security มี task id', async () =&gt; {
+    const result = { taskId: 'ui', summary: 'เสร็จ', filesChanged: [], howToVerify: '' };
+    const report = { taskId: 'api', verdict: 'PASS', issues: [] };
+    const { runner, events } = runnerWithStatus([
+      [initMsg(), okResult(result)],
+      [initMsg(), okResult(report)],
+    ]);
+
+    await runner.work({ task: makeTask('ui', 'frontend'), design: makeDesign(), requirements: makeRequirements() });
+    await runner.security({
+      task: makeTask('api'),
+      design: makeDesign(),
+      requirements: makeRequirements(),
+      result: { taskId: 'api', summary: 'เสร็จ', filesChanged: ['src/api.ts'], howToVerify: 'npm test' },
+    });
+
+    expect(events).toEqual([
+      'start [frontend] ui: กำลังทำงาน',
+      'stop',
+      'start [Security] api: กำลังตรวจความปลอดภัย',
+      'stop',
+    ]);
+  });
+
+  it('stop เสมอแม้ agent ล้ม และ retry เริ่มนับใหม่', async () =&gt; {
+    const { runner, events } = runnerWithStatus([new Error('network'), [initMsg(), errResult('error_max_turns')]]);
+
+    await expect(runner.pmTurn({ prompt: 'hi' })).rejects.toThrow('error_max_turns');
+
+    expect(events).toEqual(['start [PM] กำลังคิด', 'stop', 'start [PM] กำลังคิด', 'stop']);
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/runner.test.ts</code><br>
+     คาดหวัง: 3 test ใหม่ FAIL (<code>events</code> เป็น <code>[]</code> เพราะ runner ยังไม่เรียก status) และ <code>npm run typecheck</code> error ว่า <code>status</code> ไม่มีใน <code>SdkRunnerDeps</code></p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แก้ <code>src/runner.ts</code></strong></span></p>
+  <p>3a. เพิ่ม import ต่อจาก import <code>config</code>:</p>
+<pre><code>import { agentLabel, describeToolUse, nullStatus, type StatusSink } from './activity';</code></pre>
+  <p>3b. เพิ่ม field ท้าย <code>SdkRunnerDeps</code>:</p>
+<pre><code>  /** บรรทัดสถานะระหว่าง agent ทำงาน (index.ts ส่ง cli.status) */
+  status?: StatusSink;</code></pre>
+  <p>3c. ใน class เพิ่ม field และตั้งค่าใน constructor:</p>
+<pre><code>  private readonly status: StatusSink;
+  // ใน constructor ต่อจาก this.log = ...
+    this.status = deps.status ?? nullStatus;</code></pre>
+  <p>3d. แทนที่ public method ทั้ง 6 ตัวด้วย (ส่ง label เข้า <code>runValidated</code>):</p>
+<pre><code>  async pmTurn(input: PmInput): Promise&lt;{ turn: PmTurn; sessionId: string }&gt; {
+    const out = await this.runValidated('pm', agentLabel('pm'), input.prompt, PmTurnSchema, input.sessionId);
+    return { turn: out.data, sessionId: out.sessionId };
+  }
+
+  async plan(input: PlanInput): Promise&lt;Design&gt; {
+    return (await this.runValidated('planning', agentLabel('planning'), buildPlanPrompt(input), DesignSchema)).data;
+  }
+
+  async work(input: WorkInput): Promise&lt;WorkerResult&gt; {
+    const { owner, id } = input.task;
+    return (await this.runValidated(owner, agentLabel(owner, id), buildWorkPrompt(input), WorkerResultSchema)).data;
+  }
+
+  async qa(input: QaInput): Promise&lt;QAReport&gt; {
+    return (await this.runValidated('qa', agentLabel('qa', input.task.id), buildQaPrompt(input), QAReportSchema)).data;
+  }
+
+  async securityDesign(input: SecurityDesignInput): Promise&lt;string[]&gt; {
+    const out = await this.runValidated(
+      'security',
+      agentLabel('security'),
+      buildSecurityDesignPrompt(input),
+      SecurityDesignReviewSchema,
+    );
+    return out.data.securityNotes;
+  }
+
+  async security(input: QaInput): Promise&lt;SecurityReport&gt; {
+    const label = agentLabel('security', input.task.id);
+    return (await this.runValidated('security', label, buildSecurityPrompt(input), SecurityReportSchema)).data;
+  }</code></pre>
+  <p>3e. เพิ่มพารามิเตอร์ <code>label: string</code> เป็นตัวที่ 2 ใน <code>runValidated</code>, <code>withRetry</code>, <code>once</code> และส่งต่อทุกจุดที่เรียก:</p>
+<pre><code>  private async runValidated&lt;T&gt;(
+    role: RoleName,
+    label: string,
+    prompt: string,
+    schema: z.ZodType&lt;T&gt;,
+    resume?: string,
+  ): Promise&lt;{ data: T; sessionId: string }&gt; {
+    const jsonSchema = toJsonSchema(schema);
+    const first = await this.withRetry(role, label, prompt, jsonSchema, resume);
+    // ... (โค้ดเดิม) ...
+    const second = await this.withRetry(role, label, reask, jsonSchema, first.sessionId);
+    // ... (โค้ดเดิม) ...
+  }
+
+  private async withRetry(
+    role: RoleName,
+    label: string,
+    prompt: string,
+    jsonSchema: Record&lt;string, unknown&gt;,
+    resume?: string,
+  ): Promise&lt;{ output: unknown; sessionId: string }&gt; {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.once(role, label, prompt, jsonSchema, resume);
+      } catch (e) {
+        // ... (โค้ดเดิมทั้งหมด) ...
+      }
+    }
+  }</code></pre>
+  <p>3f. แทนที่ <code>once</code> ทั้งเมธอดด้วยเวอร์ชันนี้ (ครอบ <code>queryFn</code> และ loop ด้วย <code>try/finally</code> และเรียก <code>status.update</code> ทุก <code>tool_use</code>):</p>
+<pre><code>  private async once(
+    role: RoleName,
+    label: string,
+    prompt: string,
+    jsonSchema: Record&lt;string, unknown&gt;,
+    resume?: string,
+  ): Promise&lt;{ output: unknown; sessionId: string }&gt; {
+    let sessionId = resume ?? '';
+    this.logger.log('INFO', 'agent.start', {
+      role,
+      model: this.deps.config.roles[role].model,
+      resumed: resume !== undefined,
+      promptChars: prompt.length,
+    });
+    this.status.start(label);
+    try {
+      const stream = this.queryFn({
+        prompt,
+        options: buildQueryOptions({
+          role,
+          config: this.deps.config.roles[role],
+          projectDir: this.deps.projectDir,
+          skillsPluginDir: this.deps.skillsPluginDir ?? SKILLS_PLUGIN_DIR,
+          systemPrompt: SYSTEM_PROMPTS[role],
+          jsonSchema,
+          resume,
+          abortController: this.deps.abortController,
+          logger: this.deps.logger,
+        }),
+      });
+
+      for await (const msg of stream) {
+        if ('session_id' in msg &amp;&amp; typeof msg.session_id === 'string') sessionId = msg.session_id;
+        if (msg.type === 'system' &amp;&amp; msg.subtype === 'init' &amp;&amp; this.deps.debug) {
+          const init = msg as unknown as { skills?: unknown; plugins?: unknown; tools?: unknown };
+          this.log(
+            `[${role}] init skills=${JSON.stringify(init.skills)} plugins=${JSON.stringify(init.plugins)} tools=${JSON.stringify(init.tools)}`,
+          );
+        }
+        if (msg.type === 'assistant') {
+          for (const block of msg.message.content) {
+            if (block.type === 'tool_use') this.status.update(describeToolUse(block.name, block.input));
+          }
+        }
+        if (msg.type === 'result') {
+          const ok = msg.subtype === 'success' &amp;&amp; msg.structured_output !== undefined;
+          this.logger.log(ok ? 'INFO' : 'WARN', 'agent.result', {
+            role,
+            subtype: msg.subtype,
+            durationMs: msg.duration_ms,
+            turns: msg.num_turns,
+            costUsd: msg.total_cost_usd,
+            sessionId,
+          });
+          if (ok) return { output: msg.structured_output, sessionId };
+          throw new RoleRunError(
+            `${role}: ${msg.subtype}`,
+            !msg.subtype.startsWith('error_max_'),
+            msg.subtype,
+          );
+        }
+      }
+      this.logger.log('WARN', 'agent.no_result', { role, sessionId });
+      throw new RoleRunError(`${role}: stream จบโดยไม่มี result`, true);
+    } finally {
+      this.status.stop();
+    }
+  }</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/runner.test.ts</code> และ <code>npm run typecheck</code><br>
+     คาดหวัง: PASS ทั้งหมด (test เดิมทุกตัวยังผ่าน เพราะไม่ส่ง <code>status</code> จึงใช้ <code>nullStatus</code>)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: รันทั้งชุดแล้ว Commit</strong></span></p>
+<pre><code>npm test &amp;&amp; npm run typecheck
+git add src/runner.ts tests/runner.test.ts
+git commit -F - &lt;&lt;'EOF'
+feat: report agent status and tool use from SdkRoleRunner
+
+Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;
+Claude-Session: https://claude.ai/code/session_011wanyjFhT4BaXN3JDTa5Gk
+EOF</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 3: CliIO แสดง spinner + ต่อเข้า index.ts + ลบข้อความซ้ำ + README</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/cli.ts</code> (import, class <code>CliIO</code>: field <code>status</code>, constructor, <code>say</code>, <code>ask</code>, <code>close</code>)</li>
+    <li>แก้ไข: <code>src/index.ts</code> (deps ของ <code>new SdkRoleRunner</code>)</li>
+    <li>แก้ไข: <code>src/io-util.ts:25</code> (ลบ <code>io.say('[PM] กำลังตอบคำถาม...');</code>)</li>
+    <li>แก้ไข: <code>README.md</code> (ต่อจากบรรทัดที่ขึ้นต้นด้วย <code>Ctrl+C หยุดได้ทุกเมื่อ</code>)</li>
+    <li>เทสต์: <code>tests/cli.test.ts</code> (เพิ่ม describe ใหม่ใน <code>describe('CliIO')</code> ใช้ helper <code>makeIO</code> ที่มีอยู่)</li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>Spinner</code>, <code>ERASE_LINE</code> จาก <code>src/activity.ts</code> (Task 1); <code>SdkRunnerDeps.status?: StatusSink</code> (Task 2)</li>
+    <li>ส่งต่อ (Produces): <code>CliIO.status: Spinner</code> (readonly)</li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>เพิ่ม import <code>ERASE_LINE</code> ที่หัว <code>tests/cli.test.ts</code>:</p>
+<pre><code>import { ERASE_LINE } from '../src/activity';</code></pre>
+  <p>เพิ่ม describe นี้ภายใน <code>describe('CliIO', ...)</code> (ต่อจาก test สุดท้ายในนั้น):</p>
+<pre><code>  describe('status (บรรทัดสถานะระหว่าง agent ทำงาน)', () =&gt; {
+    it('terminal: say ลบบรรทัด spinner ก่อนพิมพ์ แล้ววาดกลับต่อท้าย', () =&gt; {
+      const { io, written } = makeIO({ terminal: true });
+      io.status.start('[PM] กำลังคิด');
+      io.say('สวัสดี');
+      expect(written()).toContain(`${ERASE_LINE}สวัสดี\n${ERASE_LINE}⠋ [PM] กำลังคิด 0m00s`);
+    });
+
+    it('ไม่ใช่ terminal: พิมพ์บรรทัดเริ่มบรรทัดเดียว ไม่มี escape code', () =&gt; {
+      const { io, written } = makeIO();
+      io.status.start('[PM] กำลังคิด');
+      io.status.update('อ่านไฟล์ a.ts');
+      io.say('สวัสดี');
+      io.status.stop();
+      expect(written()).toBe('[PM] กำลังคิด...\nสวัสดี\n');
+    });
+
+    it('ask หยุด spinner ก่อนถาม', async () =&gt; {
+      const { io, input } = makeIO();
+      io.status.start('[QA] T1: กำลังตรวจ');
+      const answer = io.ask('q&gt; ');
+      expect(io.status.active).toBe(false);
+      input.write('ok\n');
+      expect(await answer).toBe('ok');
+    });
+
+    it('close หยุด spinner', () =&gt; {
+      const { io } = makeIO({ terminal: true });
+      io.status.start('[QA] T1: กำลังตรวจ');
+      io.close();
+      expect(io.status.active).toBe(false);
+    });
+  });</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/cli.test.ts</code><br>
+     คาดหวัง: FAIL ด้วย <code>Cannot read properties of undefined (reading 'start')</code> เพราะ <code>CliIO</code> ยังไม่มี <code>status</code></p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แก้ <code>src/cli.ts</code></strong></span></p>
+  <p>เพิ่ม import:</p>
+<pre><code>import { Spinner } from './activity';</code></pre>
+  <p>ใน class <code>CliIO</code> เพิ่ม field (ต่อจาก <code>private readonly closed</code>):</p>
+<pre><code>  /** บรรทัดสถานะระหว่าง agent ทำงาน index.ts ส่งให้ SdkRoleRunner ตรง ๆ (ไม่ผ่าน LoggingIO จึงไม่ลง log) */
+  readonly status: Spinner;</code></pre>
+  <p>ใน constructor ต่อจาก <code>this.output = options.output ?? stdout;</code>:</p>
+<pre><code>    const screen = this.output as Partial&lt;NodeJS.WriteStream&gt;;
+    this.status = new Spinner({
+      output: this.output,
+      tty: options.terminal ?? screen.isTTY === true,
+      columns: () =&gt; screen.columns,
+    });</code></pre>
+  <p>แทนที่ <code>say</code>, บรรทัดแรกของ <code>ask</code> และ <code>close</code>:</p>
+<pre><code>  say(text: string): void {
+    this.status.clear();
+    this.output.write(`${text}\n`);
+    this.status.redraw();
+  }
+
+  async ask(prompt: string): Promise&lt;string&gt; {
+    this.status.stop();
+    if (this.isClosed) throw new Error(EOF_MESSAGE);
+    return (await Promise.race([this.rl.question(prompt), this.closed])).trim();
+  }
+
+  close(): void {
+    this.status.stop();
+    this.rl.close();
+  }</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/cli.test.ts</code><br>
+     คาดหวัง: PASS ทั้งหมด</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: ต่อเข้า <code>src/index.ts</code></strong></span></p>
+  <p>ใน <code>new SdkRoleRunner({ ... })</code> เพิ่มบรรทัด <code>status</code> ต่อจาก <code>log: (line) =&gt; io.say(line),</code>:</p>
+<pre><code>    log: (line) =&gt; io.say(line),
+    status: cli.status,</code></pre>
+  <p>ไม่ต้องแก้ signal handler: <code>makeInterruptHandler</code> เรียก <code>closeCli()</code> (ซึ่งตอนนี้ stop spinner แล้ว) ก่อน <code>print</code> อยู่แล้ว</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: ลบข้อความซ้ำใน <code>src/io-util.ts</code></strong></span></p>
+  <p>ลบบรรทัดนี้ออก (spinner <code>[PM] กำลังคิด</code> แสดงแทนแล้ว):</p>
+<pre><code>    io.say('[PM] กำลังตอบคำถาม...');</code></pre>
+  <p>รัน: <code>npx vitest run tests/io-util.test.ts</code> คาดหวัง: PASS (ไม่มี test ไหนอ้างข้อความนี้)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: README</strong></span></p>
+  <p>ใน <code>README.md</code> เพิ่มบรรทัดนี้ต่อจากบรรทัดที่ขึ้นต้นด้วย <code>Ctrl+C หยุดได้ทุกเมื่อ</code>:</p>
+<pre><code>ระหว่างที่ agent ทำงานจะมีบรรทัดสถานะ เช่น `⠹ [QA] T2: กำลังตรวจ 1m23s · อ่านไฟล์ src/api/user.ts` (เวลาที่ผ่านไป + สิ่งที่ agent ทำล่าสุด) ถ้า output ไม่ใช่ terminal (pipe/redirect) จะพิมพ์แค่ `[QA] T2: กำลังตรวจ...` บรรทัดเดียวตอนเริ่ม</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 8: รันทั้งชุดแล้ว Commit</strong></span></p>
+<pre><code>npm test &amp;&amp; npm run typecheck
+git add src/cli.ts src/index.ts src/io-util.ts README.md tests/cli.test.ts
+git commit -F - &lt;&lt;'EOF'
+feat: show live agent status line in the terminal
+
+Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;
+Claude-Session: https://claude.ai/code/session_011wanyjFhT4BaXN3JDTa5Gk
+EOF</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 9: ทดสอบด้วยตาบน terminal จริง (ไม่เรียก LLM)</strong></span></p>
+  <p>รันสคริปต์นี้ใน terminal จริง (ไม่ใช่ pipe) แล้วดูว่าบรรทัดหมุนอยู่ที่เดิม เวลาเดิน detail เปลี่ยน ข้อความ "ระหว่างทาง" ไม่ทับ spinner และจบแล้วบรรทัด spinner หายไป:</p>
+<pre><code>npx tsx -e "import { CliIO } from './src/cli'; const io = new CliIO(); io.status.start('[QA] T2: กำลังตรวจ'); setTimeout(() =&gt; io.status.update('อ่านไฟล์ src/api/user.ts'), 1500); setTimeout(() =&gt; io.say('ระหว่างทาง'), 2500); setTimeout(() =&gt; { io.close(); console.log('จบ'); }, 4000);"</code></pre>
+  <p>จากนั้นรันซ้ำแบบ pipe <code>... | cat</code> คาดหวังว่าได้แค่ <code>[QA] T2: กำลังตรวจ...</code>, <code>ระหว่างทาง</code>, <code>จบ</code> ไม่มี escape code</p>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scrutinize: multi-job resume</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --ink:#15181d; --muted:#5b6472; --line:#e2e6ec;
+    --blocker:#c62828; --blocker-bg:#fdecec;
+    --major:#e06c00; --major-bg:#fff4e6;
+    --nit:#6b7280; --nit-bg:#f1f3f5;
+    --ok:#2e7d32;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --bg:#14171c; --card:#1c2027; --ink:#e8eaee; --muted:#9aa4b2; --line:#2b313a;
+      --blocker-bg:#3a1c1c; --major-bg:#3a2a12; --nit-bg:#22262d;
+      --blocker:#ff6b6b; --major:#ffab4d; --nit:#9aa4b2; --ok:#6bd28f;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#14171c; --card:#1c2027; --ink:#e8eaee; --muted:#9aa4b2; --line:#2b313a;
+    --blocker-bg:#3a1c1c; --major-bg:#3a2a12; --nit-bg:#22262d;
+    --blocker:#ff6b6b; --major:#ffab4d; --nit:#9aa4b2; --ok:#6bd28f;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.7 "Segoe UI","Noto Sans Thai",system-ui,-apple-system,sans-serif;}
+  .wrap{max-width:900px;margin:0 auto;padding:40px 16px 72px}
+  header{border-bottom:2px solid var(--line);padding-bottom:18px;margin-bottom:28px}
+  h1{font-size:26px;margin:0 0 6px;line-height:1.35}
+  .sub{color:var(--muted);font-size:14px}
+  h2{font-size:19px;margin:36px 0 14px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  .intent{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px}
+  .intent p{margin:0 0 10px}
+  .intent p:last-child{margin:0}
+  .card{background:var(--card);border:1px solid var(--line);border-left-width:6px;
+    border-radius:10px;padding:18px 20px;margin:0 0 16px}
+  .card.blocker{border-left-color:var(--blocker);background:var(--blocker-bg)}
+  .card.major{border-left-color:var(--major);background:var(--major-bg)}
+  .card.nit{border-left-color:var(--nit);background:var(--nit-bg)}
+  .tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;padding:3px 9px;border-radius:999px;color:#fff;margin-bottom:10px}
+  .blocker .tag{background:var(--blocker)}
+  .major .tag{background:var(--major)}
+  .nit .tag{background:var(--nit)}
+  .card h3{margin:0 0 12px;font-size:16.5px;line-height:1.5}
+  .row{margin:11px 0}
+  .row b{display:block;font-size:12.5px;letter-spacing:.04em;color:var(--muted);
+    text-transform:uppercase;margin-bottom:3px}
+  code{font-family:"Cascadia Code",Consolas,monospace;font-size:13.5px;
+    background:rgba(127,127,127,.16);padding:1px 5px;border-radius:4px;word-break:break-word}
+  pre{font-family:"Cascadia Code",Consolas,monospace;font-size:13px;line-height:1.6;
+    background:rgba(127,127,127,.12);padding:12px 14px;border-radius:8px;overflow-x:auto;margin:8px 0}
+  ul{margin:6px 0;padding-left:22px}
+  li{margin:3px 0}
+  .verdict{display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+    background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px}
+  .badge{font-size:19px;font-weight:800;letter-spacing:.03em;padding:10px 22px;
+    border-radius:999px;color:#1a1a1a;background:#f2c94c;white-space:nowrap}
+  .verdict p{margin:0;flex:1;min-width:260px}
+  .checked{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px}
+  footer{margin-top:40px;color:var(--muted);font-size:13px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>Scrutinize: Multi-job resume — design spec</h1>
+  <div class="sub">docs/superpowers/specs/2026-09-25-multi-job-resume-design.md · branch feat/multi-job-resume · รีวิววันที่ 2026-09-25</div>
+</header>
+
+<h2>เจตนา</h2>
+<div class="intent">
+  <p>ให้ 1 โปรเจกต์เก็บงานค้างได้หลายงาน (โฟลเดอร์ <code>jobs/&lt;id&gt;/</code>) และตอนเริ่มรันมีเมนูให้เลือก ทำต่อ / ลบ / เริ่มใหม่ แทนที่จะ error แล้วบอกให้ใช้ <code>--resume</code></p>
+  <p><b>มีวิธีง่ายกว่าไหม?</b> ภาพรวมเลือกทางถูกแล้ว: <code>StateStore</code> interface ไม่เปลี่ยน และ phase ไม่ต้องแก้ ซึ่งผมไล่โค้ดแล้วยืนยันว่าจริง (phase ใช้แค่ <code>store.save</code>/<code>saveArtifact</code> ส่วน <code>guard.ts:27</code> ก็กัน <code>.agent-team</code> ทั้งโฟลเดอร์อยู่แล้ว) แต่ยังตัดออกได้อีก 2 อย่าง:</p>
+  <ul>
+    <li><b><code>createdAt</code> ไม่มีใครใช้</b> เพราะเรียงและเตือนด้วย <code>updatedAt</code> และ jobId ก็เป็นเวลาสร้างอยู่แล้ว ตัดทิ้งได้</li>
+    <li><b>ตัด flag <code>resume</code> ที่ส่งจาก selectJob ไป runTeam</b> เปลี่ยนเป็น <code>runTeam</code> ใช้ <code>load() ?? newState()</code> อย่างเดียว เพราะ selectJob ยืนยันไว้แล้วว่างานที่เลือกมี state จริง ถ้าคง flag ไว้จะชนกับเทสต์เดิม (ดู major #2)</li>
+  </ul>
+</div>
+
+<h2>Findings</h2>
+
+<div class="card major">
+  <span class="tag">major</span>
+  <h3>1. "งานเปล่า" จะเต็มเมนู ทำให้ต้องตั้งชื่อว่า "(ยังคุย requirements ไม่เสร็จ)" ซ้ำกันหลายงาน และทำให้ทุกงานขึ้นคำเตือน</h3>
+  <div class="row"><b>ทำไมสำคัญ</b>ข้อตัดสินใจ #4 บอกว่าจะใช้สรุปที่ละเอียดพอแทนการพิมพ์ถาม PM แต่งานในเฟส REQUIREMENTS จะดูไม่ออกว่าเป็นงานไหน และ <code>--resume</code> อาจไปหยิบงานเปล่าแทนงานจริง</div>
+  <div class="row"><b>หลักฐาน</b>
+    <ul>
+      <li><code>requirements.ts:12</code> ข้อความแรกที่ user พิมพ์ได้มาจาก <code>askNonEmpty</code> ซึ่งไม่ถูกเก็บลง state และบรรทัด 16 ตั้ง <code>pendingPrompt = undefined</code> ก่อน save ที่บรรทัด 21 เลยไม่เหลืออะไรให้ใช้เป็นชื่อ ผลคือ fallback "ใช้ pendingPrompt" แทบไม่เคยได้ใช้ งานที่ค้างใน REQUIREMENTS จึงได้ชื่อ "(ยังคุย requirements ไม่เสร็จ)" แทบทุกงาน</li>
+      <li>กด <code>n</code> → <code>create()</code> เขียน state ทันที ถ้าผู้ใช้ Ctrl+C ตรงคำถามแรก งานเปล่านี้จะค้างในเมนูตลอด เพราะ <code>updatedAt</code> ใหม่สุด → ทุกงานเก่าขึ้น "⚠ มีงานอื่นรันหลังจากงานนี้" และ <code>--resume</code> ก็จะเลือกงานเปล่านี้</li>
+    </ul>
+  </div>
+  <div class="row"><b>แนวทางแก้ไข</b>(ก) เพิ่ม <code>State.title?: string</code> ตั้งค่าจากข้อความแรกที่ user พิมพ์ใน <code>runRequirements</code> แล้วใช้ลำดับ <code>requirements.goal → title</code> เป็นชื่องาน (ข) ถือว่างานที่ไม่มี <code>pmSessionId</code> / <code>title</code> / <code>requirements</code> เป็น "งานเปล่า" ไม่แสดงในเมนู ไม่นับตอนคำนวณคำเตือน และไม่ให้ <code>--resume</code> เลือก (ลบทิ้งอัตโนมัติด้วยก็ได้) แล้วเขียนเทสต์ครอบกรณีนี้</div>
+</div>
+
+<div class="card major">
+  <span class="tag">major</span>
+  <h3>2. ข้อกำหนดของ <code>runTeam(resume:false)</code> ขัดกับเทสต์เดิม และ <code>createdAt</code> อาจถูกเขียนทับ</h3>
+  <div class="row"><b>ทำไมสำคัญ</b>ผู้ implement ต้องเดาเองว่าควรทำอะไร ถ้าเดาทางหนึ่ง เทสต์เดิมจะพัง ถ้าเดาอีกทาง ข้อมูลที่ spec บอกให้บันทึกจะหาย</div>
+  <div class="row"><b>หลักฐาน</b>spec เขียนว่า "resume:false → ใช้ state ที่ create() เขียนไว้" แต่ <code>tests/orchestrator.test.ts:176-213</code> (it.each DONE/ABORTED) ใส่ state ที่จบแล้วแล้วเรียก <code>resume:false</code> โดยคาดว่าได้งานใหม่ ถ้าใช้ state ที่โหลดมา loop ใน <code>orchestrator.ts:29</code> จะไม่ทำงานเลยเพราะ phase เป็น DONE อยู่แล้ว เทสต์นี้จะพัง ทั้งที่ spec บอกให้แก้แค่เทสต์ที่บรรทัด 170 ส่วนอีกทาง ถ้าคงโค้ดเดิม <code>state = newState()</code> ไว้ <code>createdAt</code> ที่ create() เขียนไว้ก็จะหาย</div>
+  <div class="row"><b>แนวทางแก้ไข</b>เขียนให้ชัดใน spec ว่า <code>runTeam</code> ใช้ <code>existing ?? newState()</code> (ถ้า resume และไม่มี state ก็ throw เหมือนเดิม) แล้ว<b>ลบ</b> it.each DONE/ABORTED พร้อมเทสต์ที่บรรทัด 170 เพราะงานใหม่จะอยู่ในโฟลเดอร์ใหม่เสมอ จึงไม่มีกรณีเริ่มงานใหม่ทับ state เก่าอีกแล้ว และตัด <code>createdAt</code> ทิ้ง หรือถ้าจะเก็บไว้ ให้ <code>save</code> ตั้ง <code>createdAt ??= now</code></div>
+</div>
+
+<div class="card major">
+  <span class="tag">major</span>
+  <h3>3. ไม่มี lock: เปิด 2 terminal แล้วจะ resume หรือลบงานที่อีก process กำลังรันอยู่ได้</h3>
+  <div class="row"><b>ทำไมสำคัญ</b>ของเดิมมีตัวกันโดยบังเอิญ คือ <code>orchestrator.ts:17-21</code> error ถ้ารันซ้ำโดยไม่ใส่ <code>--resume</code> spec ลบตัวกันนี้ออก และเมนูใหม่ยังชวนให้เปิดหลายงาน ถ้ากด <code>d</code> ใส่งานที่ยังรันอยู่ พอ process นั้นเรียก <code>save</code> ครั้งถัดไป <code>state.ts:64</code> จะใช้ <code>mkdir recursive</code> สร้างโฟลเดอร์คืนมา แต่มีแค่ <code>state.json</code> ส่วน artifacts หายไปแล้ว ถ้ากด <code>r</code> จะมี 2 process เขียน state เดียวกันทับกันไปมา</div>
+  <div class="row"><b>หลักฐาน</b>ใน spec ไม่มี lock หรือ pid ตรงไหนเลย และหัวข้อ "ไม่ทำ" ก็ไม่ได้ระบุเรื่องนี้</div>
+  <div class="row"><b>แนวทางแก้ไข</b>ทางที่เล็กที่สุด: ตอนเลือกงาน ให้เขียน <code>jobs/&lt;id&gt;/run.lock</code> (เก็บ pid) และลบตอนจบหรือตอน SIGINT ในเมนูให้แสดง "(กำลังรันอยู่ pid N)" แล้วไม่ยอมให้ <code>r</code>/<code>d</code> งานนั้น ถ้า pid ตายไปแล้ว (เช็คด้วย <code>process.kill(pid,0)</code>) ถือว่า lock ค้าง ใช้ต่อได้ หรืออย่างน้อยเขียนไว้ใน "ไม่ทำ" ให้ชัด</div>
+</div>
+
+<div class="card major">
+  <span class="tag">major</span>
+  <h3>4. ถ้าย้าย legacy ล้มกลางทาง แล้วรันใหม่จะไม่ได้ย้ายต่อ ไฟล์จะหายหรือแยกกันอยู่</h3>
+  <div class="row"><b>ทำไมสำคัญ</b>spec บอกว่า "throw เพื่อไม่ให้ state ปนกัน" แต่ไม่ได้กำหนดลำดับการย้าย จึงรันซ้ำให้ได้ผลเดิม (idempotent) ไม่ได้</div>
+  <div class="row"><b>หลักฐาน</b>สิ่งที่จะเริ่มย้ายคือ "มี <code>.agent-team/state.json</code> อยู่" (ข้อ 1-2) มีสองแบบ: ถ้าย้าย <code>state.json</code> ก่อน แล้วไปล้มตอนย้าย <code>reports/</code> รอบหน้าจะไม่มี legacy ให้เจอแล้ว <code>reports/</code> จะค้างอยู่ที่ root ตลอด ถ้าย้าย artifacts ก่อนแล้วไปล้ม รอบหน้าได้ id เดิม (เพราะ mtime ไม่เปลี่ยน) แต่โฟลเดอร์นั้นมีอยู่แล้ว กฎกันชื่อซ้ำจะต่อท้าย <code>-2</code> ทำให้ artifacts ถูกแยกไปอยู่คนละโฟลเดอร์ และ <code>list()</code> จะเตือน WARN "ไม่มี state.json" ทุกครั้ง</div>
+  <div class="row"><b>แนวทางแก้ไข</b>ระบุใน spec: (1) ถ้าโฟลเดอร์ <code>jobs/&lt;id&gt;</code> มีอยู่แล้วแต่ไม่มี <code>state.json</code> ให้ใช้โฟลเดอร์นั้นต่อ ไม่ต่อท้าย suffix (2) ย้าย artifacts ก่อน และย้าย <code>state.json</code> <b>เป็นอย่างสุดท้าย</b> แล้วเพิ่มเทสต์ "ล้มครึ่งทางแล้วรันใหม่ได้ผลครบ"</div>
+</div>
+
+<div class="card major">
+  <span class="tag">major</span>
+  <h3>5. คำเตือน "โค้ดอาจเปลี่ยน" จะขึ้นแทบทุกครั้งจนไม่มีใครสนใจ</h3>
+  <div class="row"><b>ทำไมสำคัญ</b>คำเตือนที่ขึ้นตลอดเวลาจะไม่มีประโยชน์ เพราะผู้ใช้จะชินจนไม่อ่าน</div>
+  <div class="row"><b>หลักฐาน</b><code>updatedAt</code> เปลี่ยนทุกครั้งที่ save ทุกเฟส รวมถึงตอนคุยกับ PM (<code>requirements.ts:21</code>, <code>io-util.ts:39</code>) แต่โค้ดจะถูกแก้จริงแค่ในเฟส BUILD ดังนั้นถ้าเปิดงานใหม่แล้วคุย requirements แค่ประโยคเดียว งานเก่าทุกงานก็จะขึ้นคำเตือนแล้ว</div>
+  <div class="row"><b>แนวทางแก้ไข</b>นับเฉพาะงานอื่นที่ผ่านเฟส BUILD มาแล้ว เช่นมี <code>progress[*].rounds &gt; 0</code> หรือเพิ่ม <code>lastBuildAt</code> ใน build.ts ตอน save รอบ QA แล้วเทียบกับ <code>updatedAt</code> ของงาน X ใช้แค่ข้อมูลที่มีอยู่แล้ว ไม่ต้องพึ่ง git</div>
+</div>
+
+<div class="card nit">
+  <span class="tag">nit</span>
+  <h3>6. หน้ายืนยันลบบอกว่า "พิมพ์คำถามถึง PM ได้" ซึ่งขัดกับข้อตัดสินใจ #4</h3>
+  <div class="row"><b>ทำไมสำคัญ</b>UX ขัดกันเอง ผู้ใช้พิมพ์คำถามลงไปจะได้แค่ "กรุณาพิมพ์หมายเลข..."</div>
+  <div class="row"><b>หลักฐาน</b><code>CliIO.choose</code> → <code>chooseOrText</code> (<code>cli.ts:78</code>) ต่อท้ายข้อความ "หรือพิมพ์คำถาม/ความเห็นถึง PM ก่อนตัดสินใจก็ได้" ให้เสมอ</div>
+  <div class="row"><b>แนวทางแก้ไข</b>ถามยืนยันด้วย <code>io.ask</code> ตรง ๆ แล้วรับ <code>y/yes/n/no</code> เอง ทำแบบเดียวกับเมนู</div>
+</div>
+
+<div class="card nit">
+  <span class="tag">nit</span>
+  <h3>7. ถ้าใส่ jobId ใน <code>run.start</code> ต้องย้ายลำดับโค้ด และข้อความ SIGINT ระหว่างที่อยู่ในเมนูจะอ้างถึงงานที่ยังไม่มี</h3>
+  <div class="row"><b>ทำไมสำคัญ</b>ถ้าย้าย <code>run.start</code> ไปไว้หลังเมนู log ของการเลือกในเมนู (LoggingIO) จะมาก่อน run.start ทำให้อ่านลำดับใน log ยาก</div>
+  <div class="row"><b>หลักฐาน</b><code>index.ts:25</code> log run.start ก่อนสร้าง store และ SIGINT handler (<code>index.ts:47</code>) ถูกลงทะเบียนก่อนจะรู้ jobId</div>
+  <div class="row"><b>แนวทางแก้ไข</b>คง <code>run.start</code> ไว้ที่เดิม แล้วเพิ่ม event <code>job.selected {jobId, resume}</code> หลัง selectJob ข้อความ SIGINT ให้ใช้ jobId แบบ optional</div>
+</div>
+
+<div class="card nit">
+  <span class="tag">nit</span>
+  <h3>8. ข้อความ error ใน orchestrator ยังอ้าง path เก่า</h3>
+  <div class="row"><b>ทำไมสำคัญ</b>ข้อความจะบอก path ที่ไม่มีแล้ว ทำให้ผู้ใช้หาไฟล์ผิดที่</div>
+  <div class="row"><b>หลักฐาน</b><code>orchestrator.ts:14</code> <code>'ไม่พบ state ให้ resume (.agent-team/state.json)'</code> และ README บรรทัด 30-32</div>
+  <div class="row"><b>แนวทางแก้ไข</b>เพิ่มลงรายการ "การเปลี่ยนแปลงอื่น"</div>
+</div>
+
+<h2>สิ่งที่ไล่ตรวจแล้ว (ยืนยันว่าถูก)</h2>
+<div class="checked">
+  <ul>
+    <li>"phase ไม่ต้องแก้" <b>จริง</b>: grep แล้วพบว่า <code>src/phases/*</code> ใช้แค่ <code>store.save</code> / <code>store.saveArtifact</code> (ชื่อไฟล์แบบ relative) ไม่มีที่ไหนใช้ path <code>.agent-team</code> ตรง ๆ</li>
+    <li>guard <code>PROTECTED_DIRS</code> (<code>guard.ts:27</code>) ยังกัน <code>.agent-team/jobs/</code> ได้ เพราะกันไว้ที่ระดับโฟลเดอร์แม่ ส่วน <code>prompts.ts:61</code> ก็ยังถูกต้อง</li>
+    <li><code>ScriptedIO</code> (<code>tests/helpers/fakes.ts:36</code>) มี <code>ask</code>/<code>choose</code> ครบแล้ว จึงเทสต์เมนูได้ตามแผน</li>
+    <li><code>FileLogger</code> ไฟล์เดียวใช้ร่วมกันทุกงานได้ เพราะเขียนแบบ append sync</li>
+    <li>ความหมายใหม่ของ <code>--resume</code>: ถ้ามีแต่งานที่ DONE จะ throw เป็นพฤติกรรมที่เปลี่ยนไปจากเดิม (เดิมจะจบเงียบ ๆ) ถือว่ายอมรับได้ แต่ควรเขียนไว้ใน README</li>
+  </ul>
+</div>
+
+<h2>Verdict</h2>
+<div class="verdict">
+  <span class="badge">fix-then-ship</span>
+  <p>โครงหลักถูกต้องแล้ว (interface เดิม, phase ไม่ต้องแก้) แต่ยังต้องแก้เรื่องชื่องานและงานเปล่า (#1) กับข้อกำหนด <code>runTeam</code> ที่ขัดกับเทสต์เดิม (#2) ใน spec ก่อน ไม่อย่างนั้นเมนูจะไม่ช่วยให้เลือกงานได้จริง และผู้ implement ต้องเดาเอง</p>
+</div>
+
+<footer>tb-scrutinize · 2026-09-25</footer>
+</div>
+</body>
+</html>

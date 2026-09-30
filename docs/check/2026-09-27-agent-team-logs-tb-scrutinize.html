@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scrutinize: agent-team logs</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --fg:#1f2933; --muted:#616e7c; --border:#d9dee5; --code:#eef1f5;
+          --blocker:#c62828; --major:#d97706; --nit:#7b8794; --ship:#1b7f3b; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#12161c; --card:#1b2129; --fg:#e4e8ee; --muted:#9aa5b1; --border:#2e3742; --code:#232b35; } }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.6 -apple-system,"Segoe UI","Noto Sans Thai",sans-serif; }
+  main { max-width:900px; margin:0 auto; padding:24px 16px; }
+  h1 { font-size:22px; margin:0 0 4px; } h2 { font-size:17px; margin:28px 0 10px; }
+  .muted { color:var(--muted); }
+  code { background:var(--code); padding:1px 5px; border-radius:4px; font-size:13px; }
+  .card { background:var(--card); border:1px solid var(--border); border-left:6px solid var(--nit); border-radius:8px; padding:12px 16px; margin:12px 0; }
+  .card.major { border-left-color:var(--major); } .card.blocker { border-left-color:var(--blocker); }
+  .card h3 { margin:0 0 6px; font-size:15px; }
+  .sev { display:inline-block; font-size:11px; font-weight:bold; color:#fff; padding:1px 8px; border-radius:10px; margin-right:6px; background:var(--nit); }
+  .major .sev { background:var(--major); } .blocker .sev { background:var(--blocker); }
+  dl { margin:0; } dt { font-weight:bold; font-size:13px; color:var(--muted); margin-top:6px; } dd { margin:0 0 0 0; }
+  .verdict { display:inline-block; background:var(--ship); color:#fff; font-weight:bold; padding:6px 14px; border-radius:16px; }
+  ul { padding-left:20px; }
+</style>
+</head>
+<body>
+<main>
+<h1>Scrutinize: <code>agent-team logs</code> (branch feat/agent-team-logs)</h1>
+<div class="muted">2026-09-27 · ช่วง commit 1f1ab85..7ba2fe6 · plan: docs/plan/2026-09-26-agent-team-logs.html</div>
+
+<h2>เจตนา</h2>
+<p>ให้ผู้ใช้หาสาเหตุที่ agent ล้มได้จากหน้า HTML เดียว โดยรวม <code>agent-team.log</code> กับ transcript ของ Agent SDK แล้วสรุปสาเหตุที่น่าจะเป็นไว้บนสุด</p>
+<p><strong>มีวิธีที่ง่ายกว่าไหม:</strong> มีบางส่วน สาเหตุหลักที่เจอจริง (529 และเน็ตหลุด) มาถึง runner อยู่แล้วเป็น message <code>system/api_retry</code> ที่มี type ชัดเจน ถ้า runner บันทึกข้อความนี้ลง log เองตั้งแต่แรก การวิเคราะห์สาเหตุหลักจะไม่ต้องพึ่งไฟล์ภายในของ <code>~/.claude</code> เลย (ดู finding ข้อ 1) ส่วน transcript ยังมีประโยชน์สำหรับดูว่า agent เรียก tool อะไรไปบ้าง ตัว viewer จึงยังควรมีอยู่</p>
+
+<h2>ตรวจแล้วว่าทำงานจริง</h2>
+<ul>
+  <li><code>node bin/agent-team.mjs logs C:/work/my/mail-sender</code> ได้ <code>logs.html</code> ที่ <code>__DEFAULT_RUN__ = 0</code> ซึ่งเป็นรอบที่ error เจอ 529 Overloaded ×30 และเชื่อมต่อ API ไม่ได้ ×10</li>
+  <li>รัน JS ของหน้าเว็บด้วย DOM shim กับไฟล์จริง: render, เปิดการ์ด (มี 4 step), เปิด <code>&lt;details&gt;</code> (สร้าง <code>&lt;pre&gt;</code> ตอนเปิดครั้งแรก) และสลับรอบ ทำงานได้โดยไม่มี error</li>
+  <li><code>npm test</code> ผ่าน 754 เทสต์ และ <code>npm run typecheck</code> ไม่มี error</li>
+  <li><strong>XSS:</strong> ทุกข้อความใส่ผ่าน <code>textContent</code> และ JSON escape <code>&lt;</code> / U+2028 / U+2029 แล้ว</li>
+  <li><strong>server:</strong> bind 127.0.0.1 และตรวจ Host header (ไม่สนตัวพิมพ์ใหญ่เล็ก)</li>
+  <li><strong>agent ที่ล้มกลางคัน:</strong> <code>parse-log.ts</code> ปิด call เก่าเป็น <code>exception</code> เมื่อมี <code>agent.start</code> ใหม่ของ role เดียวกันเข้ามา และ <code>findByTime</code> ไม่เลือกไฟล์ที่ call อื่นใช้อยู่แล้ว</li>
+  <li><strong>Windows:</strong> ใช้ <code>explorer.exe</code> แทน <code>cmd</code> เลยไม่มีปัญหา <code>%VAR%</code> ถูกแทนค่า</li>
+</ul>
+
+<h2>Findings</h2>
+
+<div class="card major">
+  <h3><span class="sev">MAJOR</span>สาเหตุหลักอยู่ใน SDK stream อยู่แล้ว แต่ runner ไม่ได้บันทึกลง log ทำให้ viewer ต้องพึ่งไฟล์ภายในและการเดาจากช่วงเวลา</h3>
+  <dl>
+    <dt>ทำไมสำคัญ</dt>
+    <dd><code>transcripts.ts</code> อ่าน <code>~/.claude/projects/&lt;dir&gt;/&lt;session&gt;.jsonl</code> ซึ่งเป็นรูปแบบไฟล์ภายในที่ไม่มีเอกสารรับรอง จะไม่มีข้อมูลให้อ่านเมื่อ:
+      <ul>
+        <li>ไฟล์ถูกลบ</li>
+        <li>เปิดดูจากคนละเครื่อง</li>
+        <li><code>CLAUDE_CONFIG_DIR</code> ต่างกัน</li>
+        <li>path ยาวจนถูกตัดชื่อ</li>
+        <li>SDK เปลี่ยน format</li>
+      </ul>
+      กรณีเหล่านี้ทำให้กล่อง "สาเหตุที่น่าจะเป็น" ว่างเปล่า ทั้งที่ข้อมูลเคยผ่านมือ runner แล้ว นอกจากนี้ call ที่ไม่มี sessionId ยังต้องใช้ <code>findByTime</code> ซึ่งเป็นการเดาจากช่วงเวลา</dd>
+    <dt>หลักฐาน</dt>
+    <dd><code>sdk.d.ts:3383</code> <code>SDKAPIRetryMessage { type:'system', subtype:'api_retry', attempt, error_status, error: 'overloaded'|'rate_limit'|'authentication_failed'|..., session_id }</code> แต่ loop ใน <code>src/runner.ts</code> (บริเวณบรรทัด 199–230) จัดการแค่ <code>init</code> / <code>assistant</code> / <code>result</code> ส่วน <code>session_id</code> ก็ถูกเก็บไว้ในตัวแปรเท่านั้น จะถูกบันทึกลง log ก็ต่อเมื่อมี <code>agent.result</code></dd>
+    <dt>แนวทางแก้ไข</dt>
+    <dd>
+      <ul>
+        <li>ใน runner บันทึก <code>agent.api_retry {role, attempt, status, error}</code> และ <code>agent.session {role, sessionId}</code> ตอนที่เห็น session_id ครั้งแรก</li>
+        <li><code>diagnose.ts</code> อ่านจาก event เหล่านี้ก่อน แล้วใช้ transcript เป็นข้อมูลเสริม</li>
+        <li><code>parse-log.ts</code> เอา sessionId จาก <code>agent.session</code> มาใช้ ซึ่งจะทำให้ไม่ต้องพึ่ง <code>findByTime</code> แทบทั้งหมด</li>
+      </ul>
+      เป็นงานเล็กประมาณ 20 บรรทัด ทำเป็นงานถัดไปได้</dd>
+  </dl>
+</div>
+
+<div class="card major">
+  <h3><span class="sev">MAJOR</span>cache ของ <code>--live</code> เก็บ JSON ดิบของ transcript ทุกไฟล์ไว้ตลอดอายุ server (<code>transcripts.ts:41,57,68</code>)</h3>
+  <dl>
+    <dt>ทำไมสำคัญ</dt>
+    <dd>แก้ปัญหา CPU ได้ แต่ย้ายภาระไปที่ RAM แทน:
+      <ul>
+        <li>entry ที่เก็บเป็น object เต็ม รวม prompt ยาว ๆ และผล tool ที่ยังไม่ได้ตัด</li>
+        <li><code>findByTime</code> ก็ parse และ cache ทุก <code>.jsonl</code> ในโฟลเดอร์ รวม session Claude Code ที่ผู้ใช้เปิดเองในโปรเจกต์นั้นด้วย</li>
+      </ul>
+      โปรเจกต์ใหญ่ที่เปิด <code>--live</code> ค้างไว้นาน ๆ จะใช้ RAM มากหลายเท่าของขนาดไฟล์</dd>
+    <dt>หลักฐาน</dt>
+    <dd><code>parseJsonl</code> push <code>{ timestamp, entry }</code> โดย <code>entry</code> คือ object ที่ได้จาก <code>JSON.parse</code> ทั้งก้อน จากนั้น <code>loadEntries</code> เก็บ array นี้ใน <code>Map</code> ที่ไม่มีการลบออกเลย</dd>
+    <dt>แนวทางแก้ไข</dt>
+    <dd>
+      <ul>
+        <li>cache ผลที่แปลงแล้ว <code>{ time, steps: TranscriptStep[] }</code> ซึ่งตัดข้อความไว้ที่ 2,000 ตัวอักษรแล้ว แทนการเก็บ entry ดิบ</li>
+        <li>สำหรับ <code>findByTime</code> ให้ cache แค่ timestamp แรกของแต่ละไฟล์</li>
+      </ul></dd>
+  </dl>
+</div>
+
+<div class="card">
+  <h3><span class="sev">NIT</span><code>findByTime</code> อาจหยิบ session Claude Code ส่วนตัวของผู้ใช้มาใส่ใน <code>logs.html</code></h3>
+  <dl>
+    <dt>ทำไมสำคัญ</dt>
+    <dd>session ที่ผู้ใช้เปิด <code>claude</code> เองในโฟลเดอร์โปรเจกต์ใช้โฟลเดอร์ transcript เดียวกัน ถ้า call ของ agent ไม่มี sessionId และช่วงเวลาทับกัน เนื้อหาจาก session ส่วนตัวจะไปโผล่ในไฟล์ที่อาจถูกส่งต่อให้คนอื่น</dd>
+    <dt>หลักฐาน</dt>
+    <dd><code>findByTime</code> เลือกไฟล์จากเวลาของ entry แรกอย่างเดียว ไม่ได้ตรวจว่า session เป็นของ SDK หรือเปล่า (ใน entry มี <code>entrypoint: "sdk-ts"</code> ให้ใช้ตรวจได้)</dd>
+    <dt>แนวทางแก้ไข</dt>
+    <dd>กรองเอาเฉพาะไฟล์ที่ entry แรกมี <code>entrypoint === 'sdk-ts'</code> หรือแก้ finding ข้อ 1 ซึ่งทำให้แทบไม่ต้องใช้ <code>findByTime</code> อยู่แล้ว</dd>
+  </dl>
+</div>
+
+<div class="card">
+  <h3><span class="sev">NIT</span>logic ที่ใช้เลือกรอบเริ่มต้นมีสองชุด: <code>defaultRunIndex</code> (TS) และ <code>computeDefaultRun</code> (PAGE_JS)</h3>
+  <dl>
+    <dt>ทำไมสำคัญ</dt><dd>ถ้าแก้ชุดหนึ่งแล้วลืมอีกชุด โหมด live จะกระโดดไปคนละรอบกับที่ไฟล์ static เลือก</dd>
+    <dt>หลักฐาน</dt><dd><code>view-data.ts</code> <code>defaultRunIndex</code> และ <code>page-assets.ts:55</code> <code>computeDefaultRun</code></dd>
+    <dt>แนวทางแก้ไข</dt><dd>ให้ server ส่งค่า <code>defaultRun</code> มาใน <code>/data</code> แล้วให้ PAGE_JS ใช้ค่านั้นแทนการคำนวณเอง</dd>
+  </dl>
+</div>
+
+<div class="card">
+  <h3><span class="sev">NIT</span><code>agent-team logs</code> ยังให้กด <code>n</code> สร้างโฟลเดอร์ได้ และยังอัปเดตลำดับรายชื่อโปรเจกต์</h3>
+  <dl>
+    <dt>ทำไมสำคัญ</dt><dd>กด <code>n</code> ใน logs จะได้โฟลเดอร์เปล่า แล้วตามด้วย error "ไม่พบ log" และการแค่เปิดดู log ก็ทำให้ลำดับโปรเจกต์ล่าสุดเปลี่ยน</dd>
+    <dt>หลักฐาน</dt><dd><code>src/index.ts</code> เรียก <code>selectProject</code> และ <code>registry.touch</code> ก่อนจะแยกทางไปคำสั่ง <code>logs</code></dd>
+    <dt>แนวทางแก้ไข</dt><dd>ถ้าเป็นคำสั่ง <code>logs</code> ให้ข้าม <code>touch</code> และส่ง option ไปซ่อน <code>n</code> ในเมนู</dd>
+  </dl>
+</div>
+
+<h2>Verdict</h2>
+<p><span class="verdict">ship</span></p>
+<p>เหตุผลหลัก: ลองกับข้อมูลจริงแล้วทำงานครบตั้งแต่ต้นจนจบ หน้าเปิดมาที่รอบที่ error และชี้ 529/เน็ตหลุดได้ถูกต้อง เทสต์ผ่านครบ และด้านความปลอดภัยไม่มีช่องโหว่ ส่วน major สองข้อเป็นเรื่องความทนทานระยะยาวและ RAM ของ <code>--live</code> ในโปรเจกต์ใหญ่ ไม่ใช่บั๊กที่เห็นได้ตอนนี้ ข้อที่ควรทำต่อก่อนคือให้ runner บันทึก <code>api_retry</code> และ <code>session</code> ลง log</p>
+</main>
+</body>
+</html>

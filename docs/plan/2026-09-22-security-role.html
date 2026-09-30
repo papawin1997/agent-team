@@ -1,0 +1,1062 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>Security Role Implementation Plan</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; line-height: 1.55;
+         max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1f2933;
+         background: #f5f7fa; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  pre { background: #1f2933; color: #e4e7eb; padding: .9rem 1rem;
+        border-radius: 6px; overflow-x: auto; }
+  code { background: #e4e7eb; padding: .1rem .35rem; border-radius: 4px; }
+  pre code { background: none; padding: 0; color: inherit; }
+  .frame { border-left: 6px solid; border-radius: 8px; padding: 1rem 1.25rem;
+           margin: 1.25rem 0; background: #ffffff;
+           box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .frame-header     { border-color: #2563eb; background: #eff6ff; }  /* blue  */
+  .frame-constraints{ border-color: #d97706; background: #fffbeb; }  /* amber */
+  .frame-task       { border-color: #059669; background: #ecfdf5; }  /* green */
+  .frame h1, .frame h2, .frame h3 { margin-top: 0; }
+  .note { border-color: #7c3aed; background: #f5f3ff; }              /* violet */
+  .step { display: flex; gap: .5rem; align-items: baseline;
+          margin: .75rem 0 .25rem; }
+  .step input { transform: scale(1.2); margin-top: .15rem; }
+  .meta { color: #52606d; font-size: .9rem; }
+</style>
+</head>
+<body>
+
+<div class="frame frame-header">
+  <h1>Security Role Implementation Plan</h1>
+  <p><strong>เป้าหมาย:</strong> เพิ่ม role <code>security</code> (read-only) เข้าไปใน agent-team ให้รีวิวความปลอดภัยของ design ทั้งระบบครั้งเดียวก่อนเข้า BUILD และรีวิวความปลอดภัยของแต่ละ task หลังจาก QA ผ่านแล้วในแต่ละรอบ</p>
+  <p><strong>สถาปัตยกรรม:</strong> role ใหม่ทำงานเหมือน pm/planning (Read/Glob/Grep เท่านั้น ไม่มี Edit/Write/Bash) แตะระบบ 2 จุด — (1) Design phase: รีวิว design ทั้งหมดครั้งเดียวต่อโปรเจกต์ คืน <code>securityNotes: string[]</code> ที่ผูกไปกับ design ตลอดทั้งโปรเจกต์ (2) Build phase: หลัง QA ผ่านในแต่ละรอบของแต่ละ task ให้ security รีวิว diff ต่อ ถ้าเจอ blocker/major ให้ถือว่ารอบนั้นไม่ผ่าน (ใช้ <code>progress.rounds</code> counter เดิม ไม่เพิ่ม counter ใหม่) ไม่เรียก security ถ้า QA ยัง fail อยู่แล้ว (ประหยัด API call)</p>
+  <p><strong>Tech Stack:</strong> TypeScript, vitest, zod (structured output schema), @anthropic-ai/claude-agent-sdk</p>
+</div>
+
+<div class="frame note">
+  <strong>For agentic workers:</strong> REQUIRED SUB-SKILL: Use
+  tb-subagent-driven-development (recommended) or
+  tb-executing-plans to implement this plan task-by-task. Steps keep
+  the <code>- [ ]</code> marker next to each checkbox for tracking.
+</div>
+
+<div class="frame frame-constraints">
+  <h2>Global Constraints</h2>
+  <ul>
+    <li>ทำงานทั้งหมดบน branch ใหม่ชื่อ <code>feat/security-role</code> แตกจาก <code>main</code> (ตอนนี้ <code>main</code> ตรงกับ <code>origin/main</code> พอดี) — สร้าง branch นี้เป็น step แรกของ Task 1 เท่านั้น ไม่ต้องสร้างซ้ำใน task อื่น</li>
+    <li>ห้าม <code>git add -A</code> หรือ <code>git add .</code> — stage เฉพาะไฟล์ที่ task นั้นแก้จริงเสมอ</li>
+    <li>รัน <code>npm test</code> ให้ผ่านทั้งหมดก่อน commit ทุกครั้ง — ถ้า task นั้นแตะ type ที่ role อื่น implement อยู่ (เช่น RoleRunner interface) ให้รัน <code>npm run typecheck</code> ด้วย</li>
+    <li>โค้ดและชื่อ field ใหม่ทั้งหมดต้องตามสไตล์เดิมของไฟล์ที่แก้ (ภาษาอังกฤษสำหรับโค้ด, ข้อความ error/comment สั้นเป็นภาษาไทยแบบที่ไฟล์เดิมใช้)</li>
+    <li>Security role ต้อง read-only เสมอ — <code>tools</code>/<code>allowedTools</code> มีแค่ <code>Read/Glob/Grep</code> และต้องถูกปฏิเสธโดย guard hook เหมือน pm/planning ด้วย (defense-in-depth สองชั้น ไม่ใช่พึ่งแค่ tools restriction)</li>
+    <li>commit message จบด้วย attribution line ตามที่ระบบกำหนดในเซสชันที่รันจริงตอนนั้น (เช่น <code>Co-Authored-By:</code> และ <code>Claude-Session:</code> ถ้ามี) — ห้าม hardcode ค่าจากเซสชันที่เขียน plan ฉบับนี้ เพราะอาจถูก execute จากเซสชันอื่น</li>
+    <li>อย่าลบหรือย้ายไฟล์ที่ไม่เกี่ยวข้องกับ security role — ทุก task แก้เฉพาะไฟล์ที่ระบุไว้เท่านั้น</li>
+  </ul>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 1: เพิ่ม role <code>security</code> เข้า config + system prompt</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/config.ts:6-7, 54-64, 79-89</code></li>
+    <li>แก้ไข: <code>src/prompts.ts:53-72</code></li>
+    <li>เทสต์: <code>tests/config.test.ts</code>, <code>tests/prompts.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): ไม่มี — เป็น task แรก</li>
+    <li>ส่งต่อ (Produces): <code>RoleName</code> รวม <code>'security'</code>, <code>DEFAULT_CONFIG.roles.security</code> ({ model: <code>'claude-sonnet-5'</code>, maxTurns: 60, maxBudgetUsd: 4, tools/allowedTools: <code>['Read','Glob','Grep']</code>, skills: [] }), <code>SYSTEM_PROMPTS.security</code> — task ถัดไปทุก task ที่อ้าง role <code>'security'</code> ต้องมีสิ่งเหล่านี้พร้อมแล้ว</li>
+  </ul>
+
+  <p class="meta"><strong>เหตุผลที่ต้องทำ config.ts และ prompts.ts พร้อมกันใน task เดียว:</strong> <code>SYSTEM_PROMPTS</code> มี type <code>Record&lt;RoleName, string&gt;</code> — พอ <code>RoleName</code> มี <code>'security'</code> เพิ่ม TypeScript จะบังคับให้ object literal มี key <code>security</code> ทันที ถ้าแก้แค่ config.ts อย่างเดียว <code>npm run typecheck</code> จะพังที่ prompts.ts</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: สร้าง branch ใหม่</strong></span></p>
+<pre><code>git checkout main
+git pull origin main
+git checkout -b feat/security-role</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: แก้ tests/config.test.ts ให้รวม security ในชุด role ที่อ่านอย่างเดียว</strong></span></p>
+  <p>แก้ 2 บรรทัดนี้ในไฟล์ (หา <code>['pm', 'planning'] as const</code> ทั้งสองที่):</p>
+<pre><code>  it('pm กับ planning ใช้เครื่องมืออ่านอย่างเดียว', () =&gt; {
+    for (const role of ['pm', 'planning', 'security'] as const) {
+      expect(DEFAULT_CONFIG.roles[role].tools).toEqual(['Read', 'Glob', 'Grep']);
+    }
+  });</code></pre>
+<pre><code>  it('pm กับ planning ไม่มี Bash ใน allowedTools', () =&gt; {
+    for (const role of ['pm', 'planning', 'security'] as const) {
+      expect(DEFAULT_CONFIG.roles[role].allowedTools).toEqual(['Read', 'Glob', 'Grep']);
+    }
+  });</code></pre>
+  <p>แก้ test นี้ให้เพิ่ม assertion ของ security model:</p>
+<pre><code>  it('planning ใช้ claude-opus-5 ส่วน role อื่นใช้ claude-sonnet-5', () =&gt; {
+    expect(DEFAULT_CONFIG.roles.planning.model).toBe('claude-opus-5');
+    expect(DEFAULT_CONFIG.roles.qa.model).toBe('claude-sonnet-5');
+    expect(DEFAULT_CONFIG.roles.security.model).toBe('claude-sonnet-5');
+  });</code></pre>
+  <p>เพิ่ม test ใหม่ในกลุ่ม <code>describe('mergeConfig', ...)</code> ต่อท้าย <code>it('override maxQaRounds ได้', ...)</code>:</p>
+<pre><code>  it('override skills ของ security โดยไม่กระทบ role อื่น', () =&gt; {
+    const merged = mergeConfig(DEFAULT_CONFIG, {
+      roles: { security: { skills: ['team:security-checklist'] } },
+    });
+    expect(merged.roles.security.skills).toEqual(['team:security-checklist']);
+    expect(merged.roles.security.model).toBe('claude-sonnet-5');
+    expect(merged.roles.qa.skills).toEqual([]);
+  });</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แก้ tests/prompts.test.ts ให้เช็คเนื้อหา SECURITY_PROMPT</strong></span></p>
+  <p>เพิ่ม test ต่อท้าย <code>it('worker แต่ละฝั่งระบุขอบเขตของตัวเอง', ...)</code> ในกลุ่ม <code>describe('SYSTEM_PROMPTS', ...)</code>:</p>
+<pre><code>  it('Security เน้น OWASP และห้ามแก้โค้ด', () =&gt; {
+    expect(SYSTEM_PROMPTS.security).toContain('OWASP');
+    expect(SYSTEM_PROMPTS.security).toContain('never run commands, write code or edit files');
+  });</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รันเทสต์เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npm test -- config prompts</code><br>
+     คาดหวัง: FAIL เพราะ <code>DEFAULT_CONFIG.roles.security</code> และ <code>SYSTEM_PROMPTS.security</code> ยังไม่มี (TypeScript อาจ error ตั้งแต่ compile เพราะ index ด้วย key ที่ไม่มีใน type)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: แก้ src/config.ts — เพิ่ม role security</strong></span></p>
+  <p>แก้บรรทัด 6-7:</p>
+<pre><code>export type RoleName = 'pm' | 'planning' | 'frontend' | 'backend' | 'qa' | 'security';
+export const ROLE_NAMES: readonly RoleName[] = ['pm', 'planning', 'frontend', 'backend', 'qa', 'security'];</code></pre>
+  <p>แก้ <code>DEFAULT_CONFIG.roles</code> (เดิมจบที่ <code>qa: { ... }</code>) ให้เพิ่มบรรทัดใหม่ต่อท้าย:</p>
+<pre><code>export const DEFAULT_CONFIG: TeamConfig = {
+  maxQaRounds: 5,
+  extraRoundsOnContinue: 5,
+  roles: {
+    pm: { model: SONNET, maxTurns: 20, maxBudgetUsd: 2, tools: READ_TOOLS, allowedTools: READ_TOOLS, skills: [] },
+    planning: { model: OPUS, maxTurns: 40, maxBudgetUsd: 5, tools: READ_TOOLS, allowedTools: READ_TOOLS, skills: [] },
+    frontend: { model: SONNET, maxTurns: 80, maxBudgetUsd: 5, tools: WORK_TOOLS, allowedTools: WORK_ALLOWED, skills: [] },
+    backend: { model: SONNET, maxTurns: 80, maxBudgetUsd: 5, tools: WORK_TOOLS, allowedTools: WORK_ALLOWED, skills: [] },
+    qa: { model: SONNET, maxTurns: 60, maxBudgetUsd: 4, tools: WORK_TOOLS, allowedTools: WORK_ALLOWED, skills: [] },
+    security: { model: SONNET, maxTurns: 60, maxBudgetUsd: 4, tools: READ_TOOLS, allowedTools: READ_TOOLS, skills: [] },
+  },
+};</code></pre>
+  <p>แก้ <code>ConfigOverrideSchema</code> (ในบล็อก <code>roles: z.object({...}).strict().optional()</code>) ให้เพิ่ม key security:</p>
+<pre><code>    roles: z
+      .object({
+        pm: RoleOverrideSchema.optional(),
+        planning: RoleOverrideSchema.optional(),
+        frontend: RoleOverrideSchema.optional(),
+        backend: RoleOverrideSchema.optional(),
+        qa: RoleOverrideSchema.optional(),
+        security: RoleOverrideSchema.optional(),
+      })
+      .strict()
+      .optional(),</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: แก้ src/prompts.ts — เพิ่ม SECURITY_PROMPT</strong></span></p>
+  <p>เพิ่มค่าคงที่นี้ต่อจาก <code>QA_PROMPT</code> (ก่อนบรรทัด <code>export const SYSTEM_PROMPTS</code>):</p>
+<pre><code>const SECURITY_PROMPT = [
+  'You are the Security Specialist. You read code and designs to find security risks; you never run commands, write code or edit files.',
+  '',
+  'You get one of two kinds of requests:',
+  '1. Review a whole design (architecture, apiContract, dataModel, tasks) before any code is written. Return a JSON object with securityNotes: a short list of concrete, actionable security requirements for the team to keep in mind while building (for example "hash passwords with a salt, never store them in plaintext"). Return an empty list if you see nothing worth flagging. Do not invent risks for features that are out of scope.',
+  '2. Review ONE task already implemented by a worker. Compare the changed files against the task, the design and the security notes from step 1. Return the JSON report: taskId, verdict ("PASS" only if there is no blocker or major issue, otherwise "FAIL"), and issues (severity blocker|major|minor, file, description, suggestedFix).',
+  '',
+  'Focus on OWASP Top 10-style issues: injection (SQL/command/XSS), broken authentication or authorization, hardcoded secrets or sensitive data exposure, missing input validation, insecure deserialization, vulnerable/outdated dependencies, security misconfiguration, and unsafe handling of user input.',
+  '- Report only real, concrete findings tied to specific code or design text. Do not speculate about hypothetical future features. Style preferences are not security issues.',
+].join('\n');</code></pre>
+  <p>แก้ <code>SYSTEM_PROMPTS</code> ให้เพิ่ม key security:</p>
+<pre><code>export const SYSTEM_PROMPTS: Record&lt;RoleName, string&gt; = {
+  pm: PM_PROMPT,
+  planning: PLANNING_PROMPT,
+  frontend: workerPrompt('frontend'),
+  backend: workerPrompt('backend'),
+  qa: QA_PROMPT,
+  security: SECURITY_PROMPT,
+};</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: รันเทสต์และ typecheck เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npm test</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: ทั้งสองคำสั่งผ่านหมด (ไฟล์อื่นที่ยังไม่รู้จัก role security เช่น deps.ts/runner.ts/fakes.ts จะยังไม่พัง เพราะยังไม่มีที่ไหน exhaustively require มันในตอนนี้)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 8: Commit</strong></span></p>
+<pre><code>git add src/config.ts src/prompts.ts tests/config.test.ts tests/prompts.test.ts
+git commit -m "feat: add security role (config + system prompt)"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 2: ให้ guard hook ปฏิบัติกับ security เป็น read-only role</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/guard.ts:95</code></li>
+    <li>เทสต์: <code>tests/guard.test.ts:62</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>RoleName</code> ที่มี <code>'security'</code> แล้วจาก Task 1</li>
+    <li>ส่งต่อ (Produces): ไม่มี type ใหม่ — เป็นแค่การเสริมความปลอดภัยชั้นที่สอง (defense-in-depth) ให้ตรงกับที่ config.ts จำกัด tools ไว้แล้ว</li>
+  </ul>
+
+  <p>ตอนนี้ <code>checkToolUse</code> ปฏิเสธ Write/Edit/Bash ให้ <code>pm</code> กับ <code>planning</code> เท่านั้น ต้องเพิ่ม <code>security</code> เข้าไปด้วย ไม่งั้นถ้ามี bug ทำให้ tools ถูกเปิดผิดที่สักจุด security agent จะยังเขียนไฟล์/รัน Bash ได้อยู่</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: แก้ tests/guard.test.ts ให้ครอบคลุม security</strong></span></p>
+  <p>แก้บรรทัดนี้ในกลุ่ม <code>describe('pm และ planning อ่านอย่างเดียว', ...)</code>:</p>
+<pre><code>describe('pm, planning และ security อ่านอย่างเดียว', () =&gt; {
+  it.each(['pm', 'planning', 'security'] as const)('%s เขียนหรือรัน Bash ไม่ได้', (role) =&gt; {
+    expect(allowed(role, 'Write', { file_path: 'a.ts' })).toBe(false);
+    expect(allowed(role, 'Bash', { command: 'ls' })).toBe(false);
+    expect(allowed(role, 'Read', { file_path: 'a.ts' })).toBe(true);
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รันเทสต์เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npm test -- guard</code><br>
+     คาดหวัง: FAIL ที่ role <code>'security'</code> เพราะ <code>checkToolUse</code> ยังไม่ถือว่า security เป็น read-only role</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แก้ src/guard.ts</strong></span></p>
+<pre><code>  const readOnlyRole = ctx.role === 'pm' || ctx.role === 'planning' || ctx.role === 'security';</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รันเทสต์เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npm test -- guard</code><br>
+     คาดหวัง: PASS ทั้งหมด</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/guard.ts tests/guard.test.ts
+git commit -m "feat: treat security role as read-only in guard hook"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 3: เพิ่ม SecurityReportSchema และ securityNotes ใน schemas.ts</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/schemas.ts:42-63</code> (หลัง <code>QAReportSchema</code>/<code>QAIssueSchema</code>) และ <code>src/schemas.ts:25-32</code> (<code>DesignSchema</code>)</li>
+    <li>เทสต์: <code>tests/schemas.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): ไม่มี</li>
+    <li>ส่งต่อ (Produces): <code>SecurityReportSchema</code> / type <code>SecurityReport = { taskId: string; verdict: 'PASS' | 'FAIL'; issues: QAIssue[] }</code>, <code>SecurityDesignReviewSchema</code> / type <code>SecurityDesignReview = { securityNotes: string[] }</code>, <code>QAIssue</code> type (export ใหม่จาก <code>QAIssueSchema</code> เดิม), <code>DesignSchema</code> มี field <code>securityNotes?: string[]</code> เพิ่ม — task ถัดไปทุก task ที่แตะ security report/design ต้องใช้ type พวกนี้</li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: แก้ tests/schemas.test.ts</strong></span></p>
+  <p>แก้บรรทัด import ให้เพิ่ม <code>SecurityReportSchema</code>:</p>
+<pre><code>import {
+  DesignSchema,
+  PmTurnSchema,
+  QAReportSchema,
+  RequirementsSchema,
+  SecurityReportSchema,
+  TaskSchema,
+  toJsonSchema,
+} from '../src/schemas';</code></pre>
+  <p>เพิ่ม test ต่อท้าย <code>it('QAReport verdict ต้องเป็น PASS หรือ FAIL', ...)</code>:</p>
+<pre><code>  it('SecurityReport verdict ต้องเป็น PASS หรือ FAIL', () =&gt; {
+    const report = { taskId: 't', verdict: 'MAYBE', issues: [] };
+    expect(SecurityReportSchema.safeParse(report).success).toBe(false);
+  });
+
+  it('SecurityReport รับ issues ที่ครบฟิลด์', () =&gt; {
+    const report = {
+      taskId: 't',
+      verdict: 'FAIL',
+      issues: [{ severity: 'blocker', file: 'src/x.ts', description: 'มีช่องโหว่', suggestedFix: 'แก้' }],
+    };
+    expect(SecurityReportSchema.safeParse(report).success).toBe(true);
+  });
+
+  it('Design ไม่ต้องมี securityNotes ก็ผ่าน (เผื่อยังไม่ได้รีวิว)', () =&gt; {
+    const design = { overview: 'o', architecture: 'a', apiContract: 'n/a', dataModel: 'n/a', tasks: [validTask] };
+    expect(DesignSchema.safeParse(design).success).toBe(true);
+  });
+
+  it('Design รับ securityNotes เมื่อมี', () =&gt; {
+    const design = {
+      overview: 'o',
+      architecture: 'a',
+      apiContract: 'n/a',
+      dataModel: 'n/a',
+      tasks: [validTask],
+      securityNotes: ['เก็บ password แบบ hash'],
+    };
+    expect(DesignSchema.safeParse(design).success).toBe(true);
+  });</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รันเทสต์เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npm test -- schemas</code><br>
+     คาดหวัง: FAIL/compile error เพราะ <code>SecurityReportSchema</code> ยังไม่มี</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แก้ src/schemas.ts</strong></span></p>
+  <p>แก้ <code>QAIssueSchema</code> ให้ export type ด้วย (เดิมมีแค่ const):</p>
+<pre><code>export const QAIssueSchema = z.object({
+  severity: z.enum(['blocker', 'major', 'minor']),
+  file: z.string(),
+  description: z.string().min(1),
+  suggestedFix: z.string(),
+});
+export type QAIssue = z.infer&lt;typeof QAIssueSchema&gt;;</code></pre>
+  <p>แก้ <code>DesignSchema</code> ให้เพิ่ม field <code>securityNotes</code> (optional เพราะ Planning ไม่ได้เป็นคนสร้างค่านี้ — security role เป็นคนเติมทีหลังใน Task 7):</p>
+<pre><code>export const DesignSchema = z.object({
+  overview: z.string().min(1),
+  architecture: z.string().min(1),
+  apiContract: z.string(),
+  dataModel: z.string(),
+  tasks: z.array(TaskSchema).min(1),
+  securityNotes: z.array(z.string()).optional(),
+});
+export type Design = z.infer&lt;typeof DesignSchema&gt;;</code></pre>
+  <p>เพิ่มต่อจาก <code>export type QAReport = z.infer&lt;typeof QAReportSchema&gt;;</code>:</p>
+<pre><code>export const SecurityReportSchema = z.object({
+  taskId: z.string().min(1),
+  verdict: z.enum(['PASS', 'FAIL']),
+  issues: z.array(QAIssueSchema),
+});
+export type SecurityReport = z.infer&lt;typeof SecurityReportSchema&gt;;
+
+export const SecurityDesignReviewSchema = z.object({
+  securityNotes: z.array(z.string()),
+});
+export type SecurityDesignReview = z.infer&lt;typeof SecurityDesignReviewSchema&gt;;</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รันเทสต์เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npm test -- schemas</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: ผ่านหมด</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/schemas.ts tests/schemas.test.ts
+git commit -m "feat: add SecurityReportSchema and Design.securityNotes"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 4: เพิ่ม isSecurityPass ใน domain.ts</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/domain.ts:1, 38-44</code></li>
+    <li>เทสต์: <code>tests/domain.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>SecurityReport</code> type จาก Task 3</li>
+    <li>ส่งต่อ (Produces): <code>isSecurityPass(report: SecurityReport): boolean</code> — Task 8 (build.ts) จะเรียกฟังก์ชันนี้เพื่อตัดสินว่ารอบนั้นต้องนับว่าไม่ผ่านหรือไม่</li>
+  </ul>
+
+  <p>logic เดียวกับ <code>isPass</code> แต่ไม่มี <code>checks</code> ให้เช็ค (security ไม่รันคำสั่งอะไร มีแต่ issues)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>แก้บรรทัด import บนสุดของ <code>tests/domain.test.ts</code>:</p>
+<pre><code>import { DesignError, initProgress, isPass, isSecurityPass, orderTasks } from '../src/domain';</code></pre>
+  <p>เพิ่ม describe block ใหม่ต่อท้ายไฟล์ (หลัง <code>describe('initProgress', ...)</code>):</p>
+<pre><code>describe('isSecurityPass', () =&gt; {
+  it('PASS ที่ไม่มีปัญหา = ผ่าน', () =&gt; {
+    expect(isSecurityPass({ taskId: 'a', verdict: 'PASS', issues: [] })).toBe(true);
+  });
+
+  it('FAIL = ไม่ผ่าน', () =&gt; {
+    const report = {
+      taskId: 'a',
+      verdict: 'FAIL' as const,
+      issues: [{ severity: 'major' as const, file: 'x', description: 'd', suggestedFix: 'f' }],
+    };
+    expect(isSecurityPass(report)).toBe(false);
+  });
+
+  it('PASS แต่มี blocker = ไม่ผ่าน', () =&gt; {
+    const report = {
+      taskId: 'a',
+      verdict: 'PASS' as const,
+      issues: [{ severity: 'blocker' as const, file: 'x', description: 'd', suggestedFix: 'f' }],
+    };
+    expect(isSecurityPass(report)).toBe(false);
+  });
+
+  it('PASS ที่มีแค่ minor issue = ผ่าน', () =&gt; {
+    const report = {
+      taskId: 'a',
+      verdict: 'PASS' as const,
+      issues: [{ severity: 'minor' as const, file: 'x', description: 'd', suggestedFix: 'f' }],
+    };
+    expect(isSecurityPass(report)).toBe(true);
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npm test -- domain</code><br>
+     คาดหวัง: FAIL/compile error เพราะ <code>isSecurityPass</code> ยังไม่มีใน <code>src/domain.ts</code></p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p>แก้บรรทัด import บนสุดของ <code>src/domain.ts</code>:</p>
+<pre><code>import type { Design, QAReport, SecurityReport, Task } from './schemas';</code></pre>
+  <p>เพิ่มฟังก์ชันต่อจาก <code>isPass</code>:</p>
+<pre><code>export function isSecurityPass(report: SecurityReport): boolean {
+  return report.verdict === 'PASS' &amp;&amp; report.issues.every((i) =&gt; i.severity === 'minor');
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npm test -- domain</code><br>
+     คาดหวัง: PASS ทั้งหมด</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/domain.ts tests/domain.test.ts
+git commit -m "feat: add isSecurityPass"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 5: เพิ่ม SecurityDesignInput และ prompt builders</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/deps.ts:24-29</code> (เพิ่ม interface ใหม่ ไม่แตะ <code>RoleRunner</code> ใน task นี้)</li>
+    <li>แก้ไข: <code>src/prompts.ts:1-2, 95-103</code></li>
+    <li>เทสต์: <code>tests/prompts.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>Design</code>, <code>Requirements</code> จาก schemas.ts (มีอยู่แล้ว), <code>QaInput</code> จาก deps.ts (มีอยู่แล้ว — ใช้ shape เดิมสำหรับรีวิว task เพราะฟิลด์ที่ต้องใช้เหมือนกับที่ QA ใช้ทุกอย่าง)</li>
+    <li>ส่งต่อ (Produces): interface <code>SecurityDesignInput = { design: Design; requirements: Requirements }</code>, ฟังก์ชัน <code>buildSecurityDesignPrompt(input: SecurityDesignInput): string</code>, <code>buildSecurityPrompt(input: QaInput): string</code> — Task 6 (runner.ts) จะเรียกใช้ทั้งคู่</li>
+  </ul>
+
+  <p><strong>หมายเหตุ:</strong> task นี้ยังไม่แตะ <code>RoleRunner</code> interface โดยตั้งใจ (เพิ่มแค่ type <code>SecurityDesignInput</code> เฉยๆ ซึ่งไม่กระทบ implementer ใดๆ) เพื่อให้ build เขียวได้ทีละ task — การเพิ่ม method เข้า <code>RoleRunner</code> จริงอยู่ใน Task 6 ซึ่งต้องแก้ทั้ง SdkRoleRunner และ FakeRunner พร้อมกันในคราวเดียว</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>แก้บรรทัด import บนสุดของ <code>tests/prompts.test.ts</code>:</p>
+<pre><code>import {
+  buildPlanPrompt,
+  buildQaPrompt,
+  buildSecurityDesignPrompt,
+  buildSecurityPrompt,
+  buildWorkPrompt,
+  SYSTEM_PROMPTS,
+} from '../src/prompts';</code></pre>
+  <p>เพิ่ม test ต่อท้าย <code>it('buildQaPrompt ใส่ผลงานของ worker', ...)</code> ในกลุ่ม <code>describe('prompt builders', ...)</code>:</p>
+<pre><code>  it('buildSecurityDesignPrompt ใส่ design และ requirements', () =&gt; {
+    const prompt = buildSecurityDesignPrompt({ design, requirements });
+    expect(prompt).toContain('todo list');
+    expect(prompt).toContain('ภาพรวมของระบบ');
+  });
+
+  it('buildSecurityPrompt ใส่ผลงานของ worker', () =&gt; {
+    const prompt = buildSecurityPrompt({
+      task,
+      design,
+      requirements,
+      result: { taskId: 'api', summary: 'เสร็จ', filesChanged: ['src/api.ts'], howToVerify: 'npm test' },
+    });
+    expect(prompt).toContain('src/api.ts');
+    expect(prompt).toContain('npm test');
+  });</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npm test -- prompts</code><br>
+     คาดหวัง: FAIL/compile error เพราะ <code>buildSecurityDesignPrompt</code>/<code>buildSecurityPrompt</code> ยังไม่มี</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แก้ src/deps.ts</strong></span></p>
+  <p>เพิ่ม interface นี้ต่อจาก <code>QaInput</code> (ก่อน <code>RoleRunner</code>):</p>
+<pre><code>export interface SecurityDesignInput {
+  design: Design;
+  requirements: Requirements;
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: แก้ src/prompts.ts</strong></span></p>
+  <p>แก้บรรทัด import บนสุดของไฟล์:</p>
+<pre><code>import type { PlanInput, QaInput, SecurityDesignInput, WorkInput } from './deps';</code></pre>
+  <p>เพิ่มฟังก์ชันต่อท้ายไฟล์ (หลัง <code>buildQaPrompt</code>):</p>
+<pre><code>export function buildSecurityDesignPrompt(input: SecurityDesignInput): string {
+  return [
+    `Design to review (before BUILD starts):\n${json(input.design)}`,
+    `Requirements:\n${json(input.requirements)}`,
+    'List the security notes now (empty array if none).',
+  ].join('\n\n');
+}
+
+export function buildSecurityPrompt(input: QaInput): string {
+  return [
+    `Task under review:\n${json(input.task)}`,
+    `Worker result:\n${json(input.result)}`,
+    `Design:\n${json(input.design)}`,
+    `Requirements:\n${json(input.requirements)}`,
+    'Verify the task for security issues now.',
+  ].join('\n\n');
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npm test -- prompts</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: ผ่านหมด</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: Commit</strong></span></p>
+<pre><code>git add src/deps.ts src/prompts.ts tests/prompts.test.ts
+git commit -m "feat: add security prompt builders"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 6: เพิ่ม security เข้า RoleRunner (interface + SdkRoleRunner + FakeRunner)</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/deps.ts:1-4, 31-36</code> (<code>RoleRunner</code> interface)</li>
+    <li>แก้ไข: <code>src/runner.ts:1-19, 65-67</code></li>
+    <li>แก้ไข: <code>tests/helpers/fakes.ts</code> (ทั้งไฟล์ตามจุดที่ระบุ)</li>
+    <li>แก้ไข: <code>tests/helpers/builders.ts</code> (เพิ่มท้ายไฟล์)</li>
+    <li>แก้ไข: <code>tests/fakes.test.ts</code></li>
+    <li>เทสต์: <code>tests/runner.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>SecurityDesignInput</code>, <code>buildSecurityDesignPrompt</code>, <code>buildSecurityPrompt</code> จาก Task 5, <code>SecurityReportSchema</code>/<code>SecurityDesignReviewSchema</code>/<code>SecurityReport</code> จาก Task 3</li>
+    <li>ส่งต่อ (Produces): <code>RoleRunner.securityDesign(input: SecurityDesignInput): Promise&lt;string[]&gt;</code>, <code>RoleRunner.security(input: QaInput): Promise&lt;SecurityReport&gt;</code> พร้อม implementation จริงใน <code>SdkRoleRunner</code> และ test double ใน <code>FakeRunner</code> (รวม <code>passSecurityReport</code>/<code>failSecurityReport</code> ใน builders.ts) — Task 7/8 จะเรียกทั้งสอง method นี้จาก production code</li>
+  </ul>
+
+  <p><strong>เหตุผลที่ต้องรวม 4 ไฟล์นี้ใน task เดียว:</strong> การเพิ่ม method เข้า <code>RoleRunner</code> interface ทำให้ทั้ง <code>SdkRoleRunner</code> (production) และ <code>FakeRunner</code> (test double ที่ทุก phase test ใช้) พังพร้อมกันทันทีถ้า implement ไม่ครบ — ต้องแก้พร้อมกันถึงจะ compile ผ่าน</p>
+
+  <p><strong>ทำไม FakeRunner ถึง default เป็น PASS เมื่อไม่ได้ script ไว้:</strong> ทุก phase test ที่มีอยู่แล้ว (build.test.ts, design.test.ts ฯลฯ) ไม่รู้จัก security เลย ถ้า FakeRunner โยน error ตอนไม่มี script (เหมือน <code>qa</code>/<code>plans</code>) test เดิมหลักสิบตัวจะพังหมดทั้งที่ไม่เกี่ยวกับ security เลย จึงให้ default เป็น "ผ่านแบบไม่มีปัญหา" แทน — test ที่สนใจพฤติกรรม security จริงๆ (Task 8) จะ script ค่ามาชัดเจนเอง</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail — tests/runner.test.ts</strong></span></p>
+  <p>เพิ่ม test 2 ตัวนี้ในกลุ่ม <code>describe('SdkRoleRunner', ...)</code> ต่อท้ายไฟล์ (ก่อนปิด <code>});</code> สุดท้าย):</p>
+<pre><code>  it('securityDesign คืน securityNotes จาก structured output', async () =&gt; {
+    const { runner, calls } = makeRunner([[initMsg(), okResult({ securityNotes: ['เก็บ password แบบ hash'] })]]);
+    const notes = await runner.securityDesign({ design: makeDesign(), requirements: makeRequirements() });
+
+    expect(notes).toEqual(['เก็บ password แบบ hash']);
+    expect(calls[0]!.options.model).toBe('claude-sonnet-5');
+  });
+
+  it('security คืน SecurityReport จาก structured output', async () =&gt; {
+    const report = { taskId: 'api', verdict: 'PASS', issues: [] };
+    const { runner } = makeRunner([[initMsg(), okResult(report)]]);
+    const out = await runner.security({
+      task: makeTask('api'),
+      design: makeDesign(),
+      requirements: makeRequirements(),
+      result: { taskId: 'api', summary: 'เสร็จ', filesChanged: ['src/api.ts'], howToVerify: 'npm test' },
+    });
+
+    expect(out).toEqual(report);
+  });</code></pre>
+  <p>(ไฟล์นี้ import <code>makeDesign, makeRequirements, makeTask</code> จาก <code>./helpers/builders</code> อยู่แล้ว ไม่ต้องแก้ import)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npm test -- runner</code><br>
+     คาดหวัง: FAIL/compile error เพราะ <code>runner.securityDesign</code>/<code>runner.security</code> ยังไม่มี</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แก้ src/deps.ts — เพิ่ม method เข้า RoleRunner</strong></span></p>
+  <p>แก้บรรทัด import บนสุดของไฟล์:</p>
+<pre><code>import type { Design, PmTurn, QAReport, Requirements, SecurityReport, Task, WorkerResult } from './schemas';</code></pre>
+  <p>แก้ <code>RoleRunner</code>:</p>
+<pre><code>export interface RoleRunner {
+  pmTurn(input: PmInput): Promise&lt;{ turn: PmTurn; sessionId: string }&gt;;
+  plan(input: PlanInput): Promise&lt;Design&gt;;
+  work(input: WorkInput): Promise&lt;WorkerResult&gt;;
+  qa(input: QaInput): Promise&lt;QAReport&gt;;
+  securityDesign(input: SecurityDesignInput): Promise&lt;string[]&gt;;
+  security(input: QaInput): Promise&lt;SecurityReport&gt;;
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: แก้ src/runner.ts — implement ใน SdkRoleRunner</strong></span></p>
+  <p>แก้บรรทัด import 2 บรรทัดบนสุด:</p>
+<pre><code>import type { PlanInput, PmInput, QaInput, RoleRunner, SecurityDesignInput, WorkInput } from './deps';
+import { RoleOutputError, RoleRunError } from './errors';
+import { type Logger, nullLogger } from './logger';
+import { buildQueryOptions } from './options';
+import {
+  buildPlanPrompt,
+  buildQaPrompt,
+  buildSecurityDesignPrompt,
+  buildSecurityPrompt,
+  buildWorkPrompt,
+  SYSTEM_PROMPTS,
+} from './prompts';
+import {
+  type Design,
+  DesignSchema,
+  type PmTurn,
+  PmTurnSchema,
+  type QAReport,
+  QAReportSchema,
+  SecurityDesignReviewSchema,
+  type SecurityReport,
+  SecurityReportSchema,
+  type WorkerResult,
+  WorkerResultSchema,
+  toJsonSchema,
+} from './schemas';</code></pre>
+  <p>เพิ่ม method ต่อจาก <code>qa()</code> (ก่อน <code>private async runValidated</code>):</p>
+<pre><code>  async securityDesign(input: SecurityDesignInput): Promise&lt;string[]&gt; {
+    const out = await this.runValidated('security', buildSecurityDesignPrompt(input), SecurityDesignReviewSchema);
+    return out.data.securityNotes;
+  }
+
+  async security(input: QaInput): Promise&lt;SecurityReport&gt; {
+    return (await this.runValidated('security', buildSecurityPrompt(input), SecurityReportSchema)).data;
+  }</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: แก้ tests/helpers/fakes.ts</strong></span></p>
+  <p>แก้บรรทัด import 2 บรรทัดบนสุดของไฟล์:</p>
+<pre><code>import { DEFAULT_CONFIG } from '../../src/config';
+import type {
+  Deps,
+  PlanInput,
+  PmInput,
+  QaInput,
+  RoleRunner,
+  SecurityDesignInput,
+  StateStore,
+  UserIO,
+  WorkInput,
+} from '../../src/deps';
+import type { Design, PmTurn, QAReport, SecurityReport, WorkerResult } from '../../src/schemas';
+import type { State } from '../../src/state';</code></pre>
+  <p>แก้ <code>FakeScript</code> ให้เพิ่ม field:</p>
+<pre><code>export interface FakeScript {
+  pm?: PmTurn[];
+  plans?: Design[];
+  /** ต่อ call ของ work: Error = โยน error นั้น, undefined/หมด = คืนผลปกติ */
+  work?: Array&lt;Error | undefined&gt;;
+  /** ต่อ call ของ qa: Error = โยน error นั้น */
+  qa?: Array&lt;QAReport | Error&gt;;
+  /** ต่อ call ของ securityDesign: Error = โยน error นั้น, undefined/หมด = คืน [] (ไม่มี note) */
+  securityDesign?: Array&lt;string[] | Error&gt;;
+  /** ต่อ call ของ security: Error = โยน error นั้น, undefined/หมด = คืน PASS ว่าง (เผื่อ test ที่ไม่สนใจ security) */
+  security?: Array&lt;SecurityReport | Error&gt;;
+}</code></pre>
+  <p>แก้ class <code>FakeRunner</code> ให้มี field/constructor ใหม่ (เพิ่มต่อจาก <code>qaReports</code>):</p>
+<pre><code>export class FakeRunner implements RoleRunner {
+  calls: RecordedCall[] = [];
+  private pm: PmTurn[];
+  private plans: Design[];
+  private workScript: Array&lt;Error | undefined&gt;;
+  private qaReports: Array&lt;QAReport | Error&gt;;
+  private securityDesignScript: Array&lt;string[] | Error&gt;;
+  private securityScript: Array&lt;SecurityReport | Error&gt;;
+
+  constructor(script: FakeScript) {
+    this.pm = [...(script.pm ?? [])];
+    this.plans = [...(script.plans ?? [])];
+    this.workScript = [...(script.work ?? [])];
+    this.qaReports = [...(script.qa ?? [])];
+    this.securityDesignScript = [...(script.securityDesign ?? [])];
+    this.securityScript = [...(script.security ?? [])];
+  }</code></pre>
+  <p>เพิ่ม method ต่อจาก <code>qa()</code> (ก่อน <code>async plan</code> หรือหลัง <code>qa()</code> ก็ได้ — วางต่อจาก <code>qa()</code>):</p>
+<pre><code>  async securityDesign(input: SecurityDesignInput): Promise&lt;string[]&gt; {
+    this.calls.push({ role: 'security', input });
+    const scripted = this.securityDesignScript.shift();
+    if (scripted instanceof Error) throw scripted;
+    return scripted ?? [];
+  }
+
+  async security(input: QaInput): Promise&lt;SecurityReport&gt; {
+    this.calls.push({ role: 'security', input });
+    const scripted = this.securityScript.shift();
+    if (scripted instanceof Error) throw scripted;
+    return scripted ?? { taskId: input.task.id, verdict: 'PASS', issues: [] };
+  }</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: แก้ tests/helpers/builders.ts</strong></span></p>
+  <p>แก้บรรทัด import บนสุด:</p>
+<pre><code>import type { Design, PmTurn, QAReport, Requirements, SecurityReport, Task } from '../../src/schemas';</code></pre>
+  <p>เพิ่มฟังก์ชันต่อจาก <code>failReport</code>:</p>
+<pre><code>export function passSecurityReport(taskId: string): SecurityReport {
+  return { taskId, verdict: 'PASS', issues: [] };
+}
+
+export function failSecurityReport(
+  taskId: string,
+  severity: 'blocker' | 'major' | 'minor' = 'major',
+): SecurityReport {
+  return {
+    taskId,
+    verdict: 'FAIL',
+    issues: [{ severity, file: 'src/x.ts', description: 'มีช่องโหว่', suggestedFix: 'แก้' }],
+  };
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: เพิ่ม test ยืนยัน default-pass behavior ใน tests/fakes.test.ts</strong></span></p>
+  <p>แก้บรรทัด import บนสุด:</p>
+<pre><code>import { asking, makeDesign, makeRequirements, makeTask, passReport } from './helpers/builders';</code></pre>
+  <p>เพิ่ม test ต่อท้ายกลุ่ม <code>describe('FakeRunner / MemoryStore', ...)</code>:</p>
+<pre><code>  it('security ไม่ scripted = คืน PASS ว่างสำหรับ taskId นั้น', async () =&gt; {
+    const { runner } = makeDeps({}, []);
+    const report = await runner.security({
+      task: makeTask('x'),
+      result: { taskId: 'x', summary: 's', filesChanged: [], howToVerify: '' },
+      design: makeDesign(),
+      requirements: makeRequirements(),
+    });
+    expect(report).toEqual({ taskId: 'x', verdict: 'PASS', issues: [] });
+  });
+
+  it('securityDesign ไม่ scripted = คืน securityNotes ว่าง', async () =&gt; {
+    const { runner } = makeDeps({}, []);
+    const notes = await runner.securityDesign({ design: makeDesign(), requirements: makeRequirements() });
+    expect(notes).toEqual([]);
+  });</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 8: รันเทสต์ทั้งหมดและ typecheck เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npm test</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: ผ่านหมดทุกไฟล์ (phase test เดิมทั้งหมดต้องยังผ่านเหมือนก่อนหน้านี้ เพราะยังไม่มี production code เรียก <code>runner.security</code>/<code>runner.securityDesign</code> จริง)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 9: Commit</strong></span></p>
+<pre><code>git add src/deps.ts src/runner.ts tests/helpers/fakes.ts tests/helpers/builders.ts tests/fakes.test.ts tests/runner.test.ts
+git commit -m "feat: implement security in RoleRunner (SdkRoleRunner + FakeRunner)"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 7: ผูก security เข้า Design phase + แสดงใน formatDesign</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/phases/design.ts:14-31</code></li>
+    <li>แก้ไข: <code>src/format.ts:22-39</code></li>
+    <li>เทสต์: <code>tests/phases/design.test.ts</code>, <code>tests/format.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>runner.securityDesign</code> จาก Task 6</li>
+    <li>ส่งต่อ (Produces): <code>state.design.securityNotes</code> ถูกเติมก่อนเข้า <code>REVIEW</code> เสมอ (array ว่างได้ถ้า security ไม่เจออะไร) — <code>formatDesign</code> แสดงให้ user เห็นตอน <code>runReview</code> ก่อน confirm</li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail — tests/phases/design.test.ts</strong></span></p>
+  <p>แก้บรรทัด import บนสุด:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import type { PlanInput, SecurityDesignInput } from '../../src/deps';
+import { DesignError } from '../../src/domain';
+import { runDesign, runReview } from '../../src/phases/design';
+import { newState, type State } from '../../src/state';
+import { asking, makeDesign, makeRequirements, makeTask } from '../helpers/builders';
+import { makeDeps } from '../helpers/fakes';</code></pre>
+  <p>แก้ test แรกในกลุ่ม <code>describe('runDesign', ...)</code> ให้ script security ไว้และเช็ค securityNotes ที่ถูกผูกเข้า design:</p>
+<pre><code>  it('ได้ design ที่ถูกต้อง -&gt; REVIEW และบันทึก design.json (พร้อม securityNotes)', async () =&gt; {
+    const design = makeDesign();
+    const { deps, store } = makeDeps({ plans: [design], securityDesign: [['เก็บ password แบบ hash']] }, []);
+    const state = stateAt('DESIGN');
+    await runDesign(deps, state);
+
+    expect(state.phase).toBe('REVIEW');
+    expect(state.design).toEqual({ ...design, securityNotes: ['เก็บ password แบบ hash'] });
+    expect(store.artifacts.get('design.json')).toEqual({ ...design, securityNotes: ['เก็บ password แบบ hash'] });
+  });</code></pre>
+  <p>เพิ่ม test ใหม่ต่อท้ายกลุ่ม <code>describe('runDesign', ...)</code> (ก่อนปิด <code>});</code> ของกลุ่มนั้น):</p>
+<pre><code>  it('เรียก security ตรวจ design ก่อนเข้า REVIEW โดยส่ง design และ requirements', async () =&gt; {
+    const { deps, runner } = makeDeps({ plans: [makeDesign()], securityDesign: [['ข้อควรระวัง']] }, []);
+    await runDesign(deps, stateAt('DESIGN'));
+
+    const call = runner.calls.find((c) =&gt; c.role === 'security');
+    expect(call).toBeDefined();
+    expect((call!.input as SecurityDesignInput).requirements).toEqual(makeRequirements());
+  });</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npm test -- phases/design</code><br>
+     คาดหวัง: FAIL เพราะ <code>runDesign</code> ยังไม่เรียก <code>runner.securityDesign</code></p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แก้ src/phases/design.ts</strong></span></p>
+  <p>แก้ branch สำเร็จของ <code>runDesign</code> (บล็อกหลัง <code>orderTasks(design.tasks)</code> ผ่านแล้ว):</p>
+<pre><code>    state.design = design;
+    delete state.designFeedback;
+    state.phase = 'REVIEW';
+    await store.saveArtifact('design.json', design);
+    await store.save(state);
+    return;</code></pre>
+  <p>แก้เป็น:</p>
+<pre><code>    const securityNotes = await runner.securityDesign({ design, requirements: state.requirements });
+    state.design = { ...design, securityNotes };
+    delete state.designFeedback;
+    state.phase = 'REVIEW';
+    await store.saveArtifact('design.json', state.design);
+    await store.save(state);
+    return;</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npm test -- phases/design</code><br>
+     คาดหวัง: PASS ทั้งหมด</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: เขียน test ที่ต้อง fail — tests/format.test.ts</strong></span></p>
+  <p>แก้บรรทัด import บนสุด:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import { formatDesign, formatRequirements } from '../src/format';
+import { makeDesign, makeRequirements } from './helpers/builders';</code></pre>
+  <p>เพิ่ม describe block ใหม่ต่อท้ายไฟล์:</p>
+<pre><code>describe('formatDesign', () =&gt; {
+  it('แสดงหัวข้อและ task list', () =&gt; {
+    const formatted = formatDesign(makeDesign());
+    expect(formatted).toContain('--- Design ---');
+    expect(formatted).toContain('[backend] api: task api');
+  });
+
+  it('แสดง security notes เมื่อมี', () =&gt; {
+    const design = { ...makeDesign(), securityNotes: ['เก็บ password แบบ hash'] };
+    expect(formatDesign(design)).toContain('เก็บ password แบบ hash');
+  });
+
+  it('แสดง (ไม่มี) เมื่อไม่มี security notes', () =&gt; {
+    expect(formatDesign(makeDesign())).toContain('ข้อควรระวังด้านความปลอดภัย (Security):\n  (ไม่มี)');
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npm test -- format</code><br>
+     คาดหวัง: FAIL เพราะ <code>formatDesign</code> ยังไม่แสดง security notes</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: แก้ src/format.ts</strong></span></p>
+<pre><code>export function formatDesign(d: Design): string {
+  const tasks = d.tasks
+    .map((t) =&gt; {
+      const after = t.dependsOn.length &gt; 0 ? ` (ต้องทำหลัง ${t.dependsOn.join(', ')})` : '';
+      return `  - [${t.owner}] ${t.id}: ${t.title}${after}`;
+    })
+    .join('\n');
+  return [
+    '--- Design ---',
+    `ภาพรวม: ${d.overview}`,
+    `สถาปัตยกรรม: ${d.architecture}`,
+    `API contract:\n${d.apiContract}`,
+    `Data model:\n${d.dataModel}`,
+    'Tasks:',
+    tasks,
+    'ข้อควรระวังด้านความปลอดภัย (Security):',
+    list(d.securityNotes ?? []),
+    '',
+  ].join('\n');
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 8: รันเทสต์ทั้งหมดและ typecheck เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npm test</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: ผ่านหมด</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 9: Commit</strong></span></p>
+<pre><code>git add src/phases/design.ts src/format.ts tests/phases/design.test.ts tests/format.test.ts
+git commit -m "feat: review design security notes before BUILD and show them to the user"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 8: ผูก security เข้า Build phase (จุดสุดท้าย + verify ทั้งโปรเจกต์)</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/phases/build.ts</code> (ทั้งไฟล์ตามจุดที่ระบุ — บรรทัด 1-6, 15-60)</li>
+    <li>เทสต์: <code>tests/phases/build.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>runner.security</code>, <code>isSecurityPass</code> จาก Task 4/6</li>
+    <li>ส่งต่อ (Produces): ไม่มี — เป็น task สุดท้าย ปิดจบด้วยการรัน suite เต็ม</li>
+  </ul>
+
+  <p><strong>Logic ที่ต้องได้:</strong> ใน <code>runRound</code> — หลัง worker ทำงานและ QA ตรวจแล้ว ถ้า QA ไม่ผ่าน (<code>!isPass(qaReport)</code>) ให้จบรอบทันทีเหมือนเดิม (ไม่เรียก security เพื่อประหยัด API call) ถ้า QA ผ่าน ให้เรียก <code>runner.security</code> ต่อ — ถ้า security ผ่านด้วย ก็ถือว่ารอบนั้นผ่านตามปกติ ถ้า security ไม่ผ่าน (มี blocker/major) ให้รวม issues ของ security เข้ากับ report ของ QA แล้วตั้ง verdict เป็น <code>FAIL</code> เพื่อให้ <code>isPass</code> คืน false และ worker ได้เห็นปัญหาทั้งสองฝั่งในรอบถัดไป โดยยังใช้ <code>progress.rounds</code> ตัวเดิม ไม่เพิ่ม counter ใหม่</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>แก้บรรทัด import บนสุดของ <code>tests/phases/build.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import type { WorkInput } from '../../src/deps';
+import { RoleOutputError, RoleRunError } from '../../src/errors';
+import { runBuild } from '../../src/phases/build';
+import {
+  asking,
+  buildState,
+  failReport,
+  failSecurityReport,
+  makeDesign,
+  makeTask,
+  passReport,
+  passSecurityReport,
+} from '../helpers/builders';
+import { makeDeps } from '../helpers/fakes';</code></pre>
+  <p>แก้ test แรกในไฟล์ (<code>'ทำทีละ task ตาม dependsOn ...'</code>) ให้รวม security เข้า sequence ที่คาดหวัง:</p>
+<pre><code>  it('ทำทีละ task ตาม dependsOn (backend ก่อน frontend) แล้วไป DELIVER', async () =&gt; {
+    const { deps, runner, store } = makeDeps({ qa: [passReport('api'), passReport('ui')] }, []);
+    const state = buildState();
+    await runBuild(deps, state);
+
+    expect(state.phase).toBe('DELIVER');
+    expect(roles(runner.calls)).toEqual(['backend', 'qa', 'security', 'frontend', 'qa', 'security']);
+    expect(state.progress.api?.done).toBe(true);
+    expect(state.progress.ui?.done).toBe(true);
+    expect(store.artifacts.has('reports/api-round1.json')).toBe(true);
+  });</code></pre>
+  <p>แก้ test <code>'ข้าม task ที่เสร็จแล้ว (resume)'</code> ให้รวม security เข้า sequence:</p>
+<pre><code>  it('ข้าม task ที่เสร็จแล้ว (resume)', async () =&gt; {
+    const { deps, runner } = makeDeps({ qa: [passReport('ui')] }, []);
+    const state = buildState();
+    state.progress.api = { rounds: 1, maxRounds: 5, done: true, acceptedWithIssues: false };
+    await runBuild(deps, state);
+
+    expect(roles(runner.calls)).toEqual(['frontend', 'qa', 'security']);
+  });</code></pre>
+  <p>แก้ test <code>'worker ชน error_max_turns: ...'</code> ในกลุ่ม <code>describe('runBuild: SDK limit errors...')</code> ให้รวม security เข้า sequence (บรรทัดเดียวที่เปลี่ยนคือ <code>roles(runner.calls)</code>):</p>
+<pre><code>    const works = runner.calls.filter((c) =&gt; c.role === 'backend');
+    expect(works).toHaveLength(2);
+    expect(roles(runner.calls)).toEqual(['backend', 'backend', 'qa', 'security']);</code></pre>
+  <p>เพิ่ม test ใหม่ 4 ตัวนี้ต่อท้ายกลุ่ม <code>describe('runBuild', ...)</code> (ก่อนปิด <code>});</code> ของกลุ่มนั้น ก่อนขึ้น <code>describe('runBuild: SDK limit errors...')</code>):</p>
+<pre><code>  it('QA ผ่านแล้วเรียก security ต่อ: security ผ่านด้วย -&gt; task done ปกติ', async () =&gt; {
+    const { deps, runner } = makeDeps(
+      { qa: [passReport('api')], security: [passSecurityReport('api')] },
+      [],
+    );
+    const state = buildState(single());
+    await runBuild(deps, state);
+
+    expect(roles(runner.calls)).toEqual(['backend', 'qa', 'security']);
+    expect(state.progress.api?.done).toBe(true);
+  });
+
+  it('QA ไม่ผ่าน: ไม่เรียก security เลย (ประหยัด API call)', async () =&gt; {
+    const { deps, runner } = makeDeps(
+      { qa: [failReport('api'), passReport('api')], security: [passSecurityReport('api')] },
+      [],
+    );
+    await runBuild(deps, buildState(single()));
+
+    expect(roles(runner.calls)).toEqual(['backend', 'qa', 'backend', 'qa', 'security']);
+  });
+
+  it('QA ผ่านแต่ Security เจอ blocker: รอบนั้นไม่ผ่าน ใช้ progress.rounds เดิม ส่ง issue กลับให้ worker', async () =&gt; {
+    const { deps, runner } = makeDeps(
+      {
+        qa: [passReport('api'), passReport('api')],
+        security: [failSecurityReport('api', 'blocker'), passSecurityReport('api')],
+      },
+      [],
+    );
+    const state = buildState(single());
+    await runBuild(deps, state);
+
+    expect(roles(runner.calls)).toEqual(['backend', 'qa', 'security', 'backend', 'qa', 'security']);
+    expect(state.progress.api?.rounds).toBe(2);
+    expect(state.progress.api?.done).toBe(true);
+    const works = runner.calls.filter((c) =&gt; c.role === 'backend');
+    expect((works[1]!.input as WorkInput).previousReport?.verdict).toBe('FAIL');
+    expect((works[1]!.input as WorkInput).previousReport?.issues[0]?.description).toBe('มีช่องโหว่');
+  });
+
+  it('security ชน error_max_turns: นับเป็นรอบที่ไม่ผ่านเหมือน QA/worker', async () =&gt; {
+    const { deps, runner } = makeDeps(
+      {
+        qa: [passReport('api'), passReport('api')],
+        security: [
+          new RoleRunError('security: error_max_turns', false, 'error_max_turns'),
+          passSecurityReport('api'),
+        ],
+      },
+      [],
+    );
+    const state = buildState(single());
+    await runBuild(deps, state);
+
+    const works = runner.calls.filter((c) =&gt; c.role === 'backend');
+    expect(works).toHaveLength(2);
+    const previous = (works[1]!.input as WorkInput).previousReport;
+    expect(previous?.issues[0]?.description).toContain('Security');
+    expect(previous?.issues[0]?.description).toContain('error_max_turns');
+    expect(state.progress.api?.rounds).toBe(2);
+    expect(state.progress.api?.done).toBe(true);
+  });</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npm test -- phases/build</code><br>
+     คาดหวัง: FAIL หลายตัว เพราะ <code>runRound</code> ยังไม่เรียก <code>runner.security</code> เลย</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แก้ src/phases/build.ts</strong></span></p>
+  <p>แก้บรรทัด import บนสุด:</p>
+<pre><code>import type { Deps } from '../deps';
+import { isPass, isSecurityPass, orderTasks } from '../domain';
+import { RoleRunError } from '../errors';
+import { nullLogger } from '../logger';
+import type { Design, QAReport, Requirements, Task } from '../schemas';
+import type { State, TaskProgress } from '../state';</code></pre>
+  <p>แทนที่บล็อกตั้งแต่ <code>const LIMIT_SUBTYPES</code> ถึงจบ <code>runRound</code> เดิม (บรรทัด 15-60) ด้วยทั้งหมดนี้:</p>
+<pre><code>const LIMIT_SUBTYPES: readonly string[] = ['error_max_turns', 'error_max_budget_usd'];
+
+type Step = 'work' | 'qa' | 'security';
+
+function stepLabel(task: Task, step: Step): string {
+  if (step === 'work') return `worker ${task.owner} (ขั้นทำงาน)`;
+  if (step === 'qa') return 'QA (ขั้นตรวจงาน)';
+  return 'Security (ขั้นตรวจความปลอดภัย)';
+}
+
+function stepSayName(task: Task, step: Step): string {
+  if (step === 'work') return task.owner;
+  if (step === 'qa') return 'QA';
+  return 'Security';
+}
+
+function limitReport(task: Task, step: Step, subtype: string): QAReport {
+  return {
+    taskId: task.id,
+    verdict: 'FAIL',
+    checks: [],
+    issues: [
+      {
+        severity: 'blocker',
+        file: '',
+        description: `${stepLabel(task, step)} ชนขีดจำกัดของ SDK (${subtype}) จึงยังไม่ได้ผลลัพธ์ของรอบนี้`,
+        suggestedFix:
+          'ลดขนาดงานของ task นี้ หรือเพิ่ม maxTurns/maxBudgetUsd ของ role ใน agent-team.config.json',
+      },
+    ],
+    testsAdded: [],
+  };
+}
+
+async function runRound(
+  deps: Deps,
+  ctx: BuildContext,
+  task: Task,
+  progress: TaskProgress,
+): Promise&lt;{ report: QAReport; limitHit: boolean }&gt; {
+  const { runner, io } = deps;
+  let step: Step = 'work';
+  try {
+    const result = await runner.work({ task, ...ctx, previousReport: progress.lastReport });
+    step = 'qa';
+    const qaReport = await runner.qa({ task, result, ...ctx });
+    if (!isPass(qaReport)) return { report: qaReport, limitHit: false };
+
+    step = 'security';
+    const securityReport = await runner.security({ task, result, ...ctx });
+    const securityPassed = isSecurityPass(securityReport);
+    (deps.log ?? nullLogger).log(securityPassed ? 'INFO' : 'WARN', 'security.report', {
+      taskId: task.id,
+      issues: securityReport.issues.length,
+      blockers: securityReport.issues.filter((i) =&gt; i.severity === 'blocker').length,
+      majors: securityReport.issues.filter((i) =&gt; i.severity === 'major').length,
+    });
+    io.say(
+      `[Security] ${task.id}: ${securityPassed ? 'PASS' : 'FAIL'} (${securityReport.issues.length} issues)`,
+    );
+    if (securityPassed) return { report: qaReport, limitHit: false };
+
+    return {
+      report: { ...qaReport, verdict: 'FAIL', issues: [...qaReport.issues, ...securityReport.issues] },
+      limitHit: false,
+    };
+  } catch (e) {
+    if (e instanceof RoleRunError &amp;&amp; e.subtype !== undefined &amp;&amp; LIMIT_SUBTYPES.includes(e.subtype)) {
+      const report = limitReport(task, step, e.subtype);
+      io.say(`[${stepSayName(task, step)}] ${task.id}: ชนขีดจำกัด ${e.subtype} — นับเป็นรอบที่ไม่ผ่าน`);
+      return { report, limitHit: true };
+    }
+    throw e;
+  }
+}</code></pre>
+  <p>ส่วนที่เหลือของไฟล์ (<code>runBuild</code>, <code>buildTask</code>, <code>escalate</code>) ไม่ต้องแก้ — ยังคงเดิมทุกบรรทัด</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npm test -- phases/build</code><br>
+     คาดหวัง: PASS ทั้งหมด</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: รัน full test suite และ typecheck ทั้งโปรเจกต์</strong></span></p>
+  <p>รัน: <code>npm test</code><br>
+     คาดหวัง: ผ่านหมดทุกไฟล์ (เดิม 427 tests + ที่เพิ่มใน plan นี้)</p>
+  <p>รัน: <code>npm run typecheck</code><br>
+     คาดหวัง: ไม่มี error</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: Commit</strong></span></p>
+<pre><code>git add src/phases/build.ts tests/phases/build.test.ts
+git commit -m "feat: run security review after QA passes each build round"</code></pre>
+</div>
+
+</body>
+</html>

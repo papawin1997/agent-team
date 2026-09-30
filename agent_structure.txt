@@ -1,0 +1,18 @@
+อยากสร้าง agent team ที่มี โครงสร้างดังนี้
+1 agent pm รับ requirement  
+2 agent planning วางแผนหรือออกแบบระบบ
+3 agent worker แบ่งเป็น 2 ตัวคือ frontend backend ทำงานตามแผนที่ได้รับ
+4 agent qa ตรวจสอบงานและ test จาก worker 
+
+โดยมี flow ดังนี้ 
+1.user แจ้ง requirement ให้ agent pm
+2.agent pm ถามตอบในส่วนที่  requirement ไม่ชัดเจนหรือเสนอไอเดียที่ดีกว่า
+3.หลังจากที่คุย requirement เสร็จแล้ว PM ส่งงานให้ agent planning 
+4.agent planning ออกแบบและส่งกลับให้ agent pm
+5.agent pm เอาแบบให้ user
+6.user confirm แบบ หรือ user ขอแก้แบบ (ถ้าแก้แบบจะวนกลับไปข้อ 2-5 ใหม่)
+7.หลังจาก confirm แบบ agent pm  ส่งมอบงานต่อให้ agent worker ตามหน้าที่ขอแต่ละตัวเช่นถ้าเป็นงานฝั่ง frontend ให้  agent worker frontend ทำ หรือ เป็นงานฝั่ง backend ให้  agent worker backend ทำ
+8.agent worker ทำงานตามสั่ง
+9.เมื่องานเสร็จส่งต่องานให้ agent qa ตรวจสอบ ถ้าตรวจไม่ผ่านให้ worker ไปทำมาใหม่  มี limit การวนลูปคือ 5 รอบป้องกันการแก้งานไม่จบ
+10. งานผ่านแล้วให้ส่งกลับ PM
+11. PM ส่งมอบงานให้ User ตรวจรับ

@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scrutinize: level-models-context</title>
+<style>
+  :root { --bg:#f5f7fa; --card:#fff; --fg:#1f2933; --muted:#52606d; --code:#e4e7eb;
+          --red:#dc2626; --orange:#ea580c; --gray:#6b7280; --yellow:#ca8a04; --green:#16a34a; --blue:#2563eb; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111827; --card:#1f2937; --fg:#e5e7eb; --muted:#9ca3af; --code:#374151; } }
+  body { font-family: -apple-system, system-ui, "Noto Sans Thai", sans-serif; line-height:1.6; max-width:900px;
+         margin:2rem auto; padding:0 16px; background:var(--bg); color:var(--fg); }
+  code { background:var(--code); padding:.1rem .35rem; border-radius:4px; font-size:.9em; }
+  h1 { margin-bottom:.25rem; } .meta { color:var(--muted); }
+  .box { background:var(--card); border-radius:8px; padding:1rem 1.25rem; margin:1rem 0; box-shadow:0 1px 3px rgba(0,0,0,.1); border-left:6px solid var(--blue); }
+  .card { background:var(--card); border-radius:8px; padding:1rem 1.25rem; margin:1rem 0; box-shadow:0 1px 3px rgba(0,0,0,.1); border-left:6px solid; }
+  .major { border-color:var(--orange); } .nit { border-color:var(--gray); }
+  .sev { display:inline-block; color:#fff; font-size:.8rem; font-weight:700; padding:.1rem .5rem; border-radius:4px; margin-right:.5rem; }
+  .sev.major { background:var(--orange); } .sev.nit { background:var(--gray); }
+  .card h3 { margin:.2rem 0 .6rem; font-size:1.05rem; }
+  dt { font-weight:700; margin-top:.5rem; } dd { margin:0 0 0 1rem; }
+  .verdict { display:inline-block; background:var(--yellow); color:#fff; font-weight:800; padding:.35rem .9rem; border-radius:6px; }
+  table { border-collapse:collapse; width:100%; font-size:.9rem; } td, th { border:1px solid var(--code); padding:.3rem .5rem; text-align:left; }
+</style>
+</head>
+<body>
+<h1>Scrutinize: branch <code>feat/level-models</code> (โปรเจกต์ย่อย E)</h1>
+<p class="meta">2026-09-30 · agent-team · 45ca92a..a019641 (4 commits) · npm test 1129 ผ่าน, typecheck ผ่าน</p>
+
+<div class="box">
+  <h2>เจตนา</h2>
+  <p>ลดค่าใช้จ่ายของงานระดับ standard โดยให้ Planning ใช้ Sonnet แทน Opus ผ่าน <code>modelByLevel</code> และลด prompt ของ worker, QA และ Security ด้วยการตัด task อื่นออกจาก design</p>
+  <p><strong>มีวิธีที่ง่ายกว่าไหม:</strong> ถ้าแค่เปลี่ยน default ของ Planning เป็น Sonnet จะเสียคุณภาพของงาน full ด้วย การแยกตามระดับจึงจำเป็น ส่วนการตัด context ผมวัดจาก log งานจริงแล้วว่าคุ้ม</p>
+  <table>
+    <tr><th>งาน</th><th>design ทั้งก้อน</th><th>ส่วน <code>tasks</code></th><th>จำนวน task</th><th>dependsOn เฉลี่ย</th><th>prompt QA เฉลี่ย</th></tr>
+    <tr><td>mail-sender</td><td>45,274</td><td>28,898 (64%)</td><td>13</td><td>1.5</td><td>51,206</td></tr>
+    <tr><td>tdee-naja</td><td>24,908</td><td>14,918 (60%)</td><td>7</td><td>1.3</td><td>26,788</td></tr>
+  </table>
+  <p class="meta">หน่วยเป็นตัวอักษร design ถูกส่งซ้ำในทุก prompt ของ worker, QA และ Security ถ้าตัดเหลือแค่ task ที่ dependsOn จะลด prompt แรกของแต่ละ agent ได้ประมาณครึ่งหนึ่ง</p>
+</div>
+
+<h2>Findings</h2>
+
+<div class="card major">
+  <h3><span class="sev major">MAJOR</span>ค่า <code>planning.model</code> ที่ผู้ใช้ตั้งเองจะไม่มีผลในระดับ standard และไม่มีการแจ้งเตือน</h3>
+  <dl>
+    <dt>ทำไมสำคัญ</dt>
+    <dd>ผู้ใช้ที่มี config เดิม หรือ copy ตัวอย่างจาก README (<code>README.md:206</code> <code>"planning": { "model": "claude-opus-5" }</code>) จะได้ Sonnet ในงาน standard ทั้งที่ตั้งใจให้ใช้ Opus ทุกงาน ส่วน README บรรทัด 211 เขียนว่า "ระดับที่ไม่ได้ใส่ใช้ <code>model</code> ปกติ" ซึ่งทำให้เข้าใจผิดยิ่งขึ้น</dd>
+    <dt>หลักฐาน</dt>
+    <dd><code>mergeConfig</code> (<code>src/config.ts:132-141</code>) เก็บ <code>modelByLevel</code> ของ default ไว้เมื่อ patch มีแค่ <code>model</code> จากนั้น <code>resolveModel</code> (<code>src/config.ts:22</code>) ใช้ <code>modelByLevel.standard</code> ก่อน <code>model</code> ผลคือ <code>mergeConfig(DEFAULT, {roles:{planning:{model:'X'}}})</code> ได้ standard = <code>claude-sonnet-5</code> ส่วน full = X (final reviewer รันยืนยันแล้ว)</dd>
+    <dt>แนวทางแก้</dt>
+    <dd>ใน <code>mergeConfig</code> ถ้า patch ตั้ง <code>model</code> แต่ไม่ได้ตั้ง <code>modelByLevel</code> ให้ลบ <code>modelByLevel</code> ที่ได้มาจาก default ทิ้ง เพื่อให้ model ที่ผู้ใช้เลือกมีผลทุกระดับ พร้อมเพิ่มเทสต์ 1 ตัว และเพิ่มประโยคใน README ว่า "ตั้ง <code>model</code> อย่างเดียว = ใช้ทุกระดับ"</dd>
+  </dl>
+</div>
+
+<div class="card major">
+  <h3><span class="sev major">MAJOR</span>QA และ worker ได้ requirements ของทั้งโปรเจกต์แต่เห็นแค่ task เดียว จึงอาจตัดสินหรือทำงานเกินขอบเขตของ task</h3>
+  <dl>
+    <dt>ทำไมสำคัญ</dt>
+    <dd>QA อาจให้ FAIL เพราะ "ยังไม่มีฟีเจอร์ Y" ทั้งที่ Y เป็นงานของ task อื่น ทำให้ worker ต้องสร้างงานนอก task และเสียรอบแก้ ค่าใช้จ่ายที่เพิ่มจากรอบแก้แบบนี้อาจมากกว่าที่ประหยัดจากการตัด context เพราะ QA ที่ FAIL 1 รอบต้องเรียก worker และ QA ใหม่อีกอย่างละครั้ง</dd>
+    <dt>หลักฐาน</dt>
+    <dd><code>QA_PROMPT</code> (<code>src/prompts.ts</code>) สั่งให้ "Compare them with the task's acceptance criteria, the design ... and the requirements" ส่วน <code>buildQaPrompt</code> ยังส่ง <code>Requirements</code> ครบทุกฟีเจอร์ แต่ design ที่ส่งไม่มีรายการ task แล้ว ตัวอย่างเช่นใน mail-sender ที่มี 13 task QA ของ task แรกจะเห็น requirements ของทั้ง 13 task โดยไม่รู้ว่าส่วนไหนเป็นของ task อื่น สิ่งเดียวที่ช่วยได้ตอนนี้คือหัวข้อ "other tasks are omitted" ใน prompt ซึ่งไม่ได้สั่งว่าห้ามตัดสินส่วนที่เป็นของ task อื่น ความเสี่ยงนี้เทสต์ unit วัดไม่ได้</dd>
+    <dt>แนวทางแก้</dt>
+    <dd>เพิ่มประโยคเดียวใน <code>scopedDesignSection</code> (หรือใน system prompt ของ QA, worker และ Security): <em>"The requirements describe the whole project; other tasks (omitted) implement the parts outside this task. Implement/judge only this task's acceptance criteria and never report features owned by other tasks as missing."</em></dd>
+  </dl>
+</div>
+
+<div class="card nit">
+  <h3><span class="sev nit">NIT</span>ถ้ายกระดับจาก standard เป็น full ตอน REVIEW งาน full จะใช้ design ที่ Sonnet ออกแบบไว้</h3>
+  <dl>
+    <dt>ทำไมสำคัญ</dt>
+    <dd>พฤติกรรมเปลี่ยนไปจากเดิมโดยไม่มีใครบอก ก่อน E ทุก design ออกแบบโดย Opus แต่ตอนนี้งาน full ที่มาจากการยกระดับ (ซึ่งเกิดเพราะเจอคำเสี่ยง) ใช้ design ที่ Sonnet ออกแบบ โดยมี Security ตรวจ design ในระดับ full เพิ่มให้</dd>
+    <dt>หลักฐาน</dt>
+    <dd><code>runReview</code> (<code>src/phases/design.ts:92-100</code>) เปลี่ยนเป็น <code>state.level='full'</code> แล้วใช้ <code>design</code> เดิมต่อ โดยไม่ออกแบบใหม่</dd>
+    <dt>แนวทางแก้</dt>
+    <dd>ยอมรับพฤติกรรมนี้ได้ แค่เขียนไว้ใน README ถ้าอยากให้งานเสี่ยงได้ design จาก Opus เสมอ ให้เพิ่มตัวเลือก "full + ออกแบบใหม่" แต่ต้องแลกกับค่า Planning อีก 1 ครั้ง</dd>
+  </dl>
+</div>
+
+<div class="card nit">
+  <h3><span class="sev nit">NIT</span>เทสต์ของ state เก่าที่ไม่มี level จะผ่านได้แม้ runner ไม่ถูกเรียกเลย</h3>
+  <dl>
+    <dt>ทำไมสำคัญ</dt>
+    <dd>ถ้า runner ไม่ถูกเรียกเลย loop ที่ assert <code>toBeUndefined()</code> จะไม่มีรอบให้ทำงาน เทสต์จึงผ่านทั้งที่โค้ดพัง</dd>
+    <dt>หลักฐาน</dt>
+    <dd>เทสต์ "state เก่าไม่มี level" ใน <code>tests/phases/build.test.ts</code> ไม่ได้ตรวจว่ามีการเรียกกี่ครั้งหรือ role อะไรบ้าง ซึ่งตรงกับ minor T3-m2 ใน ledger</dd>
+    <dt>แนวทางแก้</dt>
+    <dd>เพิ่มบรรทัด <code>expect(roles(runner.calls)).toEqual(['backend', 'qa', 'security'])</code> ในเทสต์นั้น</dd>
+  </dl>
+</div>
+
+<div class="box">
+  <h2>จุดที่ไล่โค้ดแล้วไม่พบปัญหา</h2>
+  <ul>
+    <li><strong>level เก่าค้างใน BUILD เป็นไปไม่ได้:</strong> <code>ctx.level</code> ถูก copy ครั้งเดียวตอนเริ่ม <code>runBuild</code> ส่วน <code>escalateLevel</code> เปลี่ยนเฟสเป็น DESIGN แล้ว <code>buildTask</code> return <code>'escalated'</code> ทันที จึงไม่มีการใช้ ctx เดิมต่อ</li>
+    <li><strong>ทุกจุดที่เปลี่ยน level</strong> (<code>level.ts:127, 234, 243, 266</code>) ตั้งค่าก่อนเรียก runner ครั้งถัดไปเสมอ</li>
+    <li><strong>worker resume ไม่ข้ามระดับ:</strong> <code>restoreBaseDesign</code> ลบ <code>workerSessionId</code> ทิ้ง</li>
+    <li><strong>ทุกเส้นทาง retry ส่ง level ต่อครบ:</strong> ทั้ง re-ask และ recovery ใช้ level เดิม</li>
+    <li><strong>PM</strong> ไม่ได้รับ level และ schema ปฏิเสธ <code>pm.modelByLevel</code></li>
+    <li><strong>log viewer</strong> (<code>parse-log.ts:114-131</code>) ได้รับ model ที่ resolve แล้วซึ่งถูกต้องกว่าเดิม และข้าม field <code>level</code> ไป</li>
+    <li><strong>Planning และ Security ตอนตรวจ design</strong> ยังเห็นทุก task และมีเทสต์ยืนยัน</li>
+  </ul>
+</div>
+
+<div class="box">
+  <h2>Verdict</h2>
+  <p><span class="verdict">fix-then-ship</span></p>
+  <p>เหตุผลหลัก: การตั้ง <code>planning.model</code> ใน config จะไม่มีผลในระดับ standard โดยไม่มีการแจ้งเตือน และ README ก็พาให้เข้าใจผิด ทั้งสองข้อ major แก้ได้ด้วยโค้ดไม่กี่บรรทัดพร้อมเทสต์</p>
+</div>
+</body>
+</html>

@@ -1,0 +1,1315 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>agent-team logs: Sort/Filter/Pagination, สีประจำ Agent และ Typography Implementation Plan</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; line-height: 1.55;
+         max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1f2933;
+         background: #f5f7fa; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  pre { background: #1f2933; color: #e4e7eb; padding: .9rem 1rem;
+        border-radius: 6px; overflow-x: auto; }
+  code { background: #e4e7eb; padding: .1rem .35rem; border-radius: 4px; }
+  pre code { background: none; padding: 0; color: inherit; }
+  .frame { border-left: 6px solid; border-radius: 8px; padding: 1rem 1.25rem;
+           margin: 1.25rem 0; background: #ffffff;
+           box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .frame-header     { border-color: #2563eb; background: #eff6ff; }
+  .frame-constraints{ border-color: #d97706; background: #fffbeb; }
+  .frame-task       { border-color: #059669; background: #ecfdf5; }
+  .frame h1, .frame h2, .frame h3 { margin-top: 0; }
+  .note { border-color: #7c3aed; background: #f5f3ff; }
+  .step { display: flex; gap: .5rem; align-items: baseline;
+          margin: .75rem 0 .25rem; }
+  .step input { transform: scale(1.2); margin-top: .15rem; }
+  .meta { color: #52606d; font-size: .9rem; }
+</style>
+</head>
+<body>
+
+<div class="frame frame-header">
+  <h1>agent-team logs: Sort/Filter/Pagination, สีประจำ Agent และ Typography Implementation Plan</h1>
+<p><strong>เป้าหมาย:</strong> เพิ่มการเรียง/กรอง/แบ่งหน้า (10/20/50) ให้ส่วน "การเรียก agent" และ "Timeline" ในหน้า <code>agent-team logs</code> ให้แต่ละ role มีสีและไอคอนประจำตัว และจัด typography ให้อ่านภาษาไทยสบายตาตาม prompt ที่ผู้ใช้ให้มา</p>
+<p><strong>สถาปัตยกรรม:</strong> logic กรอง/เรียง/แบ่งหน้าเป็นฟังก์ชันล้วนใน <code>LIST_JS</code> (<code>src/logview/list-assets.ts</code>, global <code>AgentTeamList</code>) ที่เทสต์ได้ใน vitest ผ่าน <code>new Function</code> ส่วน <code>PAGE_JS</code> (<code>page-assets.ts</code>) ทำแค่ UI/state และเรียก <code>AgentTeamList</code> ส่วน <code>render.ts</code> ฝังฟอนต์ (base64 จาก <code>assets/fonts/</code> ผ่าน <code>fonts.ts</code>) และ <code>&lt;script&gt;</code> ของ <code>LIST_JS</code> ก่อน <code>PAGE_JS</code> พฤติกรรมของหน้าเว็บทดสอบด้วย DOM shim เล็ก ๆ ใน <code>tests/helpers/dom-shim.ts</code></p>
+<p><strong>Tech Stack:</strong> TypeScript (tsx), vitest, JS ฝั่งเบราว์เซอร์แบบ ES5 ใน <code>String.raw</code>, ฟอนต์ woff2 ที่ฝังในไฟล์ (Noto Sans Thai, Inter, JetBrains Mono — SIL OFL)</p>
+</div>
+
+<div class="frame note">
+  <strong>For agentic workers:</strong> REQUIRED SUB-SKILL: Use
+  tb-subagent-driven-development (recommended) or
+  tb-executing-plans to implement this plan task-by-task. Steps keep
+  the <code>- [ ]</code> marker next to each checkbox for tracking.
+</div>
+
+<div class="frame frame-constraints">
+  <h2>Global Constraints</h2>
+<ul class="meta">
+  <li>ไม่เพิ่ม dependency ใหม่ (ห้ามติดตั้ง jsdom/happy-dom) — ใช้ DOM shim ที่เขียนเองในเทสต์</li>
+  <li><code>LIST_JS</code>, <code>PAGE_JS</code>, <code>PAGE_CSS</code> เป็น <code>String.raw</code> template: ห้ามมี backtick และ <code>${</code> ข้างใน, ห้ามมีข้อความ <code>&lt;/script</code>, JS เป็น ES5 (<code>var</code>, <code>function</code>) ตามสไตล์เดิม</li>
+  <li>ข้อความทุกอย่างจาก log ใส่ DOM ด้วย <code>textContent</code> เท่านั้น (ห้าม <code>innerHTML</code>)</li>
+  <li>ห้ามโหลดอะไรจากภายนอก (ไม่มี CDN/Google Fonts/<code>&lt;link&gt;</code>) — ฟอนต์ฝังเป็น base64 จาก <code>assets/fonts/</code> (ผู้ใช้วางไฟล์ไว้แล้ว) และต้องเพิ่ม <code>assets</code> ใน <code>"files"</code> ของ <code>package.json</code>; ถ้าหาไฟล์ฟอนต์ไม่เจอ หน้ายังสร้างได้โดยใช้ฟอนต์ระบบ</li>
+  <li>ฟอนต์: <code>--font-sans: "Inter","Noto Sans Thai","Leelawadee UI","Segoe UI",Tahoma,system-ui,sans-serif</code> และ <code>--font-mono: "JetBrains Mono","Noto Sans Thai",ui-monospace,"Cascadia Mono",Consolas,monospace</code></li>
+  <li>Typography tokens: <code>--lh-heading:1.35</code>, <code>--lh-body:1.7</code>, <code>--lh-mono:1.5</code>, letter-spacing ของภาษาไทยเป็น 0 (caption <code>.01em</code>), body 15–16px, small/caption ไม่ต่ำกว่า 13px</li>
+  <li>Pagination: ขนาดหน้า 10 / 20 / 50 ค่าเริ่มต้น 20, ข้อความ <code>หน้า X/Y · แสดง A–B จาก N</code>, ปุ่ม <code>« ก่อนหน้า</code> / <code>ถัดไป »</code>; เปลี่ยนตัวกรอง/การเรียง/ขนาดหน้า/รอบรัน → กลับหน้า 1</li>
+  <li>สีประจำ role: pm 🧭 ม่วง, planning 📐 น้ำเงิน, frontend 🎨 ชมพู, backend ⚙️ เขียวหัวเป็ด, qa 🔍 ส้ม, security 🛡️ แดงเข้ม (โทน rose), อื่น ๆ 🤖 เทา — มีทั้ง light และ dark</li>
+  <li>ไม่เก็บ state ลง localStorage</li>
+  <li>UI ภาษาไทย ใช้คำว่า "โปรเจกต์"; ทุก task ต้องจบด้วย <code>npm test</code> และ <code>npm run typecheck</code> ผ่านทั้งคู่</li>
+</ul>
+</div>
+
+<div class="frame note">
+  <h2>โครงสร้างไฟล์</h2>
+<ul class="meta">
+  <li>สร้าง <code>src/logview/list-assets.ts</code> — <code>LIST_JS</code>: กรอง/เรียง/แบ่งหน้า + สไตล์ role (ฟังก์ชันล้วน)</li>
+  <li>แก้ <code>src/logview/page-assets.ts</code> — <code>PAGE_CSS</code> (typography + สี role + control) และ <code>PAGE_JS</code> (UI ใหม่)</li>
+  <li>สร้าง <code>src/logview/fonts.ts</code> — อ่าน woff2 ใน <code>assets/fonts/</code> แล้วสร้าง <code>@font-face</code> แบบ base64</li>
+  <li>แก้ <code>src/logview/render.ts</code> — ฝัง <code>@font-face</code> + <code>&lt;script&gt;</code> ของ <code>LIST_JS</code></li>
+  <li>แก้ <code>package.json</code> — เพิ่ม <code>assets</code> ใน <code>"files"</code> และเพิ่ม <code>assets/fonts/</code> เข้า git</li>
+  <li>สร้าง <code>tests/helpers/dom-shim.ts</code> — DOM จำลองขั้นต่ำสำหรับรัน <code>PAGE_JS</code></li>
+  <li>เทสต์: <code>tests/logview/list-assets.test.ts</code> (ใหม่), <code>tests/logview/page-dom.test.ts</code> (ใหม่), แก้ <code>tests/logview/render.test.ts</code></li>
+  <li>แก้ <code>README.md</code> หัวข้อ <code>## ดู log / หาสาเหตุเมื่อ agent error</code></li>
+</ul>
+</div>
+
+<!-- ============================ TASK 1 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 1: logic กรอง/เรียง/แบ่งหน้าและสไตล์ role (list-assets.ts)</h3>
+<p class="meta"><strong>ไฟล์:</strong></p>
+<ul class="meta">
+  <li>สร้าง: <code>src/logview/list-assets.ts</code></li>
+  <li>เทสต์: <code>tests/logview/list-assets.test.ts</code></li>
+</ul>
+<p class="meta"><strong>Interfaces:</strong></p>
+<ul class="meta">
+  <li>ใช้จาก (Consumes): ไม่มี (รูปข้อมูล call/event ตาม <code>AgentCall</code>/<code>LogEvent</code> ใน <code>src/logview/parse-log.ts</code>: call มี <code>id, role, status ('ok'|'failed'|'unfinished'), durationMs?, costUsd?, turns?</code>; event มี <code>line, time, level, event, data</code>)</li>
+  <li>ส่งต่อ (Produces): <code>export const LIST_JS: string</code> ที่ประกาศ global <code>var AgentTeamList = { PAGE_SIZES, DEFAULT_PAGE_SIZE, roleStyle(role) -&gt; {icon, cls}, roleCounts(calls) -&gt; [{role, count}], paginate(items, page, pageSize) -&gt; {items, page, pages, pageSize, total, from, to}, listCalls(calls, {roles, status, sort, page, pageSize}) -&gt; ผลแบบ paginate, pageOfCall(calls, opts, id) -&gt; number (0 = ถูกซ่อนด้วยตัวกรอง), summaryOf(ev) -&gt; string, listEvents(events, {type, query, sort, page, pageSize}) -&gt; ผลแบบ paginate }</code>; ค่า sort ของ call: <code>'start-asc' | 'start-desc' | 'duration-desc' | 'cost-desc' | 'turns-desc'</code>; ของ event: <code>'asc' | 'desc'</code>; type ของ event: <code>'all' | 'problem' | 'agent' | 'user' | 'say'</code>; status: <code>'all' | 'ok' | 'failed' | 'unfinished'</code></li>
+</ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+<p>สร้าง <code>tests/logview/list-assets.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import { LIST_JS } from '../../src/logview/list-assets';
+
+interface Page&lt;T&gt; { items: T[]; page: number; pages: number; pageSize: number; total: number; from: number; to: number }
+interface Call { id: number; role: string; status: string; durationMs?: number; costUsd?: number; turns?: number }
+interface Ev { line: number; time: string; level: string; event: string; data: Record&lt;string, unknown&gt; }
+interface CallOpts { roles: string[]; status: string; sort: string; page: number; pageSize: number }
+interface EvOpts { type: string; query: string; sort: string; page: number; pageSize: number }
+interface ListApi {
+  PAGE_SIZES: number[];
+  DEFAULT_PAGE_SIZE: number;
+  roleStyle(role: string): { icon: string; cls: string };
+  roleCounts(calls: Call[]): { role: string; count: number }[];
+  paginate&lt;T&gt;(items: T[], page: number, pageSize: number): Page&lt;T&gt;;
+  listCalls(calls: Call[], opts: CallOpts): Page&lt;Call&gt;;
+  pageOfCall(calls: Call[], opts: CallOpts, id: number): number;
+  summaryOf(ev: Ev): string;
+  listEvents(events: Ev[], opts: EvOpts): Page&lt;Ev&gt;;
+}
+
+const L = new Function(`${LIST_JS}\nreturn AgentTeamList;`)() as ListApi;
+const range = (n: number) =&gt; Array.from({ length: n }, (_, i) =&gt; i);
+const callOpts = (over: Partial&lt;CallOpts&gt; = {}): CallOpts =&gt; ({
+  roles: [],
+  status: 'all',
+  sort: 'start-asc',
+  page: 1,
+  pageSize: 20,
+  ...over,
+});
+const evOpts = (over: Partial&lt;EvOpts&gt; = {}): EvOpts =&gt; ({ type: 'all', query: '', sort: 'asc', page: 1, pageSize: 20, ...over });
+const calls: Call[] = [
+  { id: 0, role: 'pm', status: 'ok', durationMs: 5000, costUsd: 0.2, turns: 3 },
+  { id: 1, role: 'qa', status: 'failed', durationMs: 90000, costUsd: 0.05, turns: 1 },
+  { id: 2, role: 'backend', status: 'ok', durationMs: 60000, costUsd: 0.9, turns: 14 },
+  { id: 3, role: 'qa', status: 'unfinished' },
+  { id: 4, role: 'pm', status: 'ok', durationMs: 5000, costUsd: 0.1, turns: 2 },
+];
+const ev = (line: number, event: string, data: Record&lt;string, unknown&gt;, level = 'INFO'): Ev =&gt; ({
+  line,
+  time: `2026-01-10T09:00:${String(line).padStart(2, '0')}.000Z`,
+  level,
+  event,
+  data,
+});
+const events: Ev[] = [
+  ev(1, 'run.start', { pid: 1 }),
+  ev(2, 'say', { text: 'สวัสดี Outlook' }),
+  ev(3, 'user.input', { prompt: '&gt; ', answer: 'ต่อเลย' }),
+  ev(4, 'agent.start', { role: 'qa' }),
+  ev(5, 'agent.result', { role: 'qa', subtype: 'success' }, 'WARN'),
+  ev(6, 'run.error', { message: 'qa: BOOM' }, 'ERROR'),
+];
+
+describe('paginate', () =&gt; {
+  it('ตัดหน้าและบอกช่วงที่แสดง', () =&gt; {
+    expect(L.paginate(range(25), 3, 10)).toEqual({
+      items: [20, 21, 22, 23, 24], page: 3, pages: 3, pageSize: 10, total: 25, from: 21, to: 25,
+    });
+  });
+
+  it('หน้าเกิน/ต่ำกว่า/ไม่ใช่ตัวเลข -&gt; บีบให้อยู่ในช่วง', () =&gt; {
+    expect(L.paginate(range(25), 99, 10).page).toBe(3);
+    expect(L.paginate(range(25), 0, 10).page).toBe(1);
+    expect(L.paginate(range(25), Number.NaN, 10).page).toBe(1);
+  });
+
+  it('ขนาดหน้าที่ไม่ใช่ 10/20/50 -&gt; ใช้ 20', () =&gt; {
+    expect(L.PAGE_SIZES).toEqual([10, 20, 50]);
+    expect(L.DEFAULT_PAGE_SIZE).toBe(20);
+    expect(L.paginate(range(25), 1, 7)).toMatchObject({ pageSize: 20, pages: 2, from: 1, to: 20 });
+    expect(L.paginate(range(120), 1, 50)).toMatchObject({ pageSize: 50, pages: 3, to: 50 });
+  });
+
+  it('รายการว่าง -&gt; 1 หน้า แสดง 0–0', () =&gt; {
+    expect(L.paginate([], 1, 20)).toEqual({ items: [], page: 1, pages: 1, pageSize: 20, total: 0, from: 0, to: 0 });
+  });
+});
+
+describe('roleStyle / roleCounts', () =&gt; {
+  it('role ที่รู้จักได้ไอคอนและ class ของตัวเอง ที่เหลือเป็น other', () =&gt; {
+    expect(L.roleStyle('pm')).toEqual({ icon: '🧭', cls: 'role-pm' });
+    expect(L.roleStyle('planning')).toEqual({ icon: '📐', cls: 'role-planning' });
+    expect(L.roleStyle('frontend')).toEqual({ icon: '🎨', cls: 'role-frontend' });
+    expect(L.roleStyle('backend')).toEqual({ icon: '⚙️', cls: 'role-backend' });
+    expect(L.roleStyle('qa')).toEqual({ icon: '🔍', cls: 'role-qa' });
+    expect(L.roleStyle('security')).toEqual({ icon: '🛡️', cls: 'role-security' });
+    expect(L.roleStyle('weird')).toEqual({ icon: '🤖', cls: 'role-other' });
+    expect(L.roleStyle('constructor')).toEqual({ icon: '🤖', cls: 'role-other' });
+  });
+
+  it('นับจำนวนต่อ role ตามลำดับที่เจอครั้งแรก', () =&gt; {
+    expect(L.roleCounts(calls)).toEqual([
+      { role: 'pm', count: 2 },
+      { role: 'qa', count: 2 },
+      { role: 'backend', count: 1 },
+    ]);
+  });
+});
+
+describe('listCalls', () =&gt; {
+  const ids = (opts: Partial&lt;CallOpts&gt;) =&gt; L.listCalls(calls, callOpts(opts)).items.map((c) =&gt; c.id);
+
+  it('ค่าเริ่มต้น: ทุก call เรียงตามเวลาเริ่ม เก่า→ใหม่', () =&gt; {
+    expect(ids({})).toEqual([0, 1, 2, 3, 4]);
+    expect(ids({ sort: 'start-desc' })).toEqual([4, 3, 2, 1, 0]);
+  });
+
+  it('กรองหลาย role และสถานะ', () =&gt; {
+    expect(ids({ roles: ['qa', 'backend'] })).toEqual([1, 2, 3]);
+    expect(ids({ status: 'failed' })).toEqual([1]);
+    expect(ids({ status: 'unfinished' })).toEqual([3]);
+    expect(ids({ roles: ['pm'], status: 'ok' })).toEqual([0, 4]);
+  });
+
+  it('เรียงตามระยะเวลา/cost/turns มากไปน้อย ค่าที่ไม่มีไว้ท้ายสุด เสมอกันเรียงตาม id', () =&gt; {
+    expect(ids({ sort: 'duration-desc' })).toEqual([1, 2, 0, 4, 3]);
+    expect(ids({ sort: 'cost-desc' })).toEqual([2, 0, 4, 1, 3]);
+    expect(ids({ sort: 'turns-desc' })).toEqual([2, 0, 4, 1, 3]);
+  });
+
+  it('sort ที่ไม่รู้จัก -&gt; start-asc', () =&gt; {
+    expect(ids({ sort: 'nope' })).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it('pageOfCall: หน้าที่ call อยู่หลังกรอง/เรียง หรือ 0 ถ้าถูกซ่อน', () =&gt; {
+    const many: Call[] = range(25).map((i) =&gt; ({ id: i, role: i % 2 ? 'backend' : 'qa', status: 'ok' }));
+    expect(L.pageOfCall(many, callOpts({ pageSize: 10 }), 23)).toBe(3);
+    expect(L.pageOfCall(many, callOpts({ pageSize: 10, sort: 'start-desc' }), 23)).toBe(1);
+    expect(L.pageOfCall(many, callOpts({ roles: ['qa'] }), 23)).toBe(0);
+  });
+});
+
+describe('listEvents', () =&gt; {
+  const lines = (opts: Partial&lt;EvOpts&gt;) =&gt; L.listEvents(events, evOpts(opts)).items.map((e) =&gt; e.line);
+
+  it('ประเภท: problem / agent / user / say', () =&gt; {
+    expect(lines({ type: 'problem' })).toEqual([5, 6]);
+    expect(lines({ type: 'agent' })).toEqual([4, 5]);
+    expect(lines({ type: 'user' })).toEqual([3]);
+    expect(lines({ type: 'say' })).toEqual([2]);
+  });
+
+  it('ค้นหาข้อความทั้งชื่อ event และ summary แบบไม่สนตัวพิมพ์', () =&gt; {
+    expect(lines({ query: 'outlook' })).toEqual([2]);
+    expect(lines({ query: 'boom' })).toEqual([6]);
+    expect(lines({ query: 'AGENT.RESULT' })).toEqual([5]);
+    expect(lines({ query: 'ต่อเลย' })).toEqual([3]);
+    expect(lines({ query: '   ' })).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it('เรียงใหม่→เก่า และแบ่งหน้า', () =&gt; {
+    expect(lines({ sort: 'desc' })).toEqual([6, 5, 4, 3, 2, 1]);
+    const many = range(45).map((i) =&gt; ev(i + 1, 'say', { text: `ข้อความ ${i + 1}` }));
+    const res = L.listEvents(many, evOpts({ sort: 'desc', page: 3, pageSize: 20 }));
+    expect(res.items.map((e) =&gt; e.line)).toEqual([5, 4, 3, 2, 1]);
+    expect(res).toMatchObject({ page: 3, pages: 3, total: 45, from: 41, to: 45 });
+  });
+
+  it('summaryOf: say/raw ใช้ text, user.* ใช้คำตอบ/คำถาม, อื่น ๆ เป็น JSON', () =&gt; {
+    expect(L.summaryOf(events[1]!)).toBe('สวัสดี Outlook');
+    expect(L.summaryOf(events[2]!)).toBe('ต่อเลย');
+    expect(L.summaryOf(ev(9, 'user.choice', { prompt: 'ยืนยัน?', choice: 'confirm' }))).toBe('ยืนยัน? → confirm');
+    expect(L.summaryOf(events[0]!)).toBe('{"pid":1}');
+  });
+});
+
+describe('LIST_JS', () =&gt; {
+  it('ไม่มี &lt;/script และไม่มี syntax error', () =&gt; {
+    expect(LIST_JS).not.toContain('&lt;/script');
+    expect(() =&gt; new Function(LIST_JS)).not.toThrow();
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+<p>รัน: <code>npx vitest run tests/logview/list-assets.test.ts</code> — คาดหวัง: FAIL ด้วย "Failed to resolve import '../../src/logview/list-assets'"</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+<p>สร้าง <code>src/logview/list-assets.ts</code>:</p>
+<pre><code>// logic กรอง/เรียง/แบ่งหน้าของหน้า agent-team logs (ฟังก์ชันล้วน ไม่แตะ DOM)
+// ฝังเป็น &lt;script&gt; แยกก่อน PAGE_JS แล้วใช้ผ่าน global AgentTeamList — เทสต์ได้ด้วย new Function(LIST_JS + 'return AgentTeamList')
+
+export const LIST_JS = String.raw`
+var AgentTeamList = (function () {
+  'use strict';
+  var PAGE_SIZES = [10, 20, 50];
+  var DEFAULT_PAGE_SIZE = 20;
+  var ROLE_ICONS = { pm: '🧭', planning: '📐', frontend: '🎨', backend: '⚙️', qa: '🔍', security: '🛡️' };
+  var has = function (obj, key) { return Object.prototype.hasOwnProperty.call(obj, key); };
+
+  function roleStyle(role) {
+    var known = has(ROLE_ICONS, role);
+    return { icon: known ? ROLE_ICONS[role] : '🤖', cls: 'role-' + (known ? role : 'other') };
+  }
+
+  function roleCounts(calls) {
+    var order = [];
+    var counts = {};
+    calls.forEach(function (c) {
+      if (!has(counts, c.role)) {
+        counts[c.role] = 0;
+        order.push(c.role);
+      }
+      counts[c.role]++;
+    });
+    return order.map(function (r) { return { role: r, count: counts[r] }; });
+  }
+
+  function sizeOf(pageSize) { return PAGE_SIZES.indexOf(pageSize) &gt;= 0 ? pageSize : DEFAULT_PAGE_SIZE; }
+
+  function paginate(items, page, pageSize) {
+    var size = sizeOf(pageSize);
+    var total = items.length;
+    var pages = Math.max(1, Math.ceil(total / size));
+    var p = Math.min(Math.max(1, Math.floor(Number(page)) || 1), pages);
+    var start = (p - 1) * size;
+    var slice = items.slice(start, start + size);
+    return { items: slice, page: p, pages: pages, pageSize: size, total: total, from: total ? start + 1 : 0, to: start + slice.length };
+  }
+
+  function callMatches(c, opts) {
+    if (opts.roles &amp;&amp; opts.roles.length &amp;&amp; opts.roles.indexOf(c.role) &lt; 0) return false;
+    if (opts.status &amp;&amp; opts.status !== 'all' &amp;&amp; c.status !== opts.status) return false;
+    return true;
+  }
+  function num(v) { return typeof v === 'number' &amp;&amp; !isNaN(v) ? v : null; }
+  function byDesc(key) {
+    return function (a, b) {
+      var x = num(a[key]);
+      var y = num(b[key]);
+      if (x === null &amp;&amp; y === null) return a.id - b.id;
+      if (x === null) return 1;
+      if (y === null) return -1;
+      return (y - x) || (a.id - b.id);
+    };
+  }
+  var CALL_SORTS = {
+    'start-asc': function (a, b) { return a.id - b.id; },
+    'start-desc': function (a, b) { return b.id - a.id; },
+    'duration-desc': byDesc('durationMs'),
+    'cost-desc': byDesc('costUsd'),
+    'turns-desc': byDesc('turns')
+  };
+  function sortedCalls(calls, opts) {
+    var cmp = has(CALL_SORTS, opts.sort) ? CALL_SORTS[opts.sort] : CALL_SORTS['start-asc'];
+    return calls.filter(function (c) { return callMatches(c, opts); }).sort(cmp);
+  }
+  function listCalls(calls, opts) { return paginate(sortedCalls(calls, opts), opts.page, opts.pageSize); }
+  function pageOfCall(calls, opts, id) {
+    var list = sortedCalls(calls, opts);
+    for (var i = 0; i &lt; list.length; i++) {
+      if (list[i].id === id) return Math.floor(i / sizeOf(opts.pageSize)) + 1;
+    }
+    return 0;
+  }
+
+  function summaryOf(ev) {
+    var d = ev.data || {};
+    var out;
+    if (ev.event === 'say' || ev.event === 'raw') out = d.text;
+    else if (ev.event === 'user.input') out = d.answer;
+    else if (ev.event === 'user.question') out = d.question;
+    else if (ev.event === 'user.choice') out = d.prompt + ' → ' + d.choice;
+    else out = JSON.stringify(d);
+    return out === undefined || out === null ? '' : String(out);
+  }
+  function typeMatches(ev, type) {
+    var e = ev.event;
+    if (type === 'problem') return ev.level !== 'INFO';
+    if (type === 'agent') return e.indexOf('agent.') === 0 || e.indexOf('qa.') === 0 || e.indexOf('security.') === 0 || e === 'guard.deny' || e === 'escalate.decision';
+    if (type === 'user') return e.indexOf('user.') === 0;
+    if (type === 'say') return e === 'say';
+    return true;
+  }
+  function listEvents(events, opts) {
+    var q = String(opts.query || '').trim().toLowerCase();
+    var list = events.filter(function (ev) {
+      if (!typeMatches(ev, opts.type || 'all')) return false;
+      return !q || (ev.event + ' ' + summaryOf(ev)).toLowerCase().indexOf(q) &gt;= 0;
+    });
+    if (opts.sort === 'desc') list = list.slice().reverse();
+    return paginate(list, opts.page, opts.pageSize);
+  }
+
+  return {
+    PAGE_SIZES: PAGE_SIZES,
+    DEFAULT_PAGE_SIZE: DEFAULT_PAGE_SIZE,
+    roleStyle: roleStyle,
+    roleCounts: roleCounts,
+    paginate: paginate,
+    listCalls: listCalls,
+    pageOfCall: pageOfCall,
+    summaryOf: summaryOf,
+    listEvents: listEvents
+  };
+})();
+`;</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+<p>รัน: <code>npx vitest run tests/logview/list-assets.test.ts</code> แล้ว <code>npm run typecheck</code> — คาดหวัง: PASS ทั้งหมด</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/logview/list-assets.ts tests/logview/list-assets.test.ts
+git commit -m "feat(logview): pure list logic for sort/filter/pagination and role styles"</code></pre>
+</div>
+
+<!-- ============================ TASK 2 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 2: Typography, ฟอนต์ที่ฝังในไฟล์ และสีประจำ role (fonts.ts + PAGE_CSS + render.ts)</h3>
+<p class="meta"><strong>ไฟล์:</strong></p>
+<ul class="meta">
+  <li>สร้าง: <code>src/logview/fonts.ts</code></li>
+  <li>แก้ไข: <code>src/logview/page-assets.ts</code> (แทนที่ <code>PAGE_CSS</code> ทั้งก้อน — ยังไม่แตะ <code>PAGE_JS</code>), <code>src/logview/render.ts</code>, <code>package.json</code> (<code>"files"</code>)</li>
+  <li>เพิ่มเข้า git: <code>assets/fonts/</code> (ผู้ใช้วางไฟล์ไว้แล้ว: <code>NotoSansThai-Thai.woff2</code>, <code>Inter-Latin.woff2</code>, <code>JetBrainsMono-Latin.woff2</code>, <code>OFL-NotoSansThai.txt</code>, <code>OFL-Inter.txt</code>, <code>OFL-JetBrainsMono.txt</code>)</li>
+  <li>เทสต์: <code>tests/logview/fonts.test.ts</code> (ใหม่), <code>tests/logview/render.test.ts</code></li>
+</ul>
+<p class="meta"><strong>Interfaces:</strong></p>
+<ul class="meta">
+  <li>ใช้จาก (Consumes): <code>LIST_JS</code> จาก <code>src/logview/list-assets.ts</code> (Task 1); <code>TEAM_ROOT</code> จาก <code>src/config.ts</code></li>
+  <li>ส่งต่อ (Produces): <code>FONTS_DIR: string</code>, <code>FONT_FILES: readonly { family: string; file: string; unicodeRange: string }[]</code>, <code>fontFaceCss(dir?: string): string</code> ใน <code>src/logview/fonts.ts</code>; HTML มี <code>&lt;style&gt;</code> ที่ขึ้นต้นด้วย <code>@font-face</code> ที่ฝัง base64 และ <code>&lt;script&gt;</code> 4 ตัวตามลำดับ: data (JSON), <code>window.__LIVE__</code>, <code>LIST_JS</code>, <code>PAGE_JS</code>; CSS class ที่ Task 3 ใช้: <code>.role-pm|planning|frontend|backend|qa|security|other</code> (ตั้งตัวแปร <code>--role</code>), <code>.role-badge</code>, <code>.chip</code> (+ <code>.on</code>), <code>.controls</code>, <code>.pager</code>, <code>.pager-info</code>, <code>input[type=search]</code>, <code>h3</code></li>
+</ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ของฟอนต์ที่ต้อง fail</strong></span></p>
+<p>สร้าง <code>tests/logview/fonts.test.ts</code>:</p>
+<pre><code>import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { FONT_FILES, FONTS_DIR, fontFaceCss } from '../../src/logview/fonts';
+
+describe('fonts', () =&gt; {
+  it('ไฟล์ฟอนต์และ license อยู่ใน assets/fonts และเป็น woff2 จริง', () =&gt; {
+    expect(FONT_FILES.map((f) =&gt; f.family)).toEqual(['Noto Sans Thai', 'Inter', 'JetBrains Mono']);
+    for (const f of FONT_FILES) {
+      const buf = fs.readFileSync(path.join(FONTS_DIR, f.file));
+      expect(buf.subarray(0, 4).toString('latin1')).toBe('wOF2');
+    }
+    for (const lic of ['OFL-NotoSansThai.txt', 'OFL-Inter.txt', 'OFL-JetBrainsMono.txt']) {
+      expect(fs.readFileSync(path.join(FONTS_DIR, lic), 'utf8')).toContain('SIL Open Font License');
+    }
+  });
+
+  it('สร้าง @font-face ที่ฝัง base64 ครบ 3 ชุด พร้อม unicode-range และ font-display:swap', () =&gt; {
+    const css = fontFaceCss();
+    expect(css.match(/@font-face\{/g)).toHaveLength(3);
+    expect(css).toContain('font-family:"Noto Sans Thai"');
+    expect(css).toContain('unicode-range:U+02D7, U+0303, U+0331, U+0E01-0E5B, U+200C-200D, U+25CC');
+    expect(css).toContain('src:url(data:font/woff2;base64,d09GMg');
+    expect(css).toContain('font-display:swap');
+    expect(css).toContain('font-weight:400 700');
+    expect(css).not.toContain('http');
+  });
+
+  it('ไม่มีไฟล์ฟอนต์ -&gt; คืนสตริงว่าง (หน้าใช้ฟอนต์ระบบแทน) และไม่ throw', () =&gt; {
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-team-nofonts-'));
+    expect(fontFaceCss(empty)).toBe('');
+  });
+
+  it('package.json ส่ง assets ไปกับ npm i -g', () =&gt; {
+    const pkg = JSON.parse(fs.readFileSync(path.join(FONTS_DIR, '..', '..', 'package.json'), 'utf8')) as { files: string[] };
+    expect(pkg.files).toContain('assets');
+  });
+});</code></pre>
+<p>(<code>d09GMg</code> คือ base64 ของ <code>wOF2</code>)</p>
+<p>รัน: <code>npx vitest run tests/logview/fonts.test.ts</code> — คาดหวัง: FAIL ด้วย "Failed to resolve import '../../src/logview/fonts'"</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: เขียน <code>src/logview/fonts.ts</code> และแก้ <code>package.json</code></strong></span></p>
+<pre><code>import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { TEAM_ROOT } from '../config';
+
+/** ฟอนต์ที่ฝังในหน้า logs (SIL Open Font License, ดู OFL-*.txt ในโฟลเดอร์เดียวกัน) */
+export const FONTS_DIR = path.join(TEAM_ROOT, 'assets', 'fonts');
+
+const LATIN =
+  'U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD';
+
+/** woff2 แบบ variable (น้ำหนัก 400–700) ตัดเฉพาะชุดตัวอักษรที่ใช้ — ไทยใช้ Noto Sans Thai, อังกฤษใช้ Inter, log/โค้ดใช้ JetBrains Mono */
+export const FONT_FILES: readonly { family: string; file: string; unicodeRange: string }[] = [
+  { family: 'Noto Sans Thai', file: 'NotoSansThai-Thai.woff2', unicodeRange: 'U+02D7, U+0303, U+0331, U+0E01-0E5B, U+200C-200D, U+25CC' },
+  { family: 'Inter', file: 'Inter-Latin.woff2', unicodeRange: LATIN },
+  { family: 'JetBrains Mono', file: 'JetBrainsMono-Latin.woff2', unicodeRange: LATIN },
+];
+
+const cache = new Map&lt;string, string&gt;();
+
+/** @font-face ที่ฝังฟอนต์เป็น base64 (อ่านไฟล์ครั้งเดียวต่อโฟลเดอร์) ไฟล์ที่หาไม่เจอถูกข้าม หน้าจะใช้ฟอนต์ระบบใน --font-sans/--font-mono แทน */
+export function fontFaceCss(dir: string = FONTS_DIR): string {
+  const hit = cache.get(dir);
+  if (hit !== undefined) return hit;
+  const css = FONT_FILES.map((f) =&gt; {
+    let data: Buffer;
+    try {
+      data = fs.readFileSync(path.join(dir, f.file));
+    } catch {
+      return '';
+    }
+    return (
+      `@font-face{font-family:"${f.family}";font-style:normal;font-weight:400 700;font-display:swap;` +
+      `src:url(data:font/woff2;base64,${data.toString('base64')}) format("woff2");unicode-range:${f.unicodeRange}}`
+    );
+  })
+    .filter(Boolean)
+    .join('\n');
+  cache.set(dir, css);
+  return css;
+}</code></pre>
+<p>ใน <code>package.json</code> เพิ่ม <code>"assets"</code> ใน <code>"files"</code> (หลัง <code>"bin"</code>):</p>
+<pre><code>  "files": [
+    "bin",
+    "assets",
+    "src",
+    "skills",
+    "scripts",
+    "tsconfig.json"
+  ],</code></pre>
+<p>รัน: <code>npx vitest run tests/logview/fonts.test.ts</code> — คาดหวัง: PASS</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แก้ test ของ render (fail)</strong></span></p>
+<p>ใน <code>tests/logview/render.test.ts</code>:</p>
+<ul class="meta">
+  <li>เปลี่ยนทุก <code>expect(html.match(/&lt;\/script&gt;/g)).toHaveLength(3)</code> (มี 2 ที่) เป็น <code>toHaveLength(4)</code></li>
+  <li>เพิ่ม import <code>import { LIST_JS } from '../../src/logview/list-assets';</code>, <code>import { fontFaceCss } from '../../src/logview/fonts';</code> และเพิ่ม <code>PAGE_CSS</code> เข้า import เดิมจาก <code>page-assets</code></li>
+  <li>เพิ่ม test ใน <code>describe('renderHtml', ...)</code>:</li>
+</ul>
+<pre><code>  it('ฝังฟอนต์ในไฟล์ ไม่มีลิงก์ภายนอก', () =&gt; {
+    const html = renderHtml(data);
+    expect(html).toContain(`&lt;style&gt;${fontFaceCss()}\n${PAGE_CSS}&lt;/style&gt;`);
+    expect(html.match(/@font-face\{/g)).toHaveLength(3);
+    expect(html).not.toContain('&lt;link');
+    expect(html).not.toContain('fonts.googleapis.com');
+  });
+
+  it('ฝัง LIST_JS ก่อน PAGE_JS', () =&gt; {
+    const html = renderHtml(data);
+    expect(html.indexOf(LIST_JS)).toBeGreaterThan(0);
+    expect(html.indexOf(LIST_JS)).toBeLessThan(html.indexOf(PAGE_JS));
+  });
+
+  it('typography tokens สำหรับภาษาไทยและสีประจำ role (light + dark)', () =&gt; {
+    for (const token of [
+      '--font-sans:"Inter","Noto Sans Thai","Leelawadee UI"',
+      '--font-mono:"JetBrains Mono","Noto Sans Thai"',
+      '--fs-h1:clamp(',
+      '--fs-h2:clamp(',
+      '--fs-h3:clamp(',
+      '--fs-body:clamp(',
+      '--fs-small:',
+      '--fs-caption:',
+      '--lh-heading:1.35',
+      '--lh-body:1.7',
+      '--lh-mono:1.5',
+      '--ls-caption:.01em',
+      'input[type=search]{flex:1 1 220px;min-width:0;font-size:max(16px,var(--fs-body))}',
+    ]) {
+      expect(PAGE_CSS).toContain(token);
+    }
+    for (const role of ['pm', 'planning', 'frontend', 'backend', 'qa', 'security', 'other']) {
+      expect(PAGE_CSS.split(`--r-${role}:`)).toHaveLength(3); // light + dark
+      expect(PAGE_CSS).toContain(`.role-${role}{--role:var(--r-${role})}`);
+    }
+    expect(PAGE_CSS.split('--role-fg:')).toHaveLength(3);
+    expect(PAGE_CSS).not.toContain('font-size:11px');
+  });</code></pre>
+<p>รัน: <code>npx vitest run tests/logview/render.test.ts</code> — คาดหวัง: FAIL (ยังไม่ฝังฟอนต์, script ยังมี 3 ตัว, CSS ยังไม่มี token)</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: แทนที่ <code>PAGE_CSS</code> ใน <code>src/logview/page-assets.ts</code></strong></span></p>
+<p>แทนที่ทั้งก้อน <code>export const PAGE_CSS = String.raw\</code>...\<code>;</code> (และแก้ comment บรรทัดแรกของไฟล์เป็น <code>// CSS + JS ของหน้า agent-team logs (ฝังลงใน HTML ไฟล์เดียว; ฟอนต์ฝังโดย render.ts จาก assets/fonts)</code>) ด้วย:</p>
+<pre><code>export const PAGE_CSS = String.raw`
+:root{
+--bg:#f6f7f9;--card:#fff;--fg:#1f2933;--muted:#5b6876;--border:#d9dee5;--err:#c62828;--err-bg:#fdecea;--warn:#a15c00;--warn-bg:#fff4e0;--ok:#1b7f3b;--info:#2457c5;--info-bg:#e8effc;--code:#eef1f5;
+--r-pm:#7c3aed;--r-planning:#1d4ed8;--r-frontend:#be185d;--r-backend:#0f766e;--r-qa:#c2410c;--r-security:#86198f;--r-other:#64748b;--role-fg:#fff;
+--font-sans:"Inter","Noto Sans Thai","Leelawadee UI","Segoe UI",Tahoma,system-ui,sans-serif;
+--font-mono:"JetBrains Mono","Noto Sans Thai",ui-monospace,"Cascadia Mono",Consolas,monospace;
+--fs-h1:clamp(1.5rem,1.3rem + 1vw,2rem);
+--fs-h2:clamp(1.2rem,1.1rem + .5vw,1.4rem);
+--fs-h3:clamp(1.05rem,1rem + .25vw,1.15rem);
+--fs-body:clamp(.9375rem,.9rem + .2vw,1rem);
+--fs-small:.875rem;
+--fs-caption:.8125rem;
+--fs-mono:.8125rem;
+--lh-heading:1.35;--lh-body:1.7;--lh-mono:1.5;
+--ls-body:0;--ls-heading:0;--ls-caption:.01em
+}
+@media (prefers-color-scheme: dark){:root{
+--bg:#12161c;--card:#1b2129;--fg:#e4e8ee;--muted:#a3adb8;--border:#2e3742;--err:#ff8a80;--err-bg:#3a1d1d;--warn:#ffcc80;--warn-bg:#3a2e1a;--ok:#81c995;--info:#8ab4f8;--info-bg:#1d2a40;--code:#232b35;
+--r-pm:#c4b5fd;--r-planning:#93c5fd;--r-frontend:#f9a8d4;--r-backend:#5eead4;--r-qa:#fdba74;--r-security:#f0abfc;--r-other:#cbd5e1;--role-fg:#12161c
+}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font-sans);font-size:var(--fs-body);line-height:var(--lh-body);letter-spacing:var(--ls-body);-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+#app{max-width:1100px;margin:0 auto;padding:16px}
+h1,h2,h3{font-weight:600;line-height:var(--lh-heading);letter-spacing:var(--ls-heading)}
+h1{font-size:var(--fs-h1);margin:0 0 4px}
+h2{font-size:var(--fs-h2);margin:0 0 10px}
+h3{font-size:var(--fs-h3);margin:6px 0}
+section,.head{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:12px}
+.muted{color:var(--muted)}
+.small{font-size:var(--fs-caption);letter-spacing:var(--ls-caption)}
+select,button,input{font:inherit;font-size:var(--fs-small);line-height:1.5;color:inherit;background:var(--card);border:1px solid var(--border);border-radius:6px;padding:4px 10px;max-width:100%}
+button{cursor:pointer;margin:2px}
+button:disabled{opacity:.45;cursor:default}
+input[type=search]{flex:1 1 220px;min-width:0;font-size:max(16px,var(--fs-body))}
+.finding{border-left:4px solid;border-radius:6px;padding:8px 12px;margin:8px 0}
+.sev-error{border-color:var(--err);background:var(--err-bg)}
+.sev-warn{border-color:var(--warn);background:var(--warn-bg)}
+.sev-info{border-color:var(--info);background:var(--info-bg)}
+.detail{white-space:pre-wrap;overflow-wrap:anywhere;margin:4px 0}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:4px 0;background:var(--code);padding:8px 10px;border-radius:6px;font-family:var(--font-mono);font-size:var(--fs-mono);line-height:var(--lh-mono);max-height:320px;overflow:auto}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px}
+.stat{border:1px solid var(--border);border-radius:6px;padding:6px 10px;overflow-wrap:anywhere}
+.stat b{display:block;font-size:var(--fs-caption);letter-spacing:var(--ls-caption);color:var(--muted);font-weight:normal}
+.card{border:1px solid var(--border);border-left:4px solid var(--role,var(--border));border-radius:6px;margin:6px 0}
+.card&gt;button{width:100%;margin:0;text-align:left;border:0;border-radius:0 6px 6px 0;display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;padding:8px 10px}
+.card.failed&gt;button{background:var(--err-bg)}
+.card .body{padding:4px 10px 10px}
+.step{border-top:1px dashed var(--border);padding:6px 0}
+.t{color:var(--muted);font-size:var(--fs-caption);letter-spacing:var(--ls-caption);margin-right:6px}
+.kind-api_error{color:var(--err)}
+.filters,.controls,.pager{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:8px}
+.pager{margin:10px 0 0}
+.pager-info{color:var(--muted);font-size:var(--fs-small)}
+.filters button.on{background:var(--info-bg);border-color:var(--info)}
+.role-pm{--role:var(--r-pm)}
+.role-planning{--role:var(--r-planning)}
+.role-frontend{--role:var(--r-frontend)}
+.role-backend{--role:var(--r-backend)}
+.role-qa{--role:var(--r-qa)}
+.role-security{--role:var(--r-security)}
+.role-other{--role:var(--r-other)}
+.role-badge{display:inline-block;border:1px solid var(--role);background:var(--role);color:var(--role-fg);border-radius:999px;padding:0 8px;margin:0 6px 0 0;font-size:var(--fs-caption);font-weight:600;line-height:1.7;white-space:nowrap}
+button.role-badge{margin:2px}
+.filters .chip{border-color:var(--role);color:var(--role);font-weight:600}
+.filters .chip.on{background:var(--role);border-color:var(--role);color:var(--role-fg)}
+details{border-top:1px solid var(--border);padding:4px 0}
+summary{cursor:pointer;overflow-wrap:anywhere}
+.lv{display:inline-block;min-width:52px;font-size:var(--fs-caption);font-weight:700;letter-spacing:var(--ls-caption);margin-right:6px}
+.lv-INFO{color:var(--muted)}
+.lv-WARN{color:var(--warn)}
+.lv-ERROR,.lv-RAW{color:var(--err)}
+.ev{font-family:var(--font-mono);font-size:var(--fs-mono);margin-right:6px}
+.ok{color:var(--ok)}
+.bad{color:var(--err)}
+`;</code></pre>
+<p>(ป้าย role เป็นพื้นสีเต็ม ส่วน level ใน timeline เป็นตัวอักษรสี จึงไม่สับสน qa กับ WARN; security ใช้โทนม่วงแดงเข้ม <code>#86198f</code> แทนแดง เพื่อไม่ชนกับสี ERROR)</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: แก้ <code>src/logview/render.ts</code></strong></span></p>
+<p>เพิ่ม import:</p>
+<pre><code>import { fontFaceCss } from './fonts';
+import { LIST_JS } from './list-assets';</code></pre>
+<p>(<code>embedJson</code>, <code>escapeHtml</code> เดิมคงไว้) ในเทมเพลตของ <code>renderHtml</code> เปลี่ยนบรรทัด <code>&lt;style&gt;${PAGE_CSS}&lt;/style&gt;</code> เป็น:</p>
+<pre><code>&lt;style&gt;${fontFaceCss()}
+${PAGE_CSS}&lt;/style&gt;</code></pre>
+<p>และเพิ่ม <code>&lt;script&gt;${LIST_JS}&lt;/script&gt;</code> ระหว่างบรรทัด <code>&lt;script&gt;window.__LIVE__ = ...&lt;/script&gt;</code> กับ <code>&lt;script&gt;${PAGE_JS}&lt;/script&gt;</code></p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+<p>รัน: <code>npx vitest run tests/logview</code> แล้ว <code>npm test</code> และ <code>npm run typecheck</code> — คาดหวัง: ผ่านทั้งหมด และ <code>npm pack --dry-run</code> ต้องมี <code>assets/fonts/*.woff2</code> และ <code>assets/fonts/OFL-*.txt</code> ในรายการ</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: Commit</strong></span></p>
+<pre><code>git add assets/fonts src/logview/fonts.ts src/logview/page-assets.ts src/logview/render.ts package.json tests/logview/fonts.test.ts tests/logview/render.test.ts
+git commit -m "feat(logview): embedded Thai-friendly fonts, typography tokens, role colors"</code></pre>
+</div>
+
+<!-- ============================ TASK 3 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 3: UI ของหน้า: control, pagination, ป้าย role (PAGE_JS) + DOM test + README</h3>
+<p class="meta"><strong>ไฟล์:</strong></p>
+<ul class="meta">
+  <li>แก้ไข: <code>src/logview/page-assets.ts</code> (แทนที่ <code>PAGE_JS</code> ทั้งก้อน), <code>README.md</code></li>
+  <li>สร้าง: <code>tests/helpers/dom-shim.ts</code>, <code>tests/logview/page-dom.test.ts</code></li>
+</ul>
+<p class="meta"><strong>Interfaces:</strong></p>
+<ul class="meta">
+  <li>ใช้จาก (Consumes): global <code>window.AgentTeamList</code> จาก <code>LIST_JS</code> (Task 1: <code>PAGE_SIZES, DEFAULT_PAGE_SIZE, roleStyle, roleCounts, listCalls, pageOfCall, summaryOf, listEvents</code>); CSS class จาก Task 2; <code>ViewData</code> (<code>runs[].calls/events/findings/transcripts</code>, <code>defaultRun</code>) จาก <code>src/logview/view-data.ts</code>; <code>embedJson</code> จาก <code>render.ts</code></li>
+  <li>ส่งต่อ (Produces): <code>createDom(dataJson: string)</code> และ <code>find(root, pred)</code> ใน <code>tests/helpers/dom-shim.ts</code></li>
+</ul>
+<p>ข้อความ UI ที่ต้องใช้ตรงตัว (เทสต์อ้างถึง): ปุ่ม <code>« ก่อนหน้า</code>, <code>ถัดไป »</code>; ข้อมูลหน้า <code>หน้า X/Y · แสดง A–B จาก N</code> (ใช้ en dash <code>–</code>); aria-label ของ select: <code>จำนวนต่อหน้า</code>, <code>กรองสถานะ</code>, <code>เรียงการเรียก agent</code>, <code>เรียง timeline</code>, <code>เลือกรอบรัน</code>; ช่องค้นหา id <code>ev-search</code>; chip role <code>ไอคอน role (จำนวน)</code>; ปุ่มกระโดดในกล่องสาเหตุ <code>#เลข ไอคอน role</code></p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: สร้าง DOM shim</strong></span></p>
+<p>สร้าง <code>tests/helpers/dom-shim.ts</code>:</p>
+<pre><code>// DOM จำลองขั้นต่ำสำหรับรัน PAGE_JS ใน vitest (repo ไม่มี jsdom และห้ามเพิ่ม dependency)
+
+export class FakeNode {
+  tagName: string;
+  children: FakeNode[] = [];
+  className = '';
+  id = '';
+  value = '';
+  type = '';
+  disabled = false;
+  selected = false;
+  open = false;
+  selectionStart: number | null = null;
+  attrs: Record&lt;string, string&gt; = {};
+  listeners: Record&lt;string, () =&gt; void&gt; = {};
+  onclick?: () =&gt; void;
+  onchange?: () =&gt; void;
+  oninput?: () =&gt; void;
+  ownerDocument?: FakeDocument;
+  scrolledIntoView = false;
+  private ownText = '';
+
+  constructor(tag: string) {
+    this.tagName = tag.toLowerCase();
+  }
+  appendChild(child: FakeNode): FakeNode {
+    if (child.tagName === '#fragment') {
+      const moved = child.children;
+      child.children = [];
+      moved.forEach((c) =&gt; this.appendChild(c));
+    } else {
+      this.children.push(child);
+    }
+    return child;
+  }
+  get textContent(): string {
+    return this.ownText + this.children.map((c) =&gt; c.textContent).join('');
+  }
+  set textContent(v: string) {
+    this.ownText = String(v);
+    this.children = [];
+  }
+  setAttribute(k: string, v: string): void {
+    this.attrs[k] = String(v);
+  }
+  addEventListener(event: string, fn: () =&gt; void): void {
+    this.listeners[event] = fn;
+  }
+  scrollIntoView(): void {
+    this.scrolledIntoView = true;
+  }
+  focus(): void {
+    if (this.ownerDocument) this.ownerDocument.activeElement = this;
+  }
+  setSelectionRange(start: number): void {
+    this.selectionStart = start;
+  }
+}
+
+export interface FakeDocument {
+  activeElement: FakeNode | null;
+  hidden: boolean;
+  createElement(tag: string): FakeNode;
+  createDocumentFragment(): FakeNode;
+  getElementById(id: string): FakeNode | null;
+}
+
+export function find(root: FakeNode, pred: (n: FakeNode) =&gt; boolean): FakeNode[] {
+  const out: FakeNode[] = [];
+  const walk = (n: FakeNode): void =&gt; {
+    if (pred(n)) out.push(n);
+    n.children.forEach(walk);
+  };
+  walk(root);
+  return out;
+}
+
+export function createDom(dataJson: string): {
+  app: FakeNode;
+  document: FakeDocument;
+  window: { scrollY: number; scrollTo: () =&gt; void; __LIVE__: boolean; AgentTeamList?: unknown };
+} {
+  const app = new FakeNode('div');
+  app.id = 'app';
+  const dataEl = new FakeNode('script');
+  dataEl.id = 'data';
+  dataEl.textContent = dataJson;
+  const document: FakeDocument = {
+    activeElement: null,
+    hidden: false,
+    createElement: (tag) =&gt; {
+      const n = new FakeNode(tag);
+      n.ownerDocument = document;
+      return n;
+    },
+    createDocumentFragment: () =&gt; new FakeNode('#fragment'),
+    getElementById: (id) =&gt; (id === 'data' ? dataEl : (find(app, (n) =&gt; n.id === id)[0] ?? null)),
+  };
+  return { app, document, window: { scrollY: 0, scrollTo: () =&gt; {}, __LIVE__: false } };
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: เขียน DOM test ที่ต้อง fail</strong></span></p>
+<p>สร้าง <code>tests/logview/page-dom.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import { LIST_JS } from '../../src/logview/list-assets';
+import { PAGE_JS } from '../../src/logview/page-assets';
+import { embedJson } from '../../src/logview/render';
+import type { ViewData } from '../../src/logview/view-data';
+import { createDom, find, type FakeNode } from '../helpers/dom-shim';
+
+const at = (i: number) =&gt; `2026-01-10T09:${String(i).padStart(2, '0')}:00.000Z`;
+const calls = Array.from({ length: 25 }, (_, i) =&gt; ({
+  id: i,
+  role: i % 2 ? 'backend' : 'qa',
+  resumed: false,
+  start: at(i),
+  end: at(i),
+  status: i === 23 ? 'failed' : 'ok',
+  subtype: 'success',
+  durationMs: 1000 * (i + 1),
+  turns: i % 5,
+  costUsd: 0.01 * i,
+}));
+const events = Array.from({ length: 45 }, (_, i) =&gt; {
+  if (i === 5) return { line: 6, time: at(5), level: 'INFO', event: 'agent.start', data: { role: 'qa', model: 'm' } };
+  if (i === 40) return { line: 41, time: at(40), level: 'ERROR', event: 'run.error', data: { message: 'boom' } };
+  return { line: i + 1, time: at(i), level: 'INFO', event: 'say', data: { text: `ข้อความที่ ${i + 1}` } };
+});
+const DATA = {
+  projectDir: '/work/app',
+  logFile: 'x',
+  generatedAt: '2026-01-10T10:00:00.000Z',
+  defaultRun: 0,
+  runs: [
+    {
+      index: 0,
+      start: at(0),
+      end: at(44),
+      status: 'error',
+      errorMessage: 'boom',
+      events,
+      calls,
+      totalCostUsd: 3,
+      findings: [{ severity: 'error', title: 'agent backend พัง', detail: 'd', callIds: [23], count: 1 }],
+      transcripts: {},
+    },
+  ],
+} as unknown as ViewData;
+
+function load() {
+  const dom = createDom(embedJson(DATA));
+  dom.window.AgentTeamList = new Function(`${LIST_JS}\nreturn AgentTeamList;`)();
+  // setTimeout ทำงานทันที (sync) เพื่อข้ามดีเลย์ 150ms ของช่องค้นหา
+  new Function('window', 'document', 'fetch', 'setInterval', 'setTimeout', 'clearTimeout', PAGE_JS)(
+    dom.window,
+    dom.document,
+    () =&gt; Promise.reject(new Error('offline')),
+    () =&gt; 0,
+    (fn: () =&gt; void) =&gt; {
+      fn();
+      return 0;
+    },
+    () =&gt; {},
+  );
+  return dom;
+}
+type Dom = ReturnType&lt;typeof load&gt;;
+const cards = (d: Dom) =&gt; find(d.app, (n) =&gt; n.id.startsWith('call-'));
+const infos = (d: Dom) =&gt; find(d.app, (n) =&gt; n.className === 'pager-info').map((n) =&gt; n.textContent);
+const buttons = (d: Dom, text: string) =&gt; find(d.app, (n) =&gt; n.tagName === 'button' &amp;&amp; n.textContent === text);
+const selects = (d: Dom, label: string) =&gt; find(d.app, (n) =&gt; n.tagName === 'select' &amp;&amp; n.attrs['aria-label'] === label);
+const details = (d: Dom) =&gt; find(d.app, (n) =&gt; n.tagName === 'details');
+const choose = (sel: FakeNode, value: string) =&gt; {
+  sel.value = value;
+  sel.onchange!();
+};
+
+describe('หน้า logs (DOM จำลอง)', () =&gt; {
+  it('แบ่งหน้า 20 ต่อหน้าเป็นค่าเริ่มต้น ทั้ง call และ timeline', () =&gt; {
+    const d = load();
+    expect(cards(d)).toHaveLength(20);
+    expect(infos(d)).toEqual(['หน้า 1/2 · แสดง 1–20 จาก 25', 'หน้า 1/3 · แสดง 1–20 จาก 45']);
+    expect(buttons(d, '« ก่อนหน้า')[0]!.disabled).toBe(true);
+  });
+
+  it('ถัดไป / เปลี่ยนเป็น 10 ต่อหน้า -&gt; กลับหน้า 1', () =&gt; {
+    const d = load();
+    buttons(d, 'ถัดไป »')[0]!.onclick!();
+    expect(cards(d)).toHaveLength(5);
+    expect(infos(d)[0]).toBe('หน้า 2/2 · แสดง 21–25 จาก 25');
+    expect(buttons(d, 'ถัดไป »')[0]!.disabled).toBe(true);
+    choose(selects(d, 'จำนวนต่อหน้า')[0]!, '10');
+    expect(cards(d)).toHaveLength(10);
+    expect(infos(d)[0]).toBe('หน้า 1/3 · แสดง 1–10 จาก 25');
+    choose(selects(d, 'จำนวนต่อหน้า')[1]!, '50');
+    expect(details(d)).toHaveLength(45);
+  });
+
+  it('chip role กรองได้ และการ์ดมีสีของ role', () =&gt; {
+    const d = load();
+    const chip = buttons(d, '🔍 qa (13)')[0]!;
+    expect(buttons(d, '⚙️ backend (12)')).toHaveLength(1);
+    chip.onclick!();
+    expect(cards(d)).toHaveLength(13);
+    expect(cards(d).every((c) =&gt; c.className.includes('role-qa'))).toBe(true);
+    expect(buttons(d, '🔍 qa (13)')[0]!.className).toContain('on');
+  });
+
+  it('ปุ่มในกล่องสาเหตุ: ล้างตัวกรองที่ซ่อน call, ไปหน้าที่มี call, เปิดการ์ด และเลื่อนไปหา', () =&gt; {
+    const d = load();
+    buttons(d, '🔍 qa (13)')[0]!.onclick!();
+    buttons(d, '#24 ⚙️ backend')[0]!.onclick!();
+    expect(infos(d)[0]).toBe('หน้า 2/2 · แสดง 21–25 จาก 25');
+    const card = d.document.getElementById('call-23')!;
+    expect(card.children.length).toBeGreaterThan(1);
+    expect(card.scrolledIntoView).toBe(true);
+  });
+
+  it('กรองสถานะและเรียงตาม cost', () =&gt; {
+    const d = load();
+    choose(selects(d, 'กรองสถานะ')[0]!, 'failed');
+    expect(cards(d).map((c) =&gt; c.id)).toEqual(['call-23']);
+    choose(selects(d, 'กรองสถานะ')[0]!, 'all');
+    choose(selects(d, 'เรียงการเรียก agent')[0]!, 'cost-desc');
+    expect(cards(d)[0]!.id).toBe('call-24');
+  });
+
+  it('timeline: ค้นหาโดยไม่เสีย focus, เรียงใหม่→เก่า และมีป้าย role', () =&gt; {
+    const d = load();
+    const input = d.document.getElementById('ev-search')!;
+    d.document.activeElement = input;
+    input.value = 'BOOM';
+    input.selectionStart = 4;
+    input.oninput!();
+    expect(details(d)).toHaveLength(1);
+    const again = d.document.getElementById('ev-search')!;
+    expect(again).not.toBe(input);
+    expect(d.document.activeElement).toBe(again);
+    expect(again.value).toBe('BOOM');
+
+    // ระหว่าง IME composition ไม่ render จนกว่าจะพิมพ์จบ
+    again.listeners['compositionstart']!();
+    again.value = 'ข้อความที่ 4';
+    again.oninput!();
+    expect(details(d)).toHaveLength(1);
+    again.listeners['compositionend']!();
+    expect(details(d).length).toBeGreaterThan(1);
+
+    const fresh = load();
+    const badges = details(fresh).flatMap((dt) =&gt; find(dt, (n) =&gt; n.className === 'role-badge role-qa'));
+    expect(badges.map((b) =&gt; b.textContent)).toEqual(['🔍 qa']);
+    choose(selects(fresh, 'เรียง timeline')[0]!, 'desc');
+    expect(details(fresh)[0]!.textContent).toContain('ข้อความที่ 45');
+  });
+});</code></pre>
+<p>รัน: <code>npx vitest run tests/logview/page-dom.test.ts</code> — คาดหวัง: FAIL (PAGE_JS เดิมยังไม่มี control/pager)</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แทนที่ <code>PAGE_JS</code> ใน <code>src/logview/page-assets.ts</code></strong></span></p>
+<p>แทนที่ทั้งก้อน <code>export const PAGE_JS = String.raw\</code>...\<code>;</code> ด้วย:</p>
+<pre><code>export const PAGE_JS = String.raw`
+(function () {
+  'use strict';
+  var L = window.AgentTeamList;
+  var data = JSON.parse(document.getElementById('data').textContent);
+  var currentDefault = data.defaultRun;
+  var state = { run: currentDefault, open: {}, calls: freshCalls(), events: freshEvents() };
+  var lastRuns = JSON.stringify(data.runs);
+  var app = document.getElementById('app');
+
+  var RUN_STATUS = {
+    done: 'เสร็จสมบูรณ์',
+    aborted: 'ยกเลิกงาน',
+    error: 'หยุดเพราะ error',
+    interrupted: 'ถูกหยุด (Ctrl+C)',
+    unfinished: 'ยังไม่จบ / process หายไป'
+  };
+  var EVENT_TYPES = [['all', 'ทั้งหมด'], ['problem', 'WARN/ERROR'], ['agent', 'agent'], ['user', 'สิ่งที่คุณพิมพ์'], ['say', 'ข้อความในจอ']];
+  var CALL_STATUSES = [['all', 'ทุกสถานะ'], ['ok', 'สำเร็จ'], ['failed', 'ไม่สำเร็จ'], ['unfinished', 'ยังไม่จบ']];
+  var CALL_SORTS = [['start-asc', 'เวลาเริ่ม เก่า→ใหม่'], ['start-desc', 'เวลาเริ่ม ใหม่→เก่า'], ['duration-desc', 'ใช้เวลานานสุด'], ['cost-desc', 'cost สูงสุด'], ['turns-desc', 'turns มากสุด']];
+  var EVENT_SORTS = [['asc', 'เก่า→ใหม่'], ['desc', 'ใหม่→เก่า']];
+
+  function freshCalls() { return { roles: [], status: 'all', sort: 'start-asc', page: 1, pageSize: L.DEFAULT_PAGE_SIZE }; }
+  function freshEvents() { return { type: 'all', query: '', sort: 'asc', page: 1, pageSize: L.DEFAULT_PAGE_SIZE }; }
+  function resetForRun() {
+    state.open = {};
+    state.calls.roles = [];
+    state.calls.page = 1;
+    state.events.page = 1;
+  }
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined &amp;&amp; text !== null) e.textContent = String(text);
+    return e;
+  }
+  function fmtTime(iso) {
+    if (!iso) return '-';
+    var d = new Date(iso);
+    return isNaN(d.getTime()) ? iso : d.toLocaleString('th-TH', { hour12: false });
+  }
+  function fmtClock(iso) {
+    var d = new Date(iso);
+    return isNaN(d.getTime()) ? '' : d.toLocaleTimeString('th-TH', { hour12: false });
+  }
+  function fmtDur(ms) {
+    if (typeof ms !== 'number' || isNaN(ms)) return '-';
+    var s = Math.round(ms / 1000);
+    var h = Math.floor(s / 3600);
+    var m = Math.floor((s % 3600) / 60);
+    return (h ? h + 'h ' : '') + (h || m ? m + 'm ' : '') + (s % 60) + 's';
+  }
+  function fmtCost(v) { return typeof v === 'number' ? '$' + v.toFixed(4) : '-'; }
+  function short(text, n) {
+    text = String(text === undefined || text === null ? '' : text);
+    return text.length &gt; n ? text.slice(0, n) + '…' : text;
+  }
+
+  function selectBox(label, options, value, onChange) {
+    var s = el('select');
+    s.setAttribute('aria-label', label);
+    options.forEach(function (o) {
+      var opt = el('option', null, o[1]);
+      opt.value = String(o[0]);
+      if (String(o[0]) === String(value)) opt.selected = true;
+      s.appendChild(opt);
+    });
+    s.onchange = function () { onChange(s.value); };
+    return s;
+  }
+
+  function roleBadge(role) {
+    var st = L.roleStyle(role);
+    return el('span', 'role-badge ' + st.cls, st.icon + ' ' + role);
+  }
+
+  function pager(res, st) {
+    var bar = el('div', 'pager');
+    var prev = el('button', null, '« ก่อนหน้า');
+    prev.disabled = res.page &lt;= 1;
+    prev.onclick = function () { st.page = res.page - 1; render(); };
+    var next = el('button', null, 'ถัดไป »');
+    next.disabled = res.page &gt;= res.pages;
+    next.onclick = function () { st.page = res.page + 1; render(); };
+    bar.appendChild(prev);
+    bar.appendChild(el('span', 'pager-info', 'หน้า ' + res.page + '/' + res.pages + ' · แสดง ' + res.from + '–' + res.to + ' จาก ' + res.total));
+    bar.appendChild(next);
+    bar.appendChild(selectBox('จำนวนต่อหน้า', L.PAGE_SIZES.map(function (n) { return [n, n + ' ต่อหน้า']; }), res.pageSize, function (v) {
+      st.pageSize = Number(v);
+      st.page = 1;
+      render();
+    }));
+    return bar;
+  }
+
+  function render() {
+    var y = window.scrollY;
+    var active = document.activeElement;
+    var focusId = active &amp;&amp; active.id ? active.id : null;
+    var caret = focusId &amp;&amp; typeof active.selectionStart === 'number' ? active.selectionStart : null;
+    var frag = document.createDocumentFragment();
+    var run = data.runs[state.run];
+    frag.appendChild(renderHeader());
+    if (!run) {
+      frag.appendChild(el('section', 'muted', 'ยังไม่มีรอบรันใน log'));
+    } else {
+      frag.appendChild(renderFindings(run));
+      frag.appendChild(renderSummary(run));
+      frag.appendChild(renderCalls(run));
+      frag.appendChild(renderTimeline(run));
+    }
+    app.textContent = '';
+    app.appendChild(frag);
+    if (focusId) {
+      var again = document.getElementById(focusId);
+      if (again &amp;&amp; again.focus) {
+        again.focus();
+        if (caret !== null &amp;&amp; again.setSelectionRange) again.setSelectionRange(caret, caret);
+      }
+    }
+    window.scrollTo(0, y);
+  }
+
+  function renderHeader() {
+    var head = el('div', 'head');
+    head.appendChild(el('h1', null, 'agent-team logs'));
+    head.appendChild(el('div', 'muted', data.projectDir));
+    if (data.runs.length) {
+      head.appendChild(selectBox('เลือกรอบรัน', data.runs.map(function (r, i) {
+        return [i, 'รอบที่ ' + (i + 1) + ' · ' + fmtTime(r.start) + ' · ' + (RUN_STATUS[r.status] || r.status) + (r.jobId ? ' · ' + r.jobId : '') + (r.calls.length === 0 ? ' (ไม่ได้เรียก agent)' : '')];
+      }), state.run, function (v) {
+        state.run = Number(v);
+        resetForRun();
+        render();
+      }));
+    }
+    head.appendChild(el('div', 'muted small', 'สร้างเมื่อ ' + fmtTime(data.generatedAt) + (window.__LIVE__ ? ' · live: อัปเดตอัตโนมัติทุก 3 วินาที' : '')));
+    return head;
+  }
+
+  function renderFindings(run) {
+    var sec = el('section');
+    sec.appendChild(el('h2', null, 'สาเหตุที่น่าจะเป็น'));
+    if (!run.findings.length) {
+      sec.appendChild(el('p', 'muted', run.status === 'unfinished' ? 'ยังไม่พบปัญหา (รอบนี้ยังไม่จบ)' : 'ไม่พบปัญหา'));
+      return sec;
+    }
+    run.findings.forEach(function (f) {
+      var box = el('div', 'finding sev-' + f.severity);
+      box.appendChild(el('strong', null, f.title + (f.count &gt; 1 ? ' ×' + f.count : '')));
+      if (f.detail) box.appendChild(el('div', 'detail', f.detail));
+      if (f.callIds.length) {
+        var links = el('div', 'small');
+        links.appendChild(el('span', 'muted', 'ดูครั้งที่เรียก agent: '));
+        f.callIds.forEach(function (id) {
+          var c = run.calls[id];
+          var st = L.roleStyle(c ? c.role : '');
+          var b = el('button', 'role-badge ' + st.cls, '#' + (id + 1) + (c ? ' ' + st.icon + ' ' + c.role : ''));
+          b.onclick = function () { openCall(id); };
+          links.appendChild(b);
+        });
+        box.appendChild(links);
+      }
+      sec.appendChild(box);
+    });
+    return sec;
+  }
+
+  function openCall(id) {
+    var run = data.runs[state.run];
+    if (!run) return;
+    var st = state.calls;
+    if (L.pageOfCall(run.calls, st, id) === 0) {
+      st.roles = [];
+      st.status = 'all';
+    }
+    st.page = L.pageOfCall(run.calls, st, id) || 1;
+    state.open[id] = true;
+    render();
+    var target = document.getElementById('call-' + id);
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function stat(label, value, cls) {
+    var s = el('div', 'stat' + (cls ? ' ' + cls : ''));
+    s.appendChild(el('b', null, label));
+    s.appendChild(el('span', null, value));
+    return s;
+  }
+
+  function renderSummary(run) {
+    var sec = el('section');
+    sec.appendChild(el('h2', null, 'สรุปรอบนี้'));
+    var grid = el('div', 'stats');
+    var failed = run.calls.filter(function (c) { return c.status !== 'ok'; }).length;
+    var ms = run.end ? Date.parse(run.end) - Date.parse(run.start) : undefined;
+    grid.appendChild(stat('สถานะ', RUN_STATUS[run.status] || run.status, run.status === 'error' ? 'bad' : run.status === 'done' ? 'ok' : ''));
+    grid.appendChild(stat('เริ่ม', fmtTime(run.start)));
+    grid.appendChild(stat('ใช้เวลา', fmtDur(ms)));
+    grid.appendChild(stat('ค่าใช้จ่ายรวม (คิดตามราคา API)', fmtCost(run.totalCostUsd)));
+    grid.appendChild(stat('เรียก agent', run.calls.length + ' ครั้ง' + (failed ? ' (ไม่สำเร็จ ' + failed + ')' : '')));
+    grid.appendChild(stat('งาน (jobId)', run.jobId || '-'));
+    sec.appendChild(grid);
+    if (run.errorMessage) sec.appendChild(el('pre', 'bad', run.errorMessage));
+    return sec;
+  }
+
+  function renderCalls(run) {
+    var sec = el('section');
+    var st = state.calls;
+    sec.appendChild(el('h2', null, 'การเรียก agent (' + run.calls.length + ')'));
+    if (!run.calls.length) {
+      sec.appendChild(el('p', 'muted', 'รอบนี้ยังไม่ได้เรียก agent'));
+      return sec;
+    }
+    var chips = el('div', 'filters');
+    L.roleCounts(run.calls).forEach(function (rc) {
+      var on = st.roles.indexOf(rc.role) &gt;= 0;
+      var rs = L.roleStyle(rc.role);
+      var b = el('button', 'chip ' + rs.cls + (on ? ' on' : ''), rs.icon + ' ' + rc.role + ' (' + rc.count + ')');
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      b.onclick = function () {
+        st.roles = on ? st.roles.filter(function (r) { return r !== rc.role; }) : st.roles.concat([rc.role]);
+        st.page = 1;
+        render();
+      };
+      chips.appendChild(b);
+    });
+    sec.appendChild(chips);
+    var controls = el('div', 'controls');
+    controls.appendChild(selectBox('กรองสถานะ', CALL_STATUSES, st.status, function (v) { st.status = v; st.page = 1; render(); }));
+    controls.appendChild(selectBox('เรียงการเรียก agent', CALL_SORTS, st.sort, function (v) { st.sort = v; st.page = 1; render(); }));
+    sec.appendChild(controls);
+    var res = L.listCalls(run.calls, st);
+    st.page = res.page;
+    if (!res.total) sec.appendChild(el('p', 'muted', 'ไม่มีการเรียก agent ที่ตรงกับตัวกรอง'));
+    res.items.forEach(function (c) { sec.appendChild(renderCallCard(run, c)); });
+    sec.appendChild(pager(res, st));
+    return sec;
+  }
+
+  function renderCallCard(run, c) {
+    var rs = L.roleStyle(c.role);
+    var card = el('div', 'card ' + rs.cls + (c.status === 'ok' ? '' : ' failed'));
+    card.id = 'call-' + c.id;
+    var icon = c.status === 'ok' ? '✅' : c.status === 'failed' ? '❌' : '⏳';
+    var head = el('button');
+    head.setAttribute('aria-expanded', state.open[c.id] ? 'true' : 'false');
+    head.appendChild(el('span', null, icon + ' #' + (c.id + 1)));
+    head.appendChild(roleBadge(c.role));
+    [
+      c.model || '',
+      fmtClock(c.start),
+      fmtDur(c.durationMs),
+      (c.turns === undefined ? '-' : c.turns) + ' turns',
+      fmtCost(c.costUsd),
+      c.status === 'ok' ? '' : (c.subtype || 'ยังไม่จบ')
+    ].forEach(function (t) { if (t) head.appendChild(el('span', null, t)); });
+    head.onclick = function () { state.open[c.id] = !state.open[c.id]; render(); };
+    card.appendChild(head);
+    if (state.open[c.id]) card.appendChild(renderTranscript(run.transcripts[String(c.id)], c));
+    return card;
+  }
+
+  function renderTranscript(t, c) {
+    var body = el('div', 'body');
+    body.appendChild(el('h3', null, 'Transcript'));
+    if (c.sessionId) body.appendChild(el('div', 'muted small', 'session: ' + c.sessionId));
+    if (!t) {
+      body.appendChild(el('p', 'muted', 'ไม่มีข้อมูล transcript'));
+      return body;
+    }
+    if (t.file) body.appendChild(el('div', 'muted small', 'ไฟล์: ' + t.file));
+    if (t.note) body.appendChild(el('p', 'muted', t.note));
+    if (!t.steps.length &amp;&amp; !t.note) body.appendChild(el('p', 'muted', 'ไม่มีข้อความหรือ tool ในช่วงเวลานี้'));
+    t.steps.forEach(function (s) {
+      var row = el('div', 'step kind-' + s.kind);
+      row.appendChild(el('span', 't', fmtClock(s.time)));
+      if (s.kind === 'text') {
+        row.appendChild(el('span', null, '💬 ข้อความของ agent'));
+        row.appendChild(el('pre', null, s.text));
+      } else if (s.kind === 'tool_use') {
+        row.appendChild(el('span', null, '🔧 ' + s.name));
+        row.appendChild(el('pre', null, s.input));
+      } else if (s.kind === 'tool_result') {
+        row.appendChild(el('span', s.isError ? 'bad' : null, s.isError ? '⚠ ผลลัพธ์ (error)' : '↩ ผลลัพธ์'));
+        row.appendChild(el('pre', null, s.text));
+      } else if (s.kind === 'api_error') {
+        row.appendChild(el('span', null, '⛔ API error' + (s.status ? ' ' + s.status : '') + (s.networkDown ? ' (เชื่อมต่อไม่ได้)' : '') + ': ' + s.message));
+      }
+      body.appendChild(row);
+    });
+    return body;
+  }
+
+  // ช่องค้นหา: รอ IME พิมพ์จบ (composition) และหน่วง 150ms ก่อน render ใหม่ทั้งหน้า
+  var composing = false;
+  var searchTimer = null;
+  function scheduleSearch(input) {
+    state.events.query = input.value;
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(function () {
+      searchTimer = null;
+      state.events.page = 1;
+      render();
+    }, 150);
+  }
+
+  function renderTimeline(run) {
+    var sec = el('section');
+    var st = state.events;
+    sec.appendChild(el('h2', null, 'Timeline (' + run.events.length + ' event)'));
+    var bar = el('div', 'filters');
+    EVENT_TYPES.forEach(function (f) {
+      var b = el('button', st.type === f[0] ? 'on' : null, f[1]);
+      b.onclick = function () { st.type = f[0]; st.page = 1; render(); };
+      bar.appendChild(b);
+    });
+    sec.appendChild(bar);
+    var controls = el('div', 'controls');
+    var search = el('input');
+    search.id = 'ev-search';
+    search.type = 'search';
+    search.value = st.query;
+    search.setAttribute('placeholder', 'ค้นหาใน event…');
+    search.setAttribute('aria-label', 'ค้นหาใน timeline');
+    search.addEventListener('compositionstart', function () { composing = true; });
+    search.addEventListener('compositionend', function () { composing = false; scheduleSearch(search); });
+    search.oninput = function () { if (!composing) scheduleSearch(search); };
+    controls.appendChild(search);
+    controls.appendChild(selectBox('เรียง timeline', EVENT_SORTS, st.sort, function (v) { st.sort = v; st.page = 1; render(); }));
+    sec.appendChild(controls);
+    var res = L.listEvents(run.events, st);
+    st.page = res.page;
+    if (!res.total) sec.appendChild(el('p', 'muted', 'ไม่มี event ที่ตรงกับตัวกรอง'));
+    res.items.forEach(function (ev) {
+      var d = el('details');
+      var s = el('summary');
+      s.appendChild(el('span', 't', fmtClock(ev.time)));
+      if (ev.data &amp;&amp; typeof ev.data.role === 'string') s.appendChild(roleBadge(ev.data.role));
+      s.appendChild(el('span', 'lv lv-' + ev.level, ev.level));
+      s.appendChild(el('span', 'ev', ev.event));
+      s.appendChild(el('span', null, short(L.summaryOf(ev), 200)));
+      d.appendChild(s);
+      var built = false;
+      d.addEventListener('toggle', function () {
+        if (built || !d.open) return;
+        built = true;
+        d.appendChild(el('pre', null, 'บรรทัด ' + ev.line + '\n' + JSON.stringify(ev.data, null, 2)));
+      });
+      sec.appendChild(d);
+    });
+    sec.appendChild(pager(res, st));
+    return sec;
+  }
+
+  if (window.__LIVE__) {
+    setInterval(function () {
+      if (document.hidden) return; // แท็บถูกซ่อนอยู่: ไม่ต้อง poll ให้เปลืองทั้งฝั่ง server และ browser
+      fetch('/data', { cache: 'no-store' })
+        .then(function (r) { return r.json(); })
+        .then(function (next) {
+          var runs = JSON.stringify(next.runs);
+          if (runs === lastRuns) return;
+          var wasOnDefault = state.run === currentDefault;
+          var newDefault = next.defaultRun;
+          var before = state.run;
+          data = next;
+          lastRuns = runs;
+          if (state.run &gt;= data.runs.length) {
+            state.run = newDefault;
+          } else if (wasOnDefault &amp;&amp; newDefault !== currentDefault) {
+            state.run = newDefault;
+          }
+          if (state.run !== before) resetForRun();
+          currentDefault = newDefault;
+          render(); // ตัวกรอง/การเรียง/หน้าเดิมคงไว้ หน้าที่เกินจำนวนหน้าใหม่ถูกบีบใน paginate
+        })
+        .catch(function () { /* server หยุดแล้ว: คงหน้าเดิมไว้ */ });
+    }, 3000);
+  }
+
+  render();
+})();
+`;</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+<p>รัน: <code>npx vitest run tests/logview</code> — คาดหวัง: PASS ทั้งหมด (รวม render.test.ts เดิมที่ตรวจ <code>data.defaultRun</code>, <code>next.defaultRun</code>, <code>document.hidden</code>, <code>(ไม่ได้เรียก agent)</code> ใน PAGE_JS)</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: อัปเดต README</strong></span></p>
+<p>ในหัวข้อ <code>## ดู log / หาสาเหตุเมื่อ agent error</code> ของ <code>README.md</code> เพิ่ม bullet ต่อจาก bullet ที่พูดถึง dropdown รอบรัน:</p>
+<pre><code>- ส่วน "การเรียก agent" กรองตาม role (ปุ่มสีประจำ role กดได้หลายอัน) และสถานะ, เรียงตามเวลาเริ่ม/ระยะเวลา/cost/turns ส่วน Timeline กรองตามประเภท ค้นหาข้อความ และเรียงเก่า→ใหม่/ใหม่→เก่า ทั้งสองส่วนแบ่งหน้าได้ 10/20/50 ต่อหน้า (ค่าเริ่มต้น 20) — ค่าเหล่านี้ไม่ถูกจำ เปิดหน้าใหม่จะกลับเป็นค่าเริ่มต้น
+- แต่ละ role มีสีและไอคอนประจำตัว: 🧭 pm, 📐 planning, 🎨 frontend, ⚙️ backend, 🔍 qa, 🛡️ security (role อื่น 🤖)
+- ฟอนต์ Noto Sans Thai + Inter (และ JetBrains Mono สำหรับ log/โค้ด) ฝังอยู่ในไฟล์ `logs.html` เลย (จาก `assets/fonts/`, SIL Open Font License) เปิด offline ได้และหน้าตาเหมือนกันทุกเครื่อง ไม่มี request ออกไปภายนอก — ไฟล์จึงใหญ่ขึ้นราว 150 KB</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: ตรวจกับข้อมูลจริง</strong></span></p>
+<p>รัน <code>npm test</code> และ <code>npm run typecheck</code> (ต้องผ่านทั้งคู่) จากนั้น <code>node bin/agent-team.mjs logs C:/work/my/mail-sender</code> (เขียน <code>C:\work\my\mail-sender\.agent-team\logs.html</code> และเปิดเบราว์เซอร์ — ตั้งใจ) แล้วตรวจว่าไฟล์มี <code>@font-face</code> 3 ชุด, <code>AgentTeamList</code> และ <code>529 Overloaded</code> และไม่มี <code>fonts.googleapis.com</code> (เช่น <code>grep -c</code>) บันทึกผลลงรายงาน ห้ามรัน <code>--live</code> หรือ <code>agent-team</code> ที่ไม่มี <code>logs</code></p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: Commit</strong></span></p>
+<pre><code>git add src/logview/page-assets.ts tests/helpers/dom-shim.ts tests/logview/page-dom.test.ts README.md
+git commit -m "feat(logview): sort/filter/pagination UI with role badges"</code></pre>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scrutinize: headless design</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --fg:#1f2933; --muted:#616e7c; --border:#d9dee5; --code:#eef1f5;
+          --blocker:#c62828; --major:#d97706; --nit:#7b8794; --fts:#b58900; --ship:#2e7d32; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#12161c; --card:#1b2129; --fg:#e4e8ee; --muted:#9aa5b1; --border:#2e3742; --code:#232b35; } }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.7 -apple-system,"Segoe UI","Noto Sans Thai",sans-serif; }
+  main { max-width:900px; margin:0 auto; padding:24px 16px; }
+  h1 { font-size:22px; margin:0 0 4px; line-height:1.35; } h2 { font-size:17px; margin:28px 0 10px; }
+  .muted { color:var(--muted); }
+  code { background:var(--code); padding:1px 5px; border-radius:4px; font-size:13px; }
+  pre { background:var(--code); padding:8px 10px; border-radius:6px; font-size:13px; overflow-x:auto; }
+  .card { background:var(--card); border:1px solid var(--border); border-left:6px solid var(--nit); border-radius:8px; padding:12px 16px; margin:12px 0; }
+  .card.major { border-left-color:var(--major); } .card.blocker { border-left-color:var(--blocker); }
+  .card h3 { margin:0 0 6px; font-size:15px; line-height:1.5; }
+  .sev { display:inline-block; font-size:11px; font-weight:bold; color:#fff; padding:1px 8px; border-radius:10px; margin-right:6px; background:var(--nit); }
+  .major .sev { background:var(--major); } .blocker .sev { background:var(--blocker); }
+  dt { font-weight:bold; font-size:13px; color:var(--muted); margin-top:6px; } dd { margin:0; }
+  .verdict { display:inline-block; background:var(--fts); color:#fff; font-weight:bold; padding:6px 14px; border-radius:16px; }
+  ul { padding-left:20px; }
+</style>
+</head>
+<body>
+<main>
+<h1>Scrutinize: design โปรเจกต์ย่อย B (headless + skill) ส่วนที่ 1</h1>
+<div class="muted">2026-09-28 · design ใน conversation (ยังไม่มี plan) · เทียบกับโค้ด main @ efef202</div>
+
+<h2>เจตนา</h2>
+<p>ให้ Claude Code สั่ง agent-team ได้โดยไม่ต้องเปิด terminal แยก process รันค้างอยู่เบื้องหลัง ส่วนคำถามกับคำตอบส่งหากันผ่านไฟล์ในโฟลเดอร์ของงาน Claude รับคำถามแล้วถามผู้ใช้ต่อ</p>
+<p><b>มีวิธีง่ายกว่านี้ไหม?</b> ส่งผ่านไฟล์ถือว่าง่ายที่สุดแล้ว ถ้าเทียบกับ HTTP บน localhost หรือ named pipe และ Claude Code ก็เขียน stdin ของ process ที่รันเบื้องหลังไม่ได้อยู่แล้ว แต่ design ยังตัดของออกได้อีก คือ <code>status --json</code> ทำหน้าที่เดียวกับ <code>wait --timeout 0</code> จึงควรใช้ implementation เดียวกัน</p>
+
+<h2>สิ่งที่ไล่แล้ว</h2>
+<ul>
+<li><b>ข้อความแรกผ่าน <code>pendingPrompt</code> ใช้ได้จริง:</b> <code>src/phases/requirements.ts:31</code> ใช้ <code>state.pendingPrompt ?? askNonEmpty(...)</code> และตั้ง title ที่บรรทัด 34-37 จึงไม่ต้องแก้ phase</li>
+<li><b>การ resume ไม่ถามอะไร:</b> <code>resumeLatest</code> (<code>src/job-menu.ts</code>) เลือกงานแรกที่ lock ได้โดยไม่เรียก <code>io.ask</code> จึงใช้ในโหมด headless ได้ ส่วน <code>--job &lt;id&gt;</code> ยังต้องเขียนเพิ่ม</li>
+<li><b>จุดที่ถามผู้ใช้ทั้งหมด:</b> ทุกจุดใน phase ผ่าน <code>ask</code>/<code>chooseOrText</code> (<code>io-util.ts</code>, <code>requirements.ts:59,75,81,86</code>, <code>design.ts</code>, <code>deliver.ts</code>, <code>build.ts:240</code>) ไม่มีจุดไหนใช้ stdin ตรง ๆ</li>
+</ul>
+
+<h2>Findings</h2>
+
+<div class="card major"><h3><span class="sev">MAJOR</span>บน Windows ถ้า kill task เบื้องหลัง node ลูกอาจค้างอยู่ รอคำตอบไปตลอดและถือ lock ไว้</h3><dl>
+<dt>ทำไมถึงสำคัญ</dt><dd><code>agent-team</code> ที่ได้จาก npm link เป็น shim ที่ไปเปิด node อีกทีผ่าน <code>bin/agent-team.mjs</code> ถ้า Claude Code หยุด task หรือปิด session ไป process ลูกอาจไม่ตายตาม <code>HeadlessIO</code> จะวนเช็กไฟล์ไปเรื่อย ๆ และงานนั้นก็ถูก lock ไว้ตลอด ทำให้ <code>--resume</code> ข้ามงานนี้ไป</dd>
+<dt>หลักฐาน</dt><dd>design ไม่มีทั้งคำสั่งหยุดและ timeout ตอนรอคำตอบ ส่วน <code>makeInterruptHandler</code> (<code>src/interrupt.ts</code>) รับแค่ SIGINT/SIGHUP และ <code>resumeLatest</code> ข้ามงานที่มี lock</dd>
+<dt>แนวทางแก้ไข</dt><dd>(1) เพิ่ม <code>agent-team stop [--job]</code> ที่เขียนไฟล์ <code>stop</code> ให้ <code>HeadlessIO</code> เห็นตอน poll แล้วเรียก interrupt handler เดิม ถ้า process ไม่ตอบภายในไม่กี่วินาทีค่อย <code>process.kill(lock.pid)</code> (2) ใส่ idle timeout ตอนรอคำตอบ เช่น 2 ชม. ตั้งค่าใน config ได้ ครบเวลาแล้วให้ปลด lock แล้วจบแบบ resume ต่อได้</dd></dl></div>
+
+<div class="card major"><h3><span class="sev">MAJOR</span>ถ้าอ่านไฟล์ระหว่างที่อีกฝั่งยังเขียนไม่เสร็จ จะ parse ไม่ผ่าน หรือคำตอบหาย</h3><dl>
+<dt>ทำไมถึงสำคัญ</dt><dd><code>answer</code> กับ <code>HeadlessIO</code> เป็นคนละ process กัน ถ้า <code>JSON.parse</code> เจอไฟล์ที่เขียนไปครึ่งเดียวแล้วโยน error ออกมาจาก <code>ask</code> ทั้ง run จะล้ม อีกกรณีคือเรียก <code>answer</code> สองครั้งก่อนที่ process จะอ่าน คำตอบแรกจะหายไปเฉย ๆ</dd>
+<dt>หลักฐาน</dt><dd>design บอกแค่ว่า "เขียนไฟล์" กับ "poll" ไม่ได้ระบุว่าต้องเขียนแบบ atomic หรือทำอะไรเมื่อ parse ไม่ผ่าน</dd>
+<dt>แนวทางแก้ไข</dt><dd>ทุกไฟล์ให้เขียนลงไฟล์ชั่วคราวก่อนแล้วค่อย <code>rename</code> ฝั่งอ่านถ้าเจอ JSON พังให้ข้ามรอบนั้นไปรอรอบถัดไป <code>answer</code> ต้องปฏิเสธถ้ามี <code>answer.json</code> ค้างอยู่แล้ว หรือถ้า lock ตายไปแล้ว ตอน process เริ่มให้ลบ <code>question.json</code>/<code>answer.json</code> ที่ค้างมาจากรอบก่อน</dd></dl></div>
+
+<div class="card major"><h3><span class="sev">MAJOR</span><code>index.ts</code> สร้าง <code>CliIO</code> ทุกครั้ง ถ้าใช้ในโหมด headless readline จะผูกกับ stdin ของ task เบื้องหลัง</h3><dl>
+<dt>ทำไมถึงสำคัญ</dt><dd><code>new CliIO()</code> ที่ต้นของ <code>main()</code> เปิด readline บน stdin และส่ง <code>cli.status</code> (Spinner) ให้ runner ใน task เบื้องหลัง stdin มักปิดอยู่ จึงอาจเกิด close/EOF (<code>EOF_MESSAGE</code>) และ Spinner จะเขียน escape code ลง output ของ task ดังนั้นคำพูดใน design ที่ว่า "orchestrator/phase ไม่ต้องแก้" ถูก แต่ <code>index.ts</code> ต้องแยกทางกันจริง</dd>
+<dt>หลักฐาน</dt><dd><code>src/index.ts:19</code> (สร้าง CliIO), <code>src/index.ts:84-92</code> (ส่ง <code>cli.status</code> ให้ runner), <code>src/cli.ts:61-66</code> (close → reject EOF)</dd>
+<dt>แนวทางแก้ไข</dt><dd>ให้ plan แยก <code>main()</code> เป็น <code>runInteractive</code>/<code>runHeadless</code> โดยฝั่ง headless ไม่สร้าง <code>CliIO</code> เลย ใช้ <code>LoggingIO(new HeadlessIO(...))</code> เพื่อให้ <code>agent-team logs</code> ยังเห็นทุกอย่าง และให้ status sink เป็นตัวที่บันทึก activity ล่าสุด</dd></dl></div>
+
+<div class="card major"><h3><span class="sev">MAJOR</span>ถ้าวาง SKILL.md ที่ <code>skills/agent-team/</code> จะไปอยู่ใน plugin <code>team</code> ของ role agent</h3><dl>
+<dt>ทำไมถึงสำคัญ</dt><dd>ใน repo โฟลเดอร์ <code>skills/</code> เป็น plugin ที่ role agent โหลดไปใช้อยู่แล้ว skill สำหรับ Claude Code ของผู้ใช้เป็นคนละกลุ่มกัน ถ้าวางปนกัน วันหนึ่งอาจมีคนเปิดให้ role เห็นคำสั่ง <code>agent-team run</code> ซึ่งจะไปรันซ้อนตัวเองและเสียเงิน อีกทั้งยังทำให้โครงสร้างสับสน</dd>
+<dt>หลักฐาน</dt><dd><code>skills/README.md</code> ("โฟลเดอร์นี้เป็น plugin ชื่อ team") และ <code>package.json</code> <code>files</code> ที่มี <code>skills</code></dd>
+<dt>แนวทางแก้ไข</dt><dd>ย้ายไปไว้ที่ <code>claude-skill/agent-team/SKILL.md</code> (เพิ่มเข้า <code>files</code> ด้วย) แล้วให้ <code>install-skill</code> copy จากตรงนั้น</dd></dl></div>
+
+<div class="card major"><h3><span class="sev">MAJOR</span><code>wait --timeout 600</code> ชนกับ timeout ของ Bash tool ใน Claude Code</h3><dl>
+<dt>ทำไมถึงสำคัญ</dt><dd>Bash tool ตั้ง timeout ค่าเริ่มต้นไว้ 120s และสูงสุดได้ 600s ถ้าใช้ <code>wait</code> ตามค่าเริ่มต้น tool จะตัดคำสั่งทิ้งก่อน Claude จะไม่ได้ JSON กลับมา และช่วง BUILD ใช้เวลาเกิน 10 นาทีบ่อย</dd>
+<dt>หลักฐาน</dt><dd>ข้อจำกัดของ Bash tool (ค่าเริ่มต้น 120000ms สูงสุด 600000ms)</dd>
+<dt>แนวทางแก้ไข</dt><dd>ให้ค่าเริ่มต้นของ <code>wait</code> เป็น 540s แล้วเขียนใน SKILL.md ว่าต้องเรียกด้วย Bash <code>timeout: 600000</code> และถ้าได้ <code>timeout</code> กลับมาให้เรียก <code>wait</code> ซ้ำพร้อมรายงานความคืบหน้าสั้น ๆ</dd></dl></div>
+
+<div class="card"><h3><span class="sev">NIT</span>ช่วงของ messages ยังไม่ชัด ถ้าเรียกซ้ำหลัง timeout จะได้ข้อความเดิมซ้ำ</h3><dl>
+<dt>ทำไมถึงสำคัญ</dt><dd>"say ตั้งแต่คำตอบก่อน" จะคืนก้อนเดิมทุกครั้งที่ <code>wait</code> timeout แล้วถูกเรียกใหม่</dd>
+<dt>แนวทางแก้ไข</dt><dd>ให้ <code>wait --since &lt;seq&gt;</code> คืนค่า <code>lastSeq</code> กลับมา และให้ SKILL.md ส่งค่านี้ต่อไปทุกครั้งที่เรียก</dd></dl></div>
+
+<div class="card"><h3><span class="sev">NIT</span>ถ้าไม่ใส่ <code>--job</code> ระบบจะใช้งานล่าสุด ซึ่งเสี่ยงส่งคำตอบผิดงาน</h3><dl>
+<dt>ทำไมถึงสำคัญ</dt><dd>ถ้ามีงาน headless 2 งานในโปรเจกต์เดียว <code>answer</code> อาจไปลงงานที่ไม่ได้ตั้งใจ</dd>
+<dt>แนวทางแก้ไข</dt><dd>ให้ SKILL.md ส่ง <code>--job</code> ทุกครั้ง (ใช้ jobId ที่ <code>run</code> พิมพ์) ถ้าไม่ใส่ ให้ใช้งานที่มีคำถามรออยู่งานเดียว ถ้ามีมากกว่า 1 งานให้ error พร้อมแสดงรายชื่อ</dd></dl></div>
+
+<div class="card"><h3><span class="sev">NIT</span>ตอนงานรันยาว Claude มองไม่เห็นว่ากำลังทำอะไรอยู่</h3><dl>
+<dt>ทำไมถึงสำคัญ</dt><dd>ข้อมูลจาก <code>status.update(describeToolUse(...))</code> (<code>src/runner.ts:225</code>) ใน design นี้จะหายไปหมด ผู้ใช้ถามว่า "ถึงไหนแล้ว" Claude ก็ตอบได้แค่ชื่อ phase</dd>
+<dt>แนวทางแก้ไข</dt><dd>ให้ status sink ใน headless เขียน <code>activity</code> ล่าสุด (role + tool) ลงไฟล์ แล้วใส่ไว้ใน JSON ของ <code>wait</code>/<code>status</code></dd></dl></div>
+
+<h2>คำตัดสิน</h2>
+<p><span class="verdict">fix-then-ship</span> &nbsp;แนวทางโดยรวมถูกแล้ว แต่ต้องใส่ stop/idle timeout, การเขียนไฟล์แบบ atomic, การแยก index.ts, ที่วาง SKILL.md และ timeout ของ wait ลงใน design ก่อนเขียน plan</p>
+</main>
+</body>
+</html>

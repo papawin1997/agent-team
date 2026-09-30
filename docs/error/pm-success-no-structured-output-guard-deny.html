@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PM ล้มเหลว "pm: success" — guard บล็อก StructuredOutput</title>
+<style>
+  :root{--bg:#0f1419;--card:#1a2129;--accent:#4fc3f7;--red:#ff6b6b;--green:#69db7c;--yellow:#ffd43b;--mut:#8a97a6;--line:#2a3340;}
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:#e6edf3;font-family:-apple-system,"Segoe UI",Roboto,"Sarabun",sans-serif;line-height:1.65;padding:32px 18px;}
+  .wrap{max-width:960px;margin:0 auto;}
+  h1{font-size:24px;border-left:5px solid var(--red);padding-left:14px;margin-bottom:4px;}
+  .sub{color:var(--mut);margin:0 0 26px 19px;font-size:14px;}
+  h2{font-size:18px;color:var(--accent);margin-top:34px;border-bottom:1px solid var(--line);padding-bottom:8px;}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:14px 0;}
+  code,pre{font-family:"SF Mono",Menlo,Consolas,monospace;}
+  code{background:#0c1117;padding:2px 6px;border-radius:4px;color:var(--yellow);font-size:13px;}
+  pre{background:#0c1117;border:1px solid var(--line);border-radius:8px;padding:14px;overflow-x:auto;font-size:12.5px;color:#cdd9e5;}
+  .pill{display:inline-block;padding:2px 10px;border-radius:20px;font-size:12px;font-weight:600;}
+  .pill.err{background:rgba(255,107,107,.15);color:var(--red);}
+  .pill.file{background:rgba(79,195,247,.13);color:var(--accent);}
+  .step{display:flex;gap:12px;margin:10px 0;align-items:flex-start;}
+  .step .n{flex:0 0 28px;height:28px;border-radius:50%;background:var(--accent);color:#0f1419;font-weight:700;display:flex;align-items:center;justify-content:center;font-size:13px;}
+  .step.fail .n{background:var(--red);color:#fff;}
+  .step .b{flex:1;}
+  .muted{color:var(--mut);font-size:13px;}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13.5px;}
+  th,td{border:1px solid var(--line);padding:9px 11px;text-align:left;vertical-align:top;}
+  th{background:#0c1117;color:var(--accent);}
+  .hl{background:rgba(255,212,59,.10);}
+  .arrow{color:var(--mut);}
+  .tag{color:var(--green);}
+  .nil{color:var(--red);font-weight:700;}
+  ul{margin:8px 0;padding-left:22px;}
+  li{margin:5px 0;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>PM ล้มเหลว "pm: success" — guard บล็อก StructuredOutput</h1>
+  <p class="sub">agent-team · รันกับโปรเจกต์ tdee-naja · 2026-09-26 · <span class="pill err">[pm] ล้มเหลว (pm: success) — retry ครั้งที่ 1</span></p>
+
+  <!-- ============ หัวข้อ 1 ============ -->
+  <h2>1) เกิดที่ code ตัวไหน · func อะไร · ทำงานยังไง</h2>
+  <div class="card">
+    <p><b>จุดที่บล็อก (ต้นเหตุ):</b> <span class="tag">checkToolUse</span> <span class="pill file">src/guard.ts:91-101</span>
+    เป็น guard ที่ SDK เรียกก่อนทุก tool call (hook <code>PreToolUse</code>) ถ้า role เป็นแบบอ่านอย่างเดียว (<code>pm</code> / <code>planning</code> / <code>security</code>)
+    guard จะอนุญาตแค่ <code>Read/Glob/Grep</code> กับ <code>Skill</code> ส่วน tool อื่น<b>ถูกปฏิเสธหมด</b></p>
+<pre>const READ_TOOLS = new Set(['Read', 'Glob', 'Grep']);
+const READ_ONLY_EXTRA_TOOLS = new Set(['Skill']);          // src/guard.ts:24-26
+...
+const readOnlyRole = ctx.role === 'pm' || ctx.role === 'planning' || ctx.role === 'security';
+if (readOnlyRole) {
+  if (READ_TOOLS.has(toolName)) return checkReadTool(ctx, toolName, input);
+  if (READ_ONLY_EXTRA_TOOLS.has(toolName)) return OK;
+  return deny(`role ${ctx.role} เป็นแบบอ่านอย่างเดียว ใช้ ${toolName} ไม่ได้`);   // ← StructuredOutput ตกมาที่นี่
+}</pre>
+    <p><code>StructuredOutput</code> คือ tool ที่ SDK ใช้รับผลลัพธ์ JSON ตาม schema (โหมด <code>outputFormat: json_schema</code>)
+    ไม่ได้เขียนหรือแก้ไฟล์อะไร แต่ไม่ได้อยู่ใน allow-list เลย<span class="nil">ถูกบล็อก</span></p>
+
+    <p><b>จุดที่ขึ้นข้อความ error:</b> <span class="tag">SdkRoleRunner.once</span> <span class="pill file">src/runner.ts:165-179</span></p>
+<pre>const ok = msg.subtype === 'success' &amp;&amp; msg.structured_output !== undefined;   // structured_output = undefined → ok = false
+...
+throw new RoleRunError(`${role}: ${msg.subtype}`, !msg.subtype.startsWith('error_max_'), msg.subtype);
+//                     ^^^^^^^^^^^^^^^^^^^^^^^^ ได้ข้อความ "pm: success"  ,  retryable = true</pre>
+    <p>แล้ว <span class="tag">withRetry</span> <span class="pill file">src/runner.ts:122</span> พิมพ์ <code>[pm] ล้มเหลว (pm: success) — retry ครั้งที่ N</code>
+    retry ครบ 2 ครั้งก็ยังพังแบบเดิม สุดท้าย throw ออกไปจนทั้ง run หยุด (<code>run.error</code>)</p>
+  </div>
+
+  <!-- ============ หัวข้อ 2 ============ -->
+  <h2>2) ทำไมถึงเกิด · ข้อมูลอะไรผิด</h2>
+  <div class="card">
+    <p><b>ต้นเหตุ:</b> commit <code>1abeded</code> (2026-09-24 17:52, "fix(security): N-4 deny-by-default for read-only roles' unknown tools")
+    เปลี่ยน guard ของ role อ่านอย่างเดียวจาก "บล็อกเฉพาะ Write/Bash" เป็น "อนุญาตเฉพาะที่อยู่ใน allow-list"
+    แต่ลืมใส่ <code>StructuredOutput</code> ลงไป ต่อมา <code>cfec311</code> แก้ปัญหาแบบเดียวกันให้ <code>Skill</code> แต่ไม่ได้แก้ <code>StructuredOutput</code></p>
+    <p>ผลคือ PM เรียก <code>StructuredOutput</code> แล้วโดนปฏิเสธ 2 ครั้ง (ขึ้น <code>guard.deny</code> ใน log) จากนั้นก็เลิกพยายามและจบ turn ด้วยข้อความธรรมดา
+    SDK จึงส่ง result ที่ <code>subtype: "success"</code> มา แต่<span class="nil">ไม่มี structured_output</span></p>
+    <table>
+      <tr><th>หลักฐานจาก <code>C:\work\my\tdee-naja\.agent-team\agent-team.log</code></th><th>ความหมาย</th></tr>
+      <tr><td><code>2026-09-22 … INFO agent.result {"role":"pm","subtype":"success",…}</code></td><td>ก่อนแก้ guard: PM ใช้ได้ปกติ</td></tr>
+      <tr class="hl"><td><code>2026-09-24T14:05:29Z WARN guard.deny {"role":"pm","tool":"StructuredOutput","reason":"role pm เป็นแบบอ่านอย่างเดียว ใช้ StructuredOutput ไม่ได้"}</code></td><td>deny ครั้งแรก เกิดหลัง commit <code>1abeded</code> (10:52Z) — มีทั้งหมด 16 ครั้งใน log นี้</td></tr>
+      <tr class="hl"><td><code>04:10:44Z WARN agent.result {"role":"pm","subtype":"success","turns":9,…}</code><br><code>04:11:35Z …"turns":10…</code></td><td>ทุก pmTurn หลังจากนั้น: deny 2 ครั้ง แล้ว success ที่ไม่มี output (level เป็น WARN เพราะ <code>ok = false</code>)</td></tr>
+      <tr><td><code>03:42:01Z ERROR run.error {"message":"pm: success", … runRequirements …}</code></td><td>retry หมดแล้ว run รอบก่อนหน้าหยุด</td></tr>
+    </table>
+    <p><b>ผลกระทบกว้างกว่า PM:</b> <code>planning</code> และ <code>security</code> ใช้ guard แบบเดียวกันและต้องส่ง JSON ผ่าน <code>StructuredOutput</code> เหมือนกัน
+    ตอนนี้จึงรัน DESIGN ไม่ได้เลย ส่วน security ที่เป็น advisory จะ "ตรวจไม่สำเร็จ" ทุกครั้ง (ข้อนี้ยังไม่มีใน log เพราะ run ไม่เคยผ่าน REQUIREMENTS ไปได้ แต่ไล่โค้ดแล้วเข้าทาง deny เดียวกัน)
+    และแต่ละรอบเสียเงินประมาณ $0.08–0.10 × 3 ครั้ง (รวม retry) โดยไม่ได้อะไรเลย</p>
+    <p><b>ทำไมเทสต์ไม่เจอ:</b> <code>tests/runner.test.ts</code> ใช้ <code>queryFn</code> ปลอมที่ข้าม hook ไปเลย ส่วน <code>tests/guard.test.ts</code> ไม่มีเคสไหนทดสอบ <code>StructuredOutput</code>
+    (grep แล้วไม่เจอ) จึงไม่มีเทสต์ที่รัน guard ร่วมกับ tool ที่ SDK ใช้จริง</p>
+  </div>
+  <div class="card">
+    <b>สมมติฐาน (จัดอันดับ) + วิธียืนยัน</b>
+    <div class="step fail"><div class="n">1</div><div class="b"><b>guard ของ role อ่านอย่างเดียวบล็อก <code>StructuredOutput</code> — ยืนยันแล้ว</b><br>
+      หลักฐาน: มี <code>guard.deny … StructuredOutput</code> ก่อน <code>agent.result success</code> ที่เป็น WARN ทุกรอบ, เวลาที่เริ่มพังตรงกับ commit <code>1abeded</code>, และ logic ที่ <span class="pill file">src/guard.ts:97-100</span><br>
+      <span class="muted">ยืนยันซ้ำเอง: <code>grep -c "guard.deny.*StructuredOutput" C:\work\my\tdee-naja\.agent-team\agent-team.log</code> (ได้ 16)</span></div></div>
+    <div class="step"><div class="n">2</div><div class="b"><b>PM ตั้งใจตอบเป็นข้อความธรรมดาเอง — ตัดทิ้ง</b><br>
+      ใน log PM <i>พยายาม</i>เรียก <code>StructuredOutput</code> ทุกรอบ (มี deny 2 ครั้งต่อรอบ) จึงไม่ใช่โมเดลเลือกไม่ส่งเอง</div></div>
+    <div class="step"><div class="n">3</div><div class="b"><b>Bug ของ SDK ตอน resume session — ตัดทิ้ง</b><br>
+      รอบที่พังคือ <code>"resumed":false</code> ทั้งหมด (session ใหม่) และก่อนวันที่ 24 ใช้ SDK เวอร์ชันเดียวกันแล้วทำงานได้</div></div>
+  </div>
+
+  <!-- ============ หัวข้อ 3 ============ -->
+  <h2>3) flow ที่เกี่ยวข้องทั้งหมด</h2>
+  <div class="card">
+    <div class="step"><div class="n">1</div><div class="b">user เลือก <code>r1</code> แล้วพิมพ์ requirement <span class="arrow">→</span> <span class="tag">runRequirements</span> เรียก <code>runner.pmTurn(...)</code> <span class="pill file">src/phases/requirements.ts:24</span></div></div>
+    <div class="step"><div class="n">2</div><div class="b"><span class="tag">pmTurn → runValidated → withRetry → once</span> <span class="pill file">src/runner.ts:63, 95, 116, 150</span> สร้าง query พร้อม <code>outputFormat: json_schema</code></div></div>
+    <div class="step"><div class="n">3</div><div class="b"><span class="tag">buildQueryOptions</span> ติด hook <code>PreToolUse</code> = <span class="tag">createGuardHook({ role: 'pm', … })</span> <span class="pill file">src/options.ts:38-48</span></div></div>
+    <div class="step"><div class="n">4</div><div class="b">PM อ่านไฟล์โปรเจกต์ (Read/Glob/Grep ผ่าน) แล้วเรียก <code>StructuredOutput</code> เพื่อส่งผลลัพธ์ JSON</div></div>
+    <div class="step fail"><div class="n">5</div><div class="b">hook <span class="pill file">src/guard.ts:150-151</span> → <span class="tag">checkToolUse</span> <span class="pill file">src/guard.ts:97-100</span> → <span class="nil">deny</span> "role pm เป็นแบบอ่านอย่างเดียว ใช้ StructuredOutput ไม่ได้" (log <code>guard.deny</code>) PM ลองซ้ำแล้วก็โดนอีก</div></div>
+    <div class="step fail"><div class="n">6</div><div class="b">PM จบ turn ด้วยข้อความธรรมดา → SDK ส่ง <code>result</code> ที่ <code>subtype: success</code> และ <span class="nil">structured_output: undefined</span></div></div>
+    <div class="step fail"><div class="n">7</div><div class="b"><span class="tag">once</span> <span class="pill file">src/runner.ts:165-179</span> ได้ <code>ok = false</code> → throw <code>RoleRunError("pm: success", retryable=true)</code></div></div>
+    <div class="step fail"><div class="n">8</div><div class="b"><span class="tag">withRetry</span> <span class="pill file">src/runner.ts:122</span> พิมพ์ <code>[pm] ล้มเหลว (pm: success) — retry ครั้งที่ 1/2</code> → พังเหมือนเดิม → throw ออกไปถึง <span class="pill file">src/index.ts</span> → <code>run.error</code> แล้วหยุด</div></div>
+  </div>
+
+  <h2>สรุปสั้น ๆ</h2>
+  <div class="card">
+    <p>commit <code>1abeded</code> (hardening guard ของ role อ่านอย่างเดียว) ไม่ได้ใส่ <code>StructuredOutput</code> ลง allow-list PM/Planning/Security จึงส่งผลลัพธ์ JSON ไม่ได้
+    SDK ยังส่ง "success" มาแต่ไม่มีข้อมูล runner เลยขึ้นข้อความที่ชวนงงว่า <code>pm: success</code> แล้ว retry จนหยุด ระบบพังตั้งแต่ขั้น REQUIREMENTS ทุกงาน</p>
+    <p>ยืนยันได้เร็วที่สุดด้วย: <code>grep -n "guard.deny\|agent.result" C:\work\my\tdee-naja\.agent-team\agent-team.log | tail</code>
+    จะเห็น deny <code>StructuredOutput</code> 2 บรรทัดก่อน <code>agent.result … success</code> ที่เป็น WARN ทุกครั้ง</p>
+    <p class="muted">ข้อสังเกตเพิ่ม (คนละเรื่อง): ข้อความ error <code>pm: success</code> ชวนเข้าใจผิด ควรบอกว่า "ไม่มี structured output" และเมนูเลือกงานไม่รับการพิมพ์แค่ <code>1</code> ต้องพิมพ์ <code>r1</code></p>
+  </div>
+
+  <p class="muted" style="margin-top:30px;border-top:1px solid var(--line);padding-top:14px;">
+  รายงานนี้เป็นการ <b>วิเคราะห์สาเหตุ</b> เท่านั้น ยังไม่มีการแก้โค้ดใด ๆ —
+  ถ้าต้องการให้เสนอแนวทางแก้ที่กระทบน้อยที่สุด แจ้งได้
+  </p>
+
+</div>
+</body>
+</html>

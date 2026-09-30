@@ -1,0 +1,2098 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>agent-team logs (HTML Log Viewer) Implementation Plan</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; line-height: 1.55;
+         max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1f2933;
+         background: #f5f7fa; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  pre { background: #1f2933; color: #e4e7eb; padding: .9rem 1rem;
+        border-radius: 6px; overflow-x: auto; }
+  code { background: #e4e7eb; padding: .1rem .35rem; border-radius: 4px; }
+  pre code { background: none; padding: 0; color: inherit; }
+  .frame { border-left: 6px solid; border-radius: 8px; padding: 1rem 1.25rem;
+           margin: 1.25rem 0; background: #ffffff;
+           box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .frame-header     { border-color: #2563eb; background: #eff6ff; }
+  .frame-constraints{ border-color: #d97706; background: #fffbeb; }
+  .frame-task       { border-color: #059669; background: #ecfdf5; }
+  .frame h1, .frame h2, .frame h3 { margin-top: 0; }
+  .note { border-color: #7c3aed; background: #f5f3ff; }
+  .step { display: flex; gap: .5rem; align-items: baseline;
+          margin: .75rem 0 .25rem; }
+  .step input { transform: scale(1.2); margin-top: .15rem; }
+  .meta { color: #52606d; font-size: .9rem; }
+</style>
+</head>
+<body>
+
+<div class="frame frame-header">
+  <h1>agent-team logs (HTML Log Viewer) Implementation Plan</h1>
+<p><strong>เป้าหมาย:</strong> เพิ่มคำสั่ง <code>agent-team logs [path] [--live]</code> ที่สร้างหน้า HTML สรุป log ของทีม agent พร้อม transcript ย่อของ agent แต่ละครั้งและกล่อง "สาเหตุที่น่าจะเป็น" เพื่อหาสาเหตุเวลา agent error</p>
+<p><strong>สถาปัตยกรรม:</strong> โมดูลใหม่ <code>src/logview/</code> แยกเป็นชั้น ๆ: อ่าน log (<code>parse-log.ts</code>) → อ่าน transcript ของ SDK (<code>transcripts.ts</code>) → วิเคราะห์สาเหตุ (<code>diagnose.ts</code>) → รวมข้อมูล (<code>view-data.ts</code>) → สร้าง HTML ไฟล์เดียว (<code>render.ts</code> + <code>page-assets.ts</code>) ส่วน <code>--live</code> ใช้ http server (<code>serve.ts</code>) ที่สร้างข้อมูลใหม่ทุกครั้งที่หน้าเว็บขอ คำสั่งถูกต่อเข้า CLI ผ่าน <code>src/args.ts</code> + <code>src/index.ts</code> โดยใช้เมนูเลือกโปรเจกต์เดิม</p>
+<p><strong>Tech Stack:</strong> Node.js ≥ 20.6, TypeScript (tsx), vitest, <code>node:http</code>, <code>node:child_process</code> (ไม่เพิ่ม dependency ใหม่)</p>
+</div>
+
+<div class="frame note">
+  <strong>For agentic workers:</strong> REQUIRED SUB-SKILL: Use
+  tb-subagent-driven-development (recommended) or
+  tb-executing-plans to implement this plan task-by-task. Steps keep
+  the <code>- [ ]</code> marker next to each checkbox for tracking.
+</div>
+
+<div class="frame frame-constraints">
+  <h2>Global Constraints</h2>
+<ul class="meta">
+  <li>ไม่เพิ่ม dependency ใหม่ ใช้แค่ Node built-in (<code>node:http</code>, <code>node:child_process</code>, <code>node:fs</code>) และของที่มีอยู่แล้ว</li>
+  <li>log อยู่ที่ <code>&lt;project&gt;/.agent-team/agent-team.log</code> แต่ละบรรทัดรูปแบบ <code>ISO-เวลา LEVEL(padEnd 5) event {json}</code> (ดู <code>src/logger.ts</code>) ไฟล์เดียวรวมทุกรอบรัน แบ่งรอบด้วย event <code>run.start</code></li>
+  <li>transcript ของ agent อยู่ที่ <code>${CLAUDE_CONFIG_DIR ?? ~/.claude}/projects/&lt;projectDir.replace(/[^a-zA-Z0-9]/g, '-')&gt;/&lt;sessionId&gt;.jsonl</code> เช่น <code>C:\work\my\mail-sender</code> → <code>C--work-my-mail-sender</code></li>
+  <li>ไม่แสดง prompt เต็ม: ข้าม entry ข้อความของ user ใน transcript และตัดแต่ละชิ้นที่ยาวเกิน <code>MAX_STEP_CHARS = 2000</code> ตัวอักษร</li>
+  <li>หน้า HTML เป็นไฟล์เดียวจบ (CSS/JS inline ไม่มี CDN) เปิด offline ได้ ข้อมูลฝังเป็น JSON ใน <code>&lt;script id="data" type="application/json"&gt;</code> ที่ escape <code>&lt;</code> แล้ว และ render ข้อความทั้งหมดด้วย <code>textContent</code> (ห้าม innerHTML กับข้อมูลจาก log)</li>
+  <li>ไฟล์ output ของแบบไม่ live: <code>&lt;project&gt;/.agent-team/logs.html</code></li>
+  <li><code>--live</code> bind เฉพาะ <code>127.0.0.1</code> port สุ่ม (0) และตรวจ Host header ต้องเป็น <code>127.0.0.1:&lt;port&gt;</code> หรือ <code>localhost:&lt;port&gt;</code> (กัน DNS rebinding) หน้าเว็บ poll <code>/data</code> ทุก 3 วินาที</li>
+  <li><code>logs</code> เป็นคำสั่งย่อยเฉพาะเมื่อเป็นอาร์กิวเมนต์แรก (โฟลเดอร์ชื่อ logs ใช้ <code>./logs</code>); <code>--live</code> ใช้ได้กับ <code>logs</code> เท่านั้น; <code>-r/--resume</code> ใช้กับ <code>logs</code> ไม่ได้</li>
+  <li>UI และข้อความที่ผู้ใช้เห็นเป็นภาษาไทย ใช้คำว่า "โปรเจกต์"</li>
+  <li>ทุก task ต้องจบด้วย <code>npm test</code> และ <code>npm run typecheck</code> ผ่านทั้งคู่</li>
+</ul>
+</div>
+
+<div class="frame note">
+  <h2>โครงสร้างไฟล์</h2>
+<ul class="meta">
+  <li>สร้าง <code>src/logview/parse-log.ts</code> — อ่าน log → <code>Run[]</code> (รอบรัน, event, การเรียก agent)</li>
+  <li>สร้าง <code>src/logview/transcripts.ts</code> — หาไฟล์ transcript และตัดเป็น <code>TranscriptStep[]</code> ตามช่วงเวลา</li>
+  <li>สร้าง <code>src/logview/diagnose.ts</code> — กฎวิเคราะห์สาเหตุ → <code>Finding[]</code></li>
+  <li>สร้าง <code>src/logview/view-data.ts</code> — รวมทุกอย่างเป็น <code>ViewData</code></li>
+  <li>สร้าง <code>src/logview/page-assets.ts</code> — CSS + JS ฝั่งเบราว์เซอร์ (string)</li>
+  <li>สร้าง <code>src/logview/render.ts</code> — <code>ViewData</code> → HTML</li>
+  <li>สร้าง <code>src/logview/open-browser.ts</code> — เปิดไฟล์/URL ด้วยเบราว์เซอร์ตาม OS</li>
+  <li>สร้าง <code>src/logview/serve.ts</code> — server ของ <code>--live</code></li>
+  <li>สร้าง <code>src/logview/command.ts</code> — <code>runLogsCommand</code> (ใช้ทุกชิ้นข้างบน)</li>
+  <li>แก้ <code>src/args.ts</code>, <code>src/index.ts</code>, <code>src/runner.ts:223</code>, <code>README.md</code></li>
+  <li>เทสต์ใหม่ใน <code>tests/logview/*.test.ts</code> และแก้ <code>tests/args.test.ts</code>, <code>tests/runner.test.ts:153</code></li>
+</ul>
+</div>
+
+<!-- ============================ TASK 1 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 1: อ่านและแบ่ง log (parse-log.ts)</h3>
+<p class="meta"><strong>ไฟล์:</strong></p>
+<ul class="meta">
+  <li>สร้าง: <code>src/logview/parse-log.ts</code></li>
+  <li>เทสต์: <code>tests/logview/parse-log.test.ts</code></li>
+</ul>
+<p class="meta"><strong>Interfaces:</strong></p>
+<ul class="meta">
+  <li>ใช้จาก (Consumes): ไม่มี</li>
+  <li>ส่งต่อ (Produces): types <code>LogLevel</code>, <code>LogEvent { line: number; time: string; level: LogLevel | 'RAW'; event: string; data: Record&lt;string, unknown&gt; }</code>, <code>CallStatus = 'ok' | 'failed' | 'unfinished'</code>, <code>AgentCall { id; role; model?; resumed; start; end?; status; subtype?; durationMs?; turns?; costUsd?; sessionId? }</code>, <code>RunStatus = 'done' | 'aborted' | 'error' | 'interrupted' | 'unfinished'</code>, <code>Run { index; start; end?; jobId?; status; errorMessage?; events: LogEvent[]; calls: AgentCall[]; totalCostUsd: number }</code>; ฟังก์ชัน <code>parseLogLine(text: string, line: number): LogEvent</code>, <code>parseLog(text: string): Run[]</code></li>
+</ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+<p>สร้าง <code>tests/logview/parse-log.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import { parseLog, parseLogLine } from '../../src/logview/parse-log';
+
+const LOG = [
+  '2026-01-10T09:00:00.000Z INFO  run.start {"projectDir":"/work/app","resume":false,"pid":1}',
+  '2026-01-10T09:00:00.100Z INFO  job.selected {"jobId":"20260110-160000","resume":false}',
+  '2026-01-10T09:00:01.000Z INFO  agent.start {"role":"pm","model":"claude-sonnet-5","resumed":false,"promptChars":72}',
+  '2026-01-10T09:00:20.000Z INFO  agent.result {"role":"pm","subtype":"success","durationMs":19000,"turns":3,"costUsd":0.25,"sessionId":"s-pm"}',
+  '2026-01-10T09:01:00.000Z INFO  agent.start {"role":"qa","model":"claude-sonnet-5","resumed":false,"promptChars":500}',
+  '2026-01-10T09:06:00.000Z WARN  agent.result {"role":"qa","subtype":"success","durationMs":300000,"turns":1,"costUsd":0.5,"sessionId":"s-qa"}',
+  '2026-01-10T09:06:01.000Z ERROR run.error {"jobId":"20260110-160000","message":"qa: จบงานโดยไม่ได้ส่ง structured output"}',
+  '2026-01-10T15:00:00.000Z INFO  run.start {"projectDir":"/work/app","resume":true,"pid":2}',
+  'this line is broken',
+  '2026-01-10T15:00:05.000Z INFO  agent.start {"role":"backend","model":"claude-sonnet-5","resumed":false,"promptChars":10}',
+].join('\n');
+
+const T = '2026-01-10T09:00:00.000Z';
+
+describe('parseLogLine', () =&gt; {
+  it('แยกเวลา, level, event และ JSON', () =&gt; {
+    expect(parseLogLine(`${T} WARN  guard.deny {"role":"qa","tool":"Bash"}`, 7)).toEqual({
+      line: 7,
+      time: T,
+      level: 'WARN',
+      event: 'guard.deny',
+      data: { role: 'qa', tool: 'Bash' },
+    });
+  });
+
+  it('บรรทัดที่ไม่มี JSON -&gt; data ว่าง', () =&gt; {
+    expect(parseLogLine(`${T} INFO  team.end`, 1).data).toEqual({});
+  });
+
+  it('JSON พัง -&gt; เก็บข้อความดิบไว้ใน data.raw', () =&gt; {
+    expect(parseLogLine(`${T} INFO  say {"text":`, 1).data).toEqual({ raw: '{"text":' });
+  });
+
+  it('รูปแบบไม่ตรง -&gt; level RAW', () =&gt; {
+    expect(parseLogLine('this line is broken', 3)).toEqual({
+      line: 3,
+      time: '',
+      level: 'RAW',
+      event: 'raw',
+      data: { text: 'this line is broken' },
+    });
+  });
+});
+
+describe('parseLog', () =&gt; {
+  const runs = parseLog(LOG);
+
+  it('แบ่งรอบรันตาม run.start', () =&gt; {
+    expect(runs).toHaveLength(2);
+    expect(runs[0]!.events).toHaveLength(7);
+    expect(runs[1]!.events).toHaveLength(3);
+  });
+
+  it('รอบที่ error: jobId, สถานะ, ข้อความ, เวลาเริ่ม/จบ, cost รวม', () =&gt; {
+    expect(runs[0]).toMatchObject({
+      index: 0,
+      start: '2026-01-10T09:00:00.000Z',
+      end: '2026-01-10T09:06:01.000Z',
+      jobId: '20260110-160000',
+      status: 'error',
+      errorMessage: 'qa: จบงานโดยไม่ได้ส่ง structured output',
+      totalCostUsd: 0.75,
+    });
+  });
+
+  it('จับคู่ agent.start กับ agent.result ของ role เดียวกัน (WARN = ไม่สำเร็จ)', () =&gt; {
+    expect(runs[0]!.calls).toEqual([
+      {
+        id: 0, role: 'pm', model: 'claude-sonnet-5', resumed: false,
+        start: '2026-01-10T09:00:01.000Z', end: '2026-01-10T09:00:20.000Z',
+        status: 'ok', subtype: 'success', durationMs: 19000, turns: 3, costUsd: 0.25, sessionId: 's-pm',
+      },
+      {
+        id: 1, role: 'qa', model: 'claude-sonnet-5', resumed: false,
+        start: '2026-01-10T09:01:00.000Z', end: '2026-01-10T09:06:00.000Z',
+        status: 'failed', subtype: 'success', durationMs: 300000, turns: 1, costUsd: 0.5, sessionId: 's-qa',
+      },
+    ]);
+  });
+
+  it('รอบที่ยังไม่จบ: call ค้างเป็น unfinished และเก็บบรรทัดพังไว้', () =&gt; {
+    const r = runs[1]!;
+    expect(r.status).toBe('unfinished');
+    expect(r.calls[0]).toMatchObject({ role: 'backend', status: 'unfinished' });
+    expect(r.calls[0]!.end).toBeUndefined();
+    expect(r.events.map((e) =&gt; e.level)).toEqual(['INFO', 'RAW', 'INFO']);
+  });
+
+  it('run.end DONE/ABORTED และ run.interrupted', () =&gt; {
+    expect(parseLog(`${T} INFO  run.start {}\n${T} INFO  run.end {"phase":"DONE"}`)[0]!.status).toBe('done');
+    expect(parseLog(`${T} INFO  run.start {}\n${T} INFO  run.end {"phase":"ABORTED"}`)[0]!.status).toBe('aborted');
+    expect(parseLog(`${T} INFO  run.start {}\n${T} WARN  run.interrupted {"signal":"SIGINT"}`)[0]!.status).toBe(
+      'interrupted',
+    );
+  });
+
+  it('agent.no_result -&gt; failed ด้วย subtype no_result', () =&gt; {
+    const [r] = parseLog(
+      `${T} INFO  run.start {}\n${T} INFO  agent.start {"role":"qa"}\n${T} WARN  agent.no_result {"role":"qa","sessionId":"s1"}`,
+    );
+    expect(r!.calls[0]).toMatchObject({ status: 'failed', subtype: 'no_result', sessionId: 's1' });
+  });
+
+  it('บรรทัดก่อน run.start แรก และ CRLF ยังอ่านได้', () =&gt; {
+    const r = parseLog(`${T} INFO  say {"text":"x"}\r\n${T} INFO  run.start {}\r\n`);
+    expect(r).toHaveLength(2);
+    expect(r[0]!.events[0]!.event).toBe('say');
+  });
+
+  it('ไฟล์ว่าง -&gt; ไม่มีรอบ', () =&gt; {
+    expect(parseLog('')).toEqual([]);
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+<p>รัน: <code>npx vitest run tests/logview/parse-log.test.ts</code> — คาดหวัง: FAIL ด้วย "Failed to resolve import '../../src/logview/parse-log'"</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+<p>สร้าง <code>src/logview/parse-log.ts</code>:</p>
+<pre><code>export type LogLevel = 'INFO' | 'WARN' | 'ERROR';
+
+export interface LogEvent {
+  /** เลขบรรทัดในไฟล์ (เริ่มที่ 1) */
+  line: number;
+  /** ISO time ('' เมื่อบรรทัดอ่านรูปแบบไม่ออก) */
+  time: string;
+  /** RAW = บรรทัดที่อ่านรูปแบบไม่ออก */
+  level: LogLevel | 'RAW';
+  event: string;
+  data: Record&lt;string, unknown&gt;;
+}
+
+export type CallStatus = 'ok' | 'failed' | 'unfinished';
+
+/** หนึ่งครั้งที่เรียก agent: จับคู่ agent.start กับ agent.result / agent.no_result ของ role เดียวกัน */
+export interface AgentCall {
+  /** ลำดับภายในรอบรัน (เริ่มที่ 0) */
+  id: number;
+  role: string;
+  model?: string;
+  resumed: boolean;
+  start: string;
+  end?: string;
+  status: CallStatus;
+  subtype?: string;
+  durationMs?: number;
+  turns?: number;
+  costUsd?: number;
+  sessionId?: string;
+}
+
+export type RunStatus = 'done' | 'aborted' | 'error' | 'interrupted' | 'unfinished';
+
+/** หนึ่งรอบรัน: ตั้งแต่ run.start ถึงก่อน run.start ถัดไป */
+export interface Run {
+  index: number;
+  start: string;
+  /** เวลาของ event สุดท้ายในรอบ */
+  end?: string;
+  jobId?: string;
+  status: RunStatus;
+  errorMessage?: string;
+  events: LogEvent[];
+  calls: AgentCall[];
+  totalCostUsd: number;
+}
+
+const LINE = /^(\S+) (INFO|WARN|ERROR)\s+(\S+)(?: (.*))?$/;
+
+const str = (v: unknown): string | undefined =&gt; (typeof v === 'string' ? v : undefined);
+const num = (v: unknown): number | undefined =&gt; (typeof v === 'number' &amp;&amp; Number.isFinite(v) ? v : undefined);
+
+export function parseLogLine(text: string, line: number): LogEvent {
+  const m = LINE.exec(text);
+  if (!m) return { line, time: '', level: 'RAW', event: 'raw', data: { text } };
+  const [, time, level, event, json] = m;
+  let data: Record&lt;string, unknown&gt; = {};
+  if (json !== undefined) {
+    try {
+      const parsed: unknown = JSON.parse(json);
+      data =
+        parsed !== null &amp;&amp; typeof parsed === 'object' &amp;&amp; !Array.isArray(parsed)
+          ? (parsed as Record&lt;string, unknown&gt;)
+          : { value: parsed };
+    } catch {
+      data = { raw: json };
+    }
+  }
+  return { line, time: time!, level: level as LogLevel, event: event!, data };
+}
+
+export function parseLog(text: string): Run[] {
+  const runs: Run[] = [];
+  let current: Run | undefined;
+  /** call ที่ยังรอ result แยกตาม role */
+  const open = new Map&lt;string, AgentCall&gt;();
+  text.split(/\r?\n/).forEach((raw, i) =&gt; {
+    if (raw.trim() === '') return;
+    const ev = parseLogLine(raw, i + 1);
+    if (!current || ev.event === 'run.start') {
+      current = { index: runs.length, start: ev.time, status: 'unfinished', events: [], calls: [], totalCostUsd: 0 };
+      runs.push(current);
+      open.clear();
+    }
+    current.events.push(ev);
+    apply(current, ev, open);
+  });
+  return runs;
+}
+
+function apply(run: Run, ev: LogEvent, open: Map&lt;string, AgentCall&gt;): void {
+  const d = ev.data;
+  if (ev.time) run.end = ev.time;
+  switch (ev.event) {
+    case 'job.selected':
+      run.jobId = str(d.jobId) ?? run.jobId;
+      break;
+    case 'agent.start': {
+      const role = str(d.role) ?? '?';
+      const call: AgentCall = {
+        id: run.calls.length,
+        role,
+        model: str(d.model),
+        resumed: d.resumed === true,
+        start: ev.time,
+        status: 'unfinished',
+      };
+      run.calls.push(call);
+      open.set(role, call);
+      break;
+    }
+    case 'agent.result':
+    case 'agent.no_result': {
+      const role = str(d.role) ?? '?';
+      const call = open.get(role);
+      if (!call) break;
+      open.delete(role);
+      call.end = ev.time;
+      call.sessionId = str(d.sessionId) || undefined;
+      if (ev.event === 'agent.no_result') {
+        call.status = 'failed';
+        call.subtype = 'no_result';
+        break;
+      }
+      // runner บันทึก agent.result เป็น WARN เมื่อไม่ได้ structured output
+      call.status = ev.level === 'INFO' ? 'ok' : 'failed';
+      call.subtype = str(d.subtype);
+      call.durationMs = num(d.durationMs);
+      call.turns = num(d.turns);
+      call.costUsd = num(d.costUsd);
+      if (call.costUsd !== undefined) run.totalCostUsd += call.costUsd;
+      break;
+    }
+    case 'run.end':
+      run.status = str(d.phase) === 'DONE' ? 'done' : 'aborted';
+      break;
+    case 'run.error':
+      run.status = 'error';
+      run.errorMessage = str(d.message);
+      run.jobId = run.jobId ?? str(d.jobId);
+      break;
+    case 'run.interrupted':
+      run.status = 'interrupted';
+      break;
+  }
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+<p>รัน: <code>npx vitest run tests/logview/parse-log.test.ts</code> แล้ว <code>npm run typecheck</code> — คาดหวัง: PASS ทั้งหมด typecheck ไม่มี error</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/logview/parse-log.ts tests/logview/parse-log.test.ts
+git commit -m "feat(logview): parse agent-team.log into runs and agent calls"</code></pre>
+</div>
+
+<!-- ============================ TASK 2 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 2: อ่าน transcript ของ agent (transcripts.ts)</h3>
+<p class="meta"><strong>ไฟล์:</strong></p>
+<ul class="meta">
+  <li>สร้าง: <code>src/logview/transcripts.ts</code></li>
+  <li>เทสต์: <code>tests/logview/transcripts.test.ts</code></li>
+</ul>
+<p class="meta"><strong>Interfaces:</strong></p>
+<ul class="meta">
+  <li>ใช้จาก (Consumes): <code>AgentCall</code> จาก <code>src/logview/parse-log.ts</code> (Task 1) — ใช้ <code>start</code>, <code>end?</code>, <code>sessionId?</code></li>
+  <li>ส่งต่อ (Produces): <code>MAX_STEP_CHARS = 2000</code>; <code>TranscriptStep</code> = <code>{ kind: 'text'; time; text }</code> | <code>{ kind: 'tool_use'; time; name; input }</code> | <code>{ kind: 'tool_result'; time; isError; text }</code> | <code>{ kind: 'api_error'; time; status?: number; message; networkDown: boolean }</code>; <code>CallTranscript { file?: string; steps: TranscriptStep[]; note?: string }</code>; <code>clip(text: string, max?: number): string</code>; <code>transcriptsDir(projectDir: string, env?: NodeJS.ProcessEnv, home?: string): string</code>; <code>sliceTranscript(jsonl: string, from: string, to?: string): TranscriptStep[]</code>; <code>loadCallTranscript(dir: string, call: AgentCall): CallTranscript</code></li>
+</ul>
+<p>รูปแบบ transcript จริงของ Claude Agent SDK (หนึ่ง JSON ต่อบรรทัด, ทุก entry ที่เกี่ยวข้องมี <code>timestamp</code>):</p>
+<ul class="meta">
+  <li><code>{"type":"assistant","message":{"content":[{"type":"thinking",...},{"type":"text","text":"..."},{"type":"tool_use","name":"Bash","input":{...}}]}}</code></li>
+  <li><code>{"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"content":"..." หรือ [{"type":"text","text":"..."}]}]}}</code> (ส่วน user ที่ content เป็น <code>{"type":"text"}</code> คือ prompt → ข้าม)</li>
+  <li><code>{"type":"system","subtype":"api_error","error":{"status":529,"formatted":"529 Overloaded","message":"529 {...}","isNetworkDown":false,"connection":null}}</code> หรือแบบเน็ตหลุด <code>{"error":{"message":"Connection error.","formatted":"Can't reach the API server ...","connection":{"code":"ENOTFOUND"},"isNetworkDown":true}}</code></li>
+  <li>PM ใช้ session เดียวกันต่อหลายครั้ง (resume) จึงต้องตัดเฉพาะช่วงเวลาของ call นั้น</li>
+</ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+<p>สร้าง <code>tests/logview/transcripts.test.ts</code>:</p>
+<pre><code>import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { beforeEach, describe, expect, it } from 'vitest';
+import type { AgentCall } from '../../src/logview/parse-log';
+import {
+  clip,
+  loadCallTranscript,
+  MAX_STEP_CHARS,
+  sliceTranscript,
+  transcriptsDir,
+} from '../../src/logview/transcripts';
+
+const at = (ms: string) =&gt; `2026-01-10T09:${ms}.000Z`;
+const jsonl = (...entries: unknown[]) =&gt; `${entries.map((e) =&gt; JSON.stringify(e)).join('\n')}\n`;
+
+// รูปแบบเลียนแบบ transcript จริงของ Claude Agent SDK
+const userPrompt = (ms: string) =&gt; ({
+  type: 'user',
+  timestamp: at(ms),
+  message: { role: 'user', content: [{ type: 'text', text: 'Task under review: ...' }] },
+});
+const toolUse = (ms: string) =&gt; ({
+  type: 'assistant',
+  timestamp: at(ms),
+  message: {
+    role: 'assistant',
+    content: [
+      { type: 'thinking', thinking: '' },
+      { type: 'text', text: 'จะรันเทสต์' },
+      { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'python -m pytest' } },
+    ],
+  },
+});
+const toolResult = (ms: string, content: unknown) =&gt; ({
+  type: 'user',
+  timestamp: at(ms),
+  message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', is_error: true, content }] },
+});
+const overloaded = (ms: string) =&gt; ({
+  type: 'system',
+  subtype: 'api_error',
+  level: 'error',
+  timestamp: at(ms),
+  error: {
+    message: '529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
+    status: 529,
+    formatted: '529 Overloaded',
+    connection: null,
+    isNetworkDown: false,
+  },
+});
+const offline = (ms: string) =&gt; ({
+  type: 'system',
+  subtype: 'api_error',
+  level: 'error',
+  timestamp: at(ms),
+  error: {
+    message: 'Connection error.',
+    formatted: "Can't reach the API server (ENOTFOUND)",
+    connection: { code: 'ENOTFOUND' },
+    isNetworkDown: true,
+  },
+});
+const call = (over: Partial&lt;AgentCall&gt; = {}): AgentCall =&gt; ({
+  id: 0,
+  role: 'qa',
+  resumed: false,
+  start: at('01:00'),
+  end: at('06:00'),
+  status: 'failed',
+  ...over,
+});
+
+describe('transcriptsDir', () =&gt; {
+  it('แปลง projectDir เป็นชื่อโฟลเดอร์แบบ Claude Code', () =&gt; {
+    expect(transcriptsDir('C:\\work\\my\\mail-sender', {}, '/home/u')).toBe(
+      path.join('/home/u', '.claude', 'projects', 'C--work-my-mail-sender'),
+    );
+  });
+
+  it('ใช้ CLAUDE_CONFIG_DIR ถ้าตั้งไว้', () =&gt; {
+    expect(transcriptsDir('/work/app', { CLAUDE_CONFIG_DIR: '/cfg' }, '/home/u')).toBe(
+      path.join('/cfg', 'projects', '-work-app'),
+    );
+  });
+});
+
+describe('clip', () =&gt; {
+  it('ตัดข้อความที่ยาวเกินและบอกจำนวนที่ตัด', () =&gt; {
+    expect(clip('x'.repeat(MAX_STEP_CHARS + 5))).toBe(`${'x'.repeat(MAX_STEP_CHARS)}…(ตัด 5 ตัวอักษร)`);
+    expect(clip('สั้น')).toBe('สั้น');
+  });
+});
+
+describe('sliceTranscript', () =&gt; {
+  it('แปลง entry เป็น step และข้าม prompt ของ user, thinking และ entry นอกช่วงเวลา', () =&gt; {
+    const text = jsonl(
+      toolUse('00:30'),
+      userPrompt('01:00'),
+      toolUse('02:00'),
+      toolResult('02:10', 'No module named pytest'),
+      overloaded('03:00'),
+      toolUse('09:00'),
+    );
+    expect(sliceTranscript(text, at('01:00'), at('06:00'))).toEqual([
+      { kind: 'text', time: at('02:00'), text: 'จะรันเทสต์' },
+      { kind: 'tool_use', time: at('02:00'), name: 'Bash', input: '{"command":"python -m pytest"}' },
+      { kind: 'tool_result', time: at('02:10'), isError: true, text: 'No module named pytest' },
+      { kind: 'api_error', time: at('03:00'), status: 529, message: '529 Overloaded', networkDown: false },
+    ]);
+  });
+
+  it('api error แบบเน็ตหลุด -&gt; networkDown และไม่มี status', () =&gt; {
+    expect(sliceTranscript(jsonl(offline('02:00')), at('01:00'))).toEqual([
+      {
+        kind: 'api_error',
+        time: at('02:00'),
+        status: undefined,
+        message: "Can't reach the API server (ENOTFOUND)",
+        networkDown: true,
+      },
+    ]);
+  });
+
+  it('tool_result แบบ array ของ text และบรรทัดพังถูกข้าม', () =&gt; {
+    const text = `{broken\n${jsonl(toolResult('02:00', [{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }]))}`;
+    expect(sliceTranscript(text, at('01:00'))).toEqual([
+      { kind: 'tool_result', time: at('02:00'), isError: true, text: 'a\nb' },
+    ]);
+  });
+
+  it('ไม่มีเวลาจบ (call ค้าง) -&gt; เอาทุกอย่างหลังเวลาเริ่ม', () =&gt; {
+    expect(sliceTranscript(jsonl(overloaded('59:00')), at('01:00'))).toHaveLength(1);
+  });
+});
+
+describe('loadCallTranscript', () =&gt; {
+  let dir: string;
+  beforeEach(async () =&gt; {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-team-tx-'));
+  });
+
+  it('อ่านไฟล์ &lt;sessionId&gt;.jsonl แล้วตัดตามช่วงเวลา', async () =&gt; {
+    await fs.writeFile(path.join(dir, 's-qa.jsonl'), jsonl(overloaded('03:00'), overloaded('09:00')));
+    const t = loadCallTranscript(dir, call({ sessionId: 's-qa' }));
+    expect(t.file).toBe(path.join(dir, 's-qa.jsonl'));
+    expect(t.steps).toHaveLength(1);
+    expect(t.note).toBeUndefined();
+  });
+
+  it('ไม่พบไฟล์ -&gt; note บอกชื่อไฟล์', () =&gt; {
+    const t = loadCallTranscript(dir, call({ sessionId: 'nope' }));
+    expect(t.steps).toEqual([]);
+    expect(t.note).toContain('nope.jsonl');
+  });
+
+  it('ไม่มี sessionId -&gt; หาไฟล์ที่ entry แรกอยู่ในช่วงเวลาของ call', async () =&gt; {
+    await fs.writeFile(path.join(dir, 'older.jsonl'), jsonl(userPrompt('00:10'), overloaded('03:00')));
+    await fs.writeFile(path.join(dir, 'match.jsonl'), jsonl(userPrompt('01:00'), overloaded('03:00')));
+    const t = loadCallTranscript(dir, call());
+    expect(t.file).toBe(path.join(dir, 'match.jsonl'));
+    expect(t.steps).toHaveLength(1);
+  });
+
+  it('ไม่มี sessionId และไม่มีโฟลเดอร์ -&gt; note', () =&gt; {
+    expect(loadCallTranscript(path.join(dir, 'missing'), call()).note).toContain('ไม่พบ transcript');
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+<p>รัน: <code>npx vitest run tests/logview/transcripts.test.ts</code> — คาดหวัง: FAIL ด้วย "Failed to resolve import '../../src/logview/transcripts'"</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+<p>สร้าง <code>src/logview/transcripts.ts</code>:</p>
+<pre><code>import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import type { AgentCall } from './parse-log';
+
+/** ความยาวสูงสุดของแต่ละชิ้นใน transcript ที่แสดง (ไม่แสดง prompt/ผลเต็ม) */
+export const MAX_STEP_CHARS = 2000;
+/** เผื่อเวลาเหลื่อมระหว่าง log ของ agent-team กับ transcript ของ SDK */
+const WINDOW_SLACK_MS = 2000;
+
+export type TranscriptStep =
+  | { kind: 'text'; time: string; text: string }
+  | { kind: 'tool_use'; time: string; name: string; input: string }
+  | { kind: 'tool_result'; time: string; isError: boolean; text: string }
+  | { kind: 'api_error'; time: string; status?: number; message: string; networkDown: boolean };
+
+export interface CallTranscript {
+  /** ไฟล์ที่อ่าน (ถ้าเจอ) */
+  file?: string;
+  steps: TranscriptStep[];
+  /** เหตุผลที่ไม่มีข้อมูล เช่นหาไฟล์ไม่เจอ */
+  note?: string;
+}
+
+type Json = Record&lt;string, unknown&gt;;
+const isObj = (v: unknown): v is Json =&gt; v !== null &amp;&amp; typeof v === 'object' &amp;&amp; !Array.isArray(v);
+
+export function clip(text: string, max: number = MAX_STEP_CHARS): string {
+  return text.length &gt; max ? `${text.slice(0, max)}…(ตัด ${text.length - max} ตัวอักษร)` : text;
+}
+
+/** โฟลเดอร์ที่ Claude Agent SDK เก็บ transcript ของโปรเจกต์นี้ */
+export function transcriptsDir(
+  projectDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = os.homedir(),
+): string {
+  const base = env.CLAUDE_CONFIG_DIR || path.join(home, '.claude');
+  return path.join(base, 'projects', projectDir.replace(/[^a-zA-Z0-9]/g, '-'));
+}
+
+const windowOf = (from: string, to?: string): [number, number] =&gt; [
+  Date.parse(from) - WINDOW_SLACK_MS,
+  to ? Date.parse(to) + WINDOW_SLACK_MS : Number.POSITIVE_INFINITY,
+];
+
+/** แปลง transcript (jsonl) เป็น step เฉพาะ entry ที่เวลาอยู่ในช่วง from..to */
+export function sliceTranscript(jsonl: string, from: string, to?: string): TranscriptStep[] {
+  const [lo, hi] = windowOf(from, to);
+  const steps: TranscriptStep[] = [];
+  for (const line of jsonl.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isObj(entry) || typeof entry.timestamp !== 'string') continue;
+    const t = Date.parse(entry.timestamp);
+    if (!(t &gt;= lo &amp;&amp; t &lt;= hi)) continue;
+    steps.push(...toSteps(entry, entry.timestamp));
+  }
+  return steps;
+}
+
+function toSteps(entry: Json, time: string): TranscriptStep[] {
+  if (entry.type === 'system' &amp;&amp; entry.subtype === 'api_error') {
+    const err = isObj(entry.error) ? entry.error : {};
+    return [
+      {
+        kind: 'api_error',
+        time,
+        status: typeof err.status === 'number' ? err.status : undefined,
+        message: clip(String(err.formatted ?? err.message ?? 'API error')),
+        networkDown: err.isNetworkDown === true || isObj(err.connection),
+      },
+    ];
+  }
+  const message = isObj(entry.message) ? entry.message : undefined;
+  if (!message || !Array.isArray(message.content)) return [];
+  const steps: TranscriptStep[] = [];
+  for (const block of message.content) {
+    if (!isObj(block)) continue;
+    if (entry.type === 'assistant' &amp;&amp; block.type === 'text' &amp;&amp; typeof block.text === 'string' &amp;&amp; block.text.trim()) {
+      steps.push({ kind: 'text', time, text: clip(block.text) });
+    } else if (entry.type === 'assistant' &amp;&amp; block.type === 'tool_use') {
+      steps.push({
+        kind: 'tool_use',
+        time,
+        name: String(block.name ?? '?'),
+        input: clip(JSON.stringify(block.input ?? {})),
+      });
+    } else if (entry.type === 'user' &amp;&amp; block.type === 'tool_result') {
+      steps.push({ kind: 'tool_result', time, isError: block.is_error === true, text: clip(resultText(block.content)) });
+    }
+  }
+  return steps;
+}
+
+function resultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((c) =&gt; (isObj(c) &amp;&amp; typeof c.text === 'string' ? c.text : ''))
+    .filter(Boolean)
+    .join('\n');
+}
+
+export function loadCallTranscript(dir: string, call: AgentCall): CallTranscript {
+  const file = call.sessionId ? path.join(dir, `${call.sessionId}.jsonl`) : findByTime(dir, call);
+  if (!file || !fs.existsSync(file)) {
+    return {
+      steps: [],
+      note: call.sessionId
+        ? `ไม่พบ transcript ${call.sessionId}.jsonl ใน ${dir}`
+        : `ไม่พบ transcript ของช่วงเวลานี้ใน ${dir}`,
+    };
+  }
+  try {
+    return { file, steps: sliceTranscript(fs.readFileSync(file, 'utf8'), call.start, call.end) };
+  } catch (e) {
+    return { file, steps: [], note: `อ่าน transcript ไม่ได้: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
+/** ไม่มี sessionId (เช่น process ล่มก่อนได้ result): หาไฟล์ที่ entry แรกที่มีเวลาอยู่ในช่วงของ call */
+function findByTime(dir: string, call: AgentCall): string | undefined {
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir).filter((n) =&gt; n.endsWith('.jsonl'));
+  } catch {
+    return undefined;
+  }
+  const [lo, hi] = windowOf(call.start, call.end);
+  for (const name of names) {
+    const file = path.join(dir, name);
+    try {
+      if (fs.statSync(file).mtimeMs &lt; lo) continue;
+      const first = firstTimestamp(fs.readFileSync(file, 'utf8'));
+      if (first !== undefined &amp;&amp; first &gt;= lo &amp;&amp; first &lt;= hi) return file;
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+
+function firstTimestamp(jsonl: string): number | undefined {
+  for (const line of jsonl.split(/\r?\n/)) {
+    try {
+      const entry: unknown = JSON.parse(line);
+      if (isObj(entry) &amp;&amp; typeof entry.timestamp === 'string') return Date.parse(entry.timestamp);
+    } catch {
+      // ข้ามบรรทัดพัง
+    }
+  }
+  return undefined;
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+<p>รัน: <code>npx vitest run tests/logview/transcripts.test.ts</code> แล้ว <code>npm run typecheck</code> — คาดหวัง: PASS ทั้งหมด</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/logview/transcripts.ts tests/logview/transcripts.test.ts
+git commit -m "feat(logview): read and slice Agent SDK transcripts per agent call"</code></pre>
+</div>
+
+<!-- ============================ TASK 3 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 3: วิเคราะห์สาเหตุ (diagnose.ts)</h3>
+<p class="meta"><strong>ไฟล์:</strong></p>
+<ul class="meta">
+  <li>สร้าง: <code>src/logview/diagnose.ts</code></li>
+  <li>เทสต์: <code>tests/logview/diagnose.test.ts</code></li>
+</ul>
+<p class="meta"><strong>Interfaces:</strong></p>
+<ul class="meta">
+  <li>ใช้จาก (Consumes): <code>Run</code>, <code>AgentCall</code>, <code>LogEvent</code> (Task 1); <code>CallTranscript</code>, <code>TranscriptStep</code> (Task 2)</li>
+  <li>ส่งต่อ (Produces): <code>Severity = 'error' | 'warn' | 'info'</code>; <code>Finding { severity: Severity; title: string; detail: string; callIds: number[]; count: number }</code>; <code>diagnoseRun(run: Run, transcripts: ReadonlyMap&lt;number, CallTranscript&gt;): Finding[]</code> (เรียง error → warn → info แล้วตาม callId แรก)</li>
+</ul>
+<p>กฎ (ต่อ call; finding ที่ key เดียวกันรวมเป็นอันเดียว, <code>count</code> นับรวม, <code>callIds</code> ไม่ซ้ำ):</p>
+<ul class="meta">
+  <li>API error ใน transcript ของ call จัดกลุ่มตามลำดับนี้ (แต่ละ error เข้ากลุ่มแรกที่ตรงเท่านั้น): เน็ตหลุด (<code>networkDown</code>) → 529/overloaded → 429 → 401/403 → อื่น ๆ</li>
+  <li><code>subtype === 'error_max_turns'</code> / <code>'error_max_budget_usd'</code> → error ต่อ role</li>
+  <li><code>status === 'failed'</code> + <code>subtype === 'success'</code> + ไม่มี API error + ไม่มี guard.deny ของ role นั้นในช่วง call → warn "จบโดยไม่ส่งผลลัพธ์"</li>
+  <li><code>subtype === 'no_result'</code> หรือ (<code>status === 'unfinished'</code> ในรอบที่ไม่ใช่ <code>unfinished</code>/<code>interrupted</code>) + ไม่มี API error → error "หยุดกลางคัน"</li>
+  <li><code>guard.deny</code> ทั้งรอบ รวมตาม role เป็น warn แสดงไม่เกิน 5 บรรทัดแรกแล้วบอกจำนวนที่เหลือ</li>
+  <li>รอบ <code>error</code> ที่ไม่มี finding เลย → info "ไม่พบสาเหตุที่รู้จัก" + ข้อความ error</li>
+</ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+<p>สร้าง <code>tests/logview/diagnose.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import { diagnoseRun } from '../../src/logview/diagnose';
+import type { AgentCall, LogEvent, Run } from '../../src/logview/parse-log';
+import type { CallTranscript, TranscriptStep } from '../../src/logview/transcripts';
+
+const at = (ms: string) =&gt; `2026-01-10T09:${ms}.000Z`;
+const call = (id: number, over: Partial&lt;AgentCall&gt; = {}): AgentCall =&gt; ({
+  id,
+  role: 'qa',
+  resumed: false,
+  start: at('01:00'),
+  end: at('06:00'),
+  status: 'ok',
+  subtype: 'success',
+  ...over,
+});
+const run = (calls: AgentCall[], over: Partial&lt;Run&gt; = {}): Run =&gt; ({
+  index: 0,
+  start: at('00:00'),
+  status: 'error',
+  events: [],
+  calls,
+  totalCostUsd: 0,
+  ...over,
+});
+const apiError = (status: number | undefined, message: string, networkDown = false): TranscriptStep =&gt; ({
+  kind: 'api_error',
+  time: at('02:00'),
+  status,
+  message,
+  networkDown,
+});
+const tx = (entries: [number, TranscriptStep[]][]): Map&lt;number, CallTranscript&gt; =&gt;
+  new Map(entries.map(([id, steps]) =&gt; [id, { steps }]));
+const deny = (ms: string, role = 'qa'): LogEvent =&gt; ({
+  line: 1,
+  time: at(ms),
+  level: 'WARN',
+  event: 'guard.deny',
+  data: { role, tool: 'Bash', target: 'rm -rf /', reason: 'คำสั่งอันตราย' },
+});
+
+describe('diagnoseRun', () =&gt; {
+  it('529 Overloaded หลายครั้งในหลาย call -&gt; finding เดียว นับรวม', () =&gt; {
+    const calls = [call(0, { status: 'failed' }), call(1, { status: 'failed' })];
+    const f = diagnoseRun(
+      run(calls),
+      tx([
+        [0, [apiError(529, '529 Overloaded'), apiError(529, '529 Overloaded')]],
+        [1, [apiError(529, '529 Overloaded')]],
+      ]),
+    );
+    expect(f).toHaveLength(1);
+    expect(f[0]).toMatchObject({
+      severity: 'error',
+      title: 'API ของ Anthropic รับโหลดไม่ไหว (529 Overloaded)',
+      count: 3,
+      callIds: [0, 1],
+    });
+  });
+
+  it('เน็ตหลุด, 429, 401/403 และ error อื่นแยกเป็นคนละ finding', () =&gt; {
+    const f = diagnoseRun(
+      run([call(0, { status: 'failed' })]),
+      tx([
+        [
+          0,
+          [
+            apiError(undefined, "Can't reach the API server", true),
+            apiError(429, '429 rate limited'),
+            apiError(401, 'unauthorized'),
+            apiError(500, '500 Internal'),
+          ],
+        ],
+      ]),
+    );
+    expect(f.map((x) =&gt; x.title)).toEqual([
+      'เชื่อมต่อ API ไม่ได้ (อินเทอร์เน็ต/DNS)',
+      'ชนลิมิตการใช้งาน (429 rate limit)',
+      'login/สิทธิ์ใช้งานมีปัญหา (401/403)',
+      'API error อื่น ๆ',
+    ]);
+    expect(f[3]).toMatchObject({ severity: 'warn', detail: '500 Internal' });
+  });
+
+  it('error_max_turns และ error_max_budget_usd', () =&gt; {
+    const f = diagnoseRun(
+      run([
+        call(0, { role: 'backend', status: 'failed', subtype: 'error_max_turns' }),
+        call(1, { role: 'qa', status: 'failed', subtype: 'error_max_budget_usd' }),
+      ]),
+      new Map(),
+    );
+    expect(f.map((x) =&gt; x.title)).toEqual(['agent backend ใช้ turn ครบ maxTurns', 'agent qa ใช้งบเกิน maxBudgetUsd']);
+  });
+
+  it('guard.deny -&gt; รวมตาม role และไม่ขึ้น "ไม่ส่งผลลัพธ์" ซ้ำ', () =&gt; {
+    const f = diagnoseRun(run([call(0, { status: 'failed' })], { events: [deny('02:00'), deny('03:00')] }), new Map());
+    expect(f).toHaveLength(1);
+    expect(f[0]).toMatchObject({ severity: 'warn', title: 'guard ปฏิเสธคำสั่งของ qa', count: 2, callIds: [0] });
+    expect(f[0]!.detail).toContain('Bash rm -rf /: คำสั่งอันตราย');
+  });
+
+  it('guard.deny เกิน 5 ครั้ง -&gt; แสดง 5 บรรทัดแรกและบอกจำนวนที่เหลือ', () =&gt; {
+    const events = [0, 1, 2, 3, 4, 5, 6].map((i) =&gt; deny(`02:0${i}`));
+    const f = diagnoseRun(run([call(0, { status: 'failed' })], { events }), new Map());
+    expect(f[0]!.detail.split('\n')).toHaveLength(6);
+    expect(f[0]!.detail).toContain('และอีก 2 ครั้ง');
+  });
+
+  it('จบแบบ success แต่ไม่ส่ง structured output และไม่มีสาเหตุอื่น', () =&gt; {
+    const f = diagnoseRun(run([call(0, { status: 'failed' })]), new Map());
+    expect(f).toEqual([
+      {
+        severity: 'warn',
+        title: 'agent qa จบโดยไม่ส่งผลลัพธ์ (structured output)',
+        detail: expect.stringContaining('StructuredOutput'),
+        callIds: [0],
+        count: 1,
+      },
+    ]);
+  });
+
+  it('มี 529 แล้ว ไม่ต้องขึ้น "ไม่ส่งผลลัพธ์" ซ้ำ', () =&gt; {
+    const f = diagnoseRun(run([call(0, { status: 'failed' })]), tx([[0, [apiError(529, '529 Overloaded')]]]));
+    expect(f.map((x) =&gt; x.title)).toEqual(['API ของ Anthropic รับโหลดไม่ไหว (529 Overloaded)']);
+  });
+
+  it('agent.no_result หรือ call ค้างในรอบที่ error -&gt; หยุดกลางคัน', () =&gt; {
+    expect(diagnoseRun(run([call(0, { status: 'failed', subtype: 'no_result' })]), new Map())[0]!.title).toBe(
+      'agent qa หยุดกลางคันโดยไม่มีผลลัพธ์',
+    );
+    const stuck = call(0, { status: 'unfinished', subtype: undefined, end: undefined });
+    expect(diagnoseRun(run([stuck]), new Map())[0]!.title).toBe('agent qa หยุดกลางคันโดยไม่มีผลลัพธ์');
+  });
+
+  it('call ค้างในรอบที่ยังรันอยู่หรือถูก Ctrl+C -&gt; ไม่ถือเป็นปัญหา', () =&gt; {
+    const stuck = call(0, { status: 'unfinished', subtype: undefined, end: undefined });
+    expect(diagnoseRun(run([stuck], { status: 'unfinished' }), new Map())).toEqual([]);
+    expect(diagnoseRun(run([stuck], { status: 'interrupted' }), new Map())).toEqual([]);
+  });
+
+  it('รอบ error ที่ไม่เข้ากฎไหน -&gt; info พร้อมข้อความ error', () =&gt; {
+    expect(diagnoseRun(run([], { errorMessage: 'boom' }), new Map())).toEqual([
+      { severity: 'info', title: 'ไม่พบสาเหตุที่รู้จัก', detail: 'boom', callIds: [], count: 1 },
+    ]);
+  });
+
+  it('รอบที่ปกติ -&gt; ไม่มี finding', () =&gt; {
+    expect(diagnoseRun(run([call(0)], { status: 'done' }), new Map())).toEqual([]);
+  });
+
+  it('เรียง error ก่อน warn', () =&gt; {
+    const f = diagnoseRun(
+      run([call(0, { status: 'failed' }), call(1, { role: 'backend', status: 'failed', subtype: 'error_max_turns' })]),
+      new Map(),
+    );
+    expect(f.map((x) =&gt; x.severity)).toEqual(['error', 'warn']);
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+<p>รัน: <code>npx vitest run tests/logview/diagnose.test.ts</code> — คาดหวัง: FAIL ด้วย "Failed to resolve import '../../src/logview/diagnose'"</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+<p>สร้าง <code>src/logview/diagnose.ts</code>:</p>
+<pre><code>import type { AgentCall, LogEvent, Run } from './parse-log';
+import type { CallTranscript, TranscriptStep } from './transcripts';
+
+export type Severity = 'error' | 'warn' | 'info';
+
+export interface Finding {
+  severity: Severity;
+  title: string;
+  detail: string;
+  /** id ของ AgentCall ที่เกี่ยวข้อง */
+  callIds: number[];
+  /** จำนวนครั้งที่เจอ (เช่น API error กี่ครั้ง) */
+  count: number;
+}
+
+type Base = Pick&lt;Finding, 'severity' | 'title' | 'detail'&gt;;
+type ApiError = Extract&lt;TranscriptStep, { kind: 'api_error' }&gt;;
+
+const SEVERITY_ORDER: Record&lt;Severity, number&gt; = { error: 0, warn: 1, info: 2 };
+const RESUME_HINT = 'แล้วทำงานต่อด้วย agent-team &lt;path&gt; -r';
+
+const NETWORK: Base = {
+  severity: 'error',
+  title: 'เชื่อมต่อ API ไม่ได้ (อินเทอร์เน็ต/DNS)',
+  detail: `เครื่องต่ออินเทอร์เน็ตไม่ได้หรือหา api.anthropic.com ไม่เจอ — ตรวจเน็ต/VPN/proxy ${RESUME_HINT}`,
+};
+const OVERLOADED: Base = {
+  severity: 'error',
+  title: 'API ของ Anthropic รับโหลดไม่ไหว (529 Overloaded)',
+  detail: `ปัญหาชั่วคราวฝั่งเซิร์ฟเวอร์ ไม่ใช่ bug ของโปรเจกต์หรือ agent — รอสักพัก ${RESUME_HINT} (สถานะ: https://status.claude.com)`,
+};
+const RATE_LIMIT: Base = {
+  severity: 'error',
+  title: 'ชนลิมิตการใช้งาน (429 rate limit)',
+  detail: `โควตา subscription ช่วงนี้หมด — รอให้รีเซ็ต ${RESUME_HINT}`,
+};
+const AUTH: Base = {
+  severity: 'error',
+  title: 'login/สิทธิ์ใช้งานมีปัญหา (401/403)',
+  detail: 'ตรวจ login ด้วย npm run smoke:auth แล้ว login Claude ใหม่',
+};
+
+const apiErrors = (t: CallTranscript | undefined): ApiError[] =&gt;
+  (t?.steps ?? []).filter((s): s is ApiError =&gt; s.kind === 'api_error');
+
+const inWindow = (ev: LogEvent, call: AgentCall): boolean =&gt;
+  ev.time &gt;= call.start &amp;&amp; (call.end === undefined || ev.time &lt;= call.end);
+
+export function diagnoseRun(run: Run, transcripts: ReadonlyMap&lt;number, CallTranscript&gt;): Finding[] {
+  const found = new Map&lt;string, Finding&gt;();
+  const add = (key: string, base: Base, callId: number, count = 1): void =&gt; {
+    const f = found.get(key) ?? { ...base, callIds: [], count: 0 };
+    f.count += count;
+    if (!f.callIds.includes(callId)) f.callIds.push(callId);
+    found.set(key, f);
+  };
+  const denials = run.events.filter((e) =&gt; e.event === 'guard.deny');
+
+  for (const call of run.calls) {
+    const errs = apiErrors(transcripts.get(call.id));
+    const taken = new Set&lt;ApiError&gt;();
+    const pick = (test: (e: ApiError) =&gt; boolean): ApiError[] =&gt; {
+      const hits = errs.filter((e) =&gt; !taken.has(e) &amp;&amp; test(e));
+      hits.forEach((e) =&gt; taken.add(e));
+      return hits;
+    };
+    const network = pick((e) =&gt; e.networkDown);
+    const overloaded = pick((e) =&gt; e.status === 529 || /overloaded/i.test(e.message));
+    const rate = pick((e) =&gt; e.status === 429);
+    const auth = pick((e) =&gt; e.status === 401 || e.status === 403);
+    const other = pick(() =&gt; true);
+    if (overloaded.length) add('overloaded', OVERLOADED, call.id, overloaded.length);
+    if (network.length) add('network', NETWORK, call.id, network.length);
+    if (rate.length) add('rate_limit', RATE_LIMIT, call.id, rate.length);
+    if (auth.length) add('auth', AUTH, call.id, auth.length);
+    if (other.length) {
+      add('api_other', { severity: 'warn', title: 'API error อื่น ๆ', detail: other[0]!.message }, call.id, other.length);
+    }
+
+    if (call.subtype === 'error_max_turns') {
+      add(
+        `max_turns:${call.role}`,
+        {
+          severity: 'error',
+          title: `agent ${call.role} ใช้ turn ครบ maxTurns`,
+          detail: 'task ใหญ่เกินจำนวน turn ที่ให้ — เพิ่ม maxTurns ของ role นี้ใน agent-team.config.json หรือแตก task ให้เล็กลง',
+        },
+        call.id,
+      );
+    }
+    if (call.subtype === 'error_max_budget_usd') {
+      add(
+        `max_budget:${call.role}`,
+        {
+          severity: 'error',
+          title: `agent ${call.role} ใช้งบเกิน maxBudgetUsd`,
+          detail: 'เพิ่ม maxBudgetUsd ของ role นี้ใน agent-team.config.json หรือแตก task ให้เล็กลง',
+        },
+        call.id,
+      );
+    }
+    const denied = denials.some((e) =&gt; e.data.role === call.role &amp;&amp; inWindow(e, call));
+    if (call.status === 'failed' &amp;&amp; call.subtype === 'success' &amp;&amp; errs.length === 0 &amp;&amp; !denied) {
+      add(
+        `no_output:${call.role}`,
+        {
+          severity: 'warn',
+          title: `agent ${call.role} จบโดยไม่ส่งผลลัพธ์ (structured output)`,
+          detail: 'agent หยุดตอบโดยไม่เรียก StructuredOutput — เปิด transcript ของครั้งนี้ดูข้อความสุดท้ายของ agent',
+        },
+        call.id,
+      );
+    }
+    const stopped =
+      call.subtype === 'no_result' ||
+      (call.status === 'unfinished' &amp;&amp; run.status !== 'unfinished' &amp;&amp; run.status !== 'interrupted');
+    if (stopped &amp;&amp; errs.length === 0) {
+      add(
+        `no_result:${call.role}`,
+        {
+          severity: 'error',
+          title: `agent ${call.role} หยุดกลางคันโดยไม่มีผลลัพธ์`,
+          detail: 'stream ของ SDK จบก่อนได้ result หรือเกิด exception — ดูข้อความ error ของรอบรันและ transcript ของครั้งนี้',
+        },
+        call.id,
+      );
+    }
+  }
+
+  const byRole = new Map&lt;string, LogEvent[]&gt;();
+  for (const e of denials) {
+    const role = typeof e.data.role === 'string' ? e.data.role : '?';
+    byRole.set(role, [...(byRole.get(role) ?? []), e]);
+  }
+  for (const [role, list] of byRole) {
+    const lines = list
+      .slice(0, 5)
+      .map((e) =&gt; `${String(e.data.tool ?? '?')}${e.data.target ? ` ${String(e.data.target)}` : ''}: ${String(e.data.reason ?? '')}`);
+    const more = list.length &gt; 5 ? `\n…และอีก ${list.length - 5} ครั้ง` : '';
+    const callIds = run.calls.filter((c) =&gt; c.role === role &amp;&amp; list.some((e) =&gt; inWindow(e, c))).map((c) =&gt; c.id);
+    found.set(`guard:${role}`, {
+      severity: 'warn',
+      title: `guard ปฏิเสธคำสั่งของ ${role}`,
+      detail: `${lines.join('\n')}${more}`,
+      callIds,
+      count: list.length,
+    });
+  }
+
+  if (found.size === 0 &amp;&amp; run.status === 'error') {
+    found.set('unknown', {
+      severity: 'info',
+      title: 'ไม่พบสาเหตุที่รู้จัก',
+      detail: run.errorMessage ?? 'ดูข้อความ error ของรอบรันใน timeline',
+      callIds: [],
+      count: 1,
+    });
+  }
+
+  return [...found.values()].sort(
+    (a, b) =&gt;
+      SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] ||
+      (a.callIds[0] ?? Number.POSITIVE_INFINITY) - (b.callIds[0] ?? Number.POSITIVE_INFINITY),
+  );
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+<p>รัน: <code>npx vitest run tests/logview/diagnose.test.ts</code> แล้ว <code>npm run typecheck</code> — คาดหวัง: PASS ทั้งหมด</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/logview/diagnose.ts tests/logview/diagnose.test.ts
+git commit -m "feat(logview): diagnose likely causes of agent failures"</code></pre>
+</div>
+
+<!-- ============================ TASK 4 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 4: รวมข้อมูลและสร้างหน้า HTML (view-data.ts, render.ts, page-assets.ts)</h3>
+<p class="meta"><strong>ไฟล์:</strong></p>
+<ul class="meta">
+  <li>สร้าง: <code>src/logview/view-data.ts</code>, <code>src/logview/render.ts</code>, <code>src/logview/page-assets.ts</code></li>
+  <li>เทสต์: <code>tests/logview/render.test.ts</code></li>
+</ul>
+<p class="meta"><strong>Interfaces:</strong></p>
+<ul class="meta">
+  <li>ใช้จาก (Consumes): <code>parseLog</code>, <code>Run</code> (Task 1); <code>loadCallTranscript</code>, <code>CallTranscript</code> (Task 2); <code>diagnoseRun</code>, <code>Finding</code> (Task 3)</li>
+  <li>ส่งต่อ (Produces): <code>RunView extends Run { findings: Finding[]; transcripts: Record&lt;string, CallTranscript&gt; }</code>; <code>ViewData { projectDir: string; logFile: string; generatedAt: string; runs: RunView[] }</code>; <code>buildViewData(opts: { projectDir: string; logFile: string; logText: string; transcriptsDir: string; now?: () =&gt; Date }): ViewData</code>; <code>embedJson(value: unknown): string</code>; <code>renderHtml(data: ViewData, opts?: { live?: boolean }): string</code>; <code>PAGE_CSS: string</code>, <code>PAGE_JS: string</code></li>
+</ul>
+<p>หน้าเว็บ (ทำงานใน <code>PAGE_JS</code>): หัวหน้า (ชื่อ, path, dropdown เลือกรอบรัน ค่าเริ่มต้น = รอบล่าสุด, เวลาที่สร้าง), กล่อง "สาเหตุที่น่าจะเป็น" (สีตาม severity, <code>×count</code>, ปุ่มกระโดดไปการ์ด agent ที่เกี่ยวข้อง), สรุปรอบ (สถานะ, เริ่ม, ใช้เวลา, cost รวม, จำนวน call/ที่ไม่สำเร็จ, jobId, ข้อความ error), การ์ดของแต่ละ call (✅/❌/⏳, role, model, เวลา, ระยะเวลา, turns, cost, subtype) กดขยายดู transcript ย่อ, timeline ทุก event (<code>&lt;details&gt;</code> ต่อ event, ปุ่มกรอง ทั้งหมด / WARN/ERROR / agent / สิ่งที่คุณพิมพ์ / ข้อความในจอ) รองรับ dark mode และจอแคบ ถ้า live จะ poll <code>/data</code> ทุก 3 วินาทีและ render ใหม่เฉพาะเมื่อข้อมูลเปลี่ยน</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+<p>สร้าง <code>tests/logview/render.test.ts</code>:</p>
+<pre><code>import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { PAGE_JS } from '../../src/logview/page-assets';
+import { embedJson, renderHtml } from '../../src/logview/render';
+import { buildViewData, type ViewData } from '../../src/logview/view-data';
+
+const LOG = [
+  '2026-01-10T09:00:00.000Z INFO  run.start {"projectDir":"/work/app","resume":false,"pid":1}',
+  '2026-01-10T09:01:00.000Z INFO  agent.start {"role":"qa","model":"claude-sonnet-5","resumed":false,"promptChars":5}',
+  '2026-01-10T09:06:00.000Z WARN  agent.result {"role":"qa","subtype":"success","durationMs":300000,"turns":1,"costUsd":0.5,"sessionId":"s-qa"}',
+  '2026-01-10T09:06:01.000Z ERROR run.error {"message":"qa: &lt;/script&gt;&lt;script&gt;alert(1)&lt;/script&gt;"}',
+].join('\n');
+
+const readData = (html: string): ViewData =&gt; {
+  const m = /&lt;script id="data" type="application\/json"&gt;([\s\S]*?)&lt;\/script&gt;/.exec(html);
+  return JSON.parse(m![1]!) as ViewData;
+};
+
+describe('buildViewData', () =&gt; {
+  it('รวม runs + transcripts + findings', async () =&gt; {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-team-view-'));
+    await fs.writeFile(
+      path.join(dir, 's-qa.jsonl'),
+      `${JSON.stringify({
+        type: 'system',
+        subtype: 'api_error',
+        timestamp: '2026-01-10T09:03:00.000Z',
+        error: { status: 529, formatted: '529 Overloaded' },
+      })}\n`,
+    );
+    const data = buildViewData({
+      projectDir: '/work/app',
+      logFile: '/work/app/.agent-team/agent-team.log',
+      logText: LOG,
+      transcriptsDir: dir,
+      now: () =&gt; new Date('2026-01-10T10:00:00.000Z'),
+    });
+    expect(data).toMatchObject({ projectDir: '/work/app', generatedAt: '2026-01-10T10:00:00.000Z' });
+    expect(data.runs).toHaveLength(1);
+    expect(data.runs[0]!.transcripts['0']!.steps).toHaveLength(1);
+    expect(data.runs[0]!.findings[0]!.title).toContain('529');
+  });
+});
+
+describe('renderHtml', () =&gt; {
+  const data = buildViewData({
+    projectDir: '/work/app',
+    logFile: 'x',
+    logText: LOG,
+    transcriptsDir: path.join(os.tmpdir(), 'agent-team-no-such-dir'),
+    now: () =&gt; new Date(0),
+  });
+
+  it('ฝังข้อมูลเป็น JSON ที่อ่านกลับได้ครบ', () =&gt; {
+    expect(readData(renderHtml(data))).toEqual(data);
+  });
+
+  it('ข้อความใน log ที่มี &lt;/script&gt; ไม่หลุดออกจากแท็ก', () =&gt; {
+    const html = renderHtml(data);
+    expect(html.match(/&lt;\/script&gt;/g)).toHaveLength(3);
+    expect(html).not.toContain('&lt;script&gt;alert(1)');
+  });
+
+  it('ตั้งค่า live ตามตัวเลือก และมี lang/title', () =&gt; {
+    expect(renderHtml(data)).toContain('window.__LIVE__ = false');
+    expect(renderHtml(data, { live: true })).toContain('window.__LIVE__ = true');
+    expect(renderHtml(data)).toContain('&lt;html lang="th"&gt;');
+    expect(renderHtml(data)).toContain('&lt;title&gt;agent-team logs — app&lt;/title&gt;');
+  });
+
+  it('embedJson escape &lt;, U+2028, U+2029', () =&gt; {
+    expect(embedJson({ a: '&lt;/script&gt;\u2028\u2029' })).toBe('{"a":"\\u003c/script&gt;\\u2028\\u2029"}');
+  });
+
+  it('โค้ดฝั่งเบราว์เซอร์ไม่มี syntax error และไม่มี &lt;/script&gt;', () =&gt; {
+    expect(() =&gt; new Function(PAGE_JS)).not.toThrow();
+    expect(PAGE_JS).not.toContain('&lt;/script');
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+<p>รัน: <code>npx vitest run tests/logview/render.test.ts</code> — คาดหวัง: FAIL ด้วย "Failed to resolve import"</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน <code>src/logview/view-data.ts</code></strong></span></p>
+<pre><code>import { diagnoseRun, type Finding } from './diagnose';
+import { parseLog, type Run } from './parse-log';
+import { loadCallTranscript, type CallTranscript } from './transcripts';
+
+export interface RunView extends Run {
+  findings: Finding[];
+  /** key = AgentCall.id (เป็น string เพราะผ่าน JSON) */
+  transcripts: Record&lt;string, CallTranscript&gt;;
+}
+
+export interface ViewData {
+  projectDir: string;
+  logFile: string;
+  generatedAt: string;
+  runs: RunView[];
+}
+
+export function buildViewData(opts: {
+  projectDir: string;
+  logFile: string;
+  logText: string;
+  transcriptsDir: string;
+  now?: () =&gt; Date;
+}): ViewData {
+  const runs = parseLog(opts.logText).map((run): RunView =&gt; {
+    const map = new Map&lt;number, CallTranscript&gt;();
+    for (const call of run.calls) map.set(call.id, loadCallTranscript(opts.transcriptsDir, call));
+    return {
+      ...run,
+      findings: diagnoseRun(run, map),
+      transcripts: Object.fromEntries([...map].map(([id, t]) =&gt; [String(id), t])),
+    };
+  });
+  return {
+    projectDir: opts.projectDir,
+    logFile: opts.logFile,
+    generatedAt: (opts.now ?? (() =&gt; new Date()))().toISOString(),
+    runs,
+  };
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: เขียน <code>src/logview/render.ts</code></strong></span></p>
+<pre><code>import { PAGE_CSS, PAGE_JS } from './page-assets';
+import type { ViewData } from './view-data';
+
+/** JSON ที่วางใน &lt;script&gt; ได้ปลอดภัย: กัน &lt;/script&gt; และ U+2028/2029 */
+export function embedJson(value: unknown): string {
+  return JSON.stringify(value)
+    .replace(/&lt;/g, '\\u003c')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
+const escapeHtml = (s: string): string =&gt;
+  s.replace(/&amp;/g, '&amp;amp;').replace(/&lt;/g, '&amp;lt;').replace(/&gt;/g, '&amp;gt;').replace(/"/g, '&amp;quot;');
+
+export function renderHtml(data: ViewData, opts: { live?: boolean } = {}): string {
+  const name = data.projectDir.split(/[\\/]/).filter(Boolean).pop() ?? data.projectDir;
+  return `&lt;!DOCTYPE html&gt;
+&lt;html lang="th"&gt;
+&lt;head&gt;
+&lt;meta charset="utf-8"&gt;
+&lt;meta name="viewport" content="width=device-width, initial-scale=1"&gt;
+&lt;title&gt;agent-team logs — ${escapeHtml(name)}&lt;/title&gt;
+&lt;style&gt;${PAGE_CSS}&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;div id="app"&gt;&lt;/div&gt;
+&lt;script id="data" type="application/json"&gt;${embedJson(data)}&lt;/script&gt;
+&lt;script&gt;window.__LIVE__ = ${opts.live ? 'true' : 'false'};&lt;/script&gt;
+&lt;script&gt;${PAGE_JS}&lt;/script&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+`;
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: เขียน <code>src/logview/page-assets.ts</code></strong></span></p>
+<p>ใช้ <code>String.raw</code> เพื่อให้ <code>\n</code> ในโค้ด JS ถูกส่งไปถึงเบราว์เซอร์ตามตัวอักษร ห้ามใช้ backtick หรือ <code>${</code> ภายในสองสตริงนี้ และ render ข้อความจาก log ด้วย <code>textContent</code> เท่านั้น</p>
+<pre><code>// CSS + JS ของหน้า agent-team logs (ฝังลงใน HTML ไฟล์เดียว ไม่มีไฟล์ภายนอก)
+
+export const PAGE_CSS = String.raw`
+:root{--bg:#f6f7f9;--card:#fff;--fg:#1f2933;--muted:#616e7c;--border:#d9dee5;--err:#c62828;--err-bg:#fdecea;--warn:#a15c00;--warn-bg:#fff4e0;--ok:#1b7f3b;--info:#2457c5;--info-bg:#e8effc;--code:#eef1f5}
+@media (prefers-color-scheme: dark){:root{--bg:#12161c;--card:#1b2129;--fg:#e4e8ee;--muted:#9aa5b1;--border:#2e3742;--err:#ff8a80;--err-bg:#3a1d1d;--warn:#ffcc80;--warn-bg:#3a2e1a;--ok:#81c995;--info:#8ab4f8;--info-bg:#1d2a40;--code:#232b35}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,"Segoe UI","Noto Sans Thai",sans-serif}
+#app{max-width:1100px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:0 0 4px}
+h2{font-size:16px;margin:0 0 8px}
+section,.head{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:12px}
+.muted{color:var(--muted)}
+.small{font-size:12px}
+select,button{font:inherit;color:inherit;background:var(--card);border:1px solid var(--border);border-radius:6px;padding:4px 8px;max-width:100%}
+button{cursor:pointer;margin:2px}
+.finding{border-left:4px solid;border-radius:6px;padding:8px 12px;margin:8px 0}
+.sev-error{border-color:var(--err);background:var(--err-bg)}
+.sev-warn{border-color:var(--warn);background:var(--warn-bg)}
+.sev-info{border-color:var(--info);background:var(--info-bg)}
+.detail{white-space:pre-wrap;overflow-wrap:anywhere;margin:4px 0}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:4px 0;background:var(--code);padding:6px 8px;border-radius:6px;font:12px/1.45 ui-monospace,Consolas,monospace;max-height:320px;overflow:auto}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+.stat{border:1px solid var(--border);border-radius:6px;padding:6px 10px;overflow-wrap:anywhere}
+.stat b{display:block;font-size:12px;color:var(--muted);font-weight:normal}
+.card{border:1px solid var(--border);border-radius:6px;margin:6px 0}
+.card&gt;button{width:100%;margin:0;text-align:left;border:0;border-radius:6px;display:flex;flex-wrap:wrap;gap:4px 12px;padding:8px 10px}
+.card.failed&gt;button{background:var(--err-bg)}
+.card .body{padding:4px 10px 10px}
+.step{border-top:1px dashed var(--border);padding:4px 0}
+.t{color:var(--muted);font-size:12px;margin-right:6px}
+.kind-api_error{color:var(--err)}
+.filters{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px}
+.filters button.on{background:var(--info-bg);border-color:var(--info)}
+details{border-top:1px solid var(--border);padding:3px 0}
+summary{cursor:pointer;overflow-wrap:anywhere}
+.lv{display:inline-block;min-width:48px;font-size:11px;font-weight:bold;margin-right:6px}
+.lv-INFO{color:var(--muted)}
+.lv-WARN{color:var(--warn)}
+.lv-ERROR,.lv-RAW{color:var(--err)}
+.ev{font-family:ui-monospace,Consolas,monospace;font-size:12px;margin-right:6px}
+.ok{color:var(--ok)}
+.bad{color:var(--err)}
+`;
+
+export const PAGE_JS = String.raw`
+(function () {
+  'use strict';
+  var data = JSON.parse(document.getElementById('data').textContent);
+  var state = { run: data.runs.length - 1, open: {}, filter: 'all' };
+  var lastRuns = JSON.stringify(data.runs);
+  var app = document.getElementById('app');
+
+  var RUN_STATUS = {
+    done: 'เสร็จสมบูรณ์',
+    aborted: 'ยกเลิกงาน',
+    error: 'หยุดเพราะ error',
+    interrupted: 'ถูกหยุด (Ctrl+C)',
+    unfinished: 'ยังไม่จบ / process หายไป'
+  };
+  var FILTERS = [['all', 'ทั้งหมด'], ['problem', 'WARN/ERROR'], ['agent', 'agent'], ['user', 'สิ่งที่คุณพิมพ์'], ['say', 'ข้อความในจอ']];
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined &amp;&amp; text !== null) e.textContent = String(text);
+    return e;
+  }
+  function fmtTime(iso) {
+    if (!iso) return '-';
+    var d = new Date(iso);
+    return isNaN(d.getTime()) ? iso : d.toLocaleString('th-TH', { hour12: false });
+  }
+  function fmtClock(iso) {
+    var d = new Date(iso);
+    return isNaN(d.getTime()) ? '' : d.toLocaleTimeString('th-TH', { hour12: false });
+  }
+  function fmtDur(ms) {
+    if (typeof ms !== 'number' || isNaN(ms)) return '-';
+    var s = Math.round(ms / 1000);
+    var h = Math.floor(s / 3600);
+    var m = Math.floor((s % 3600) / 60);
+    return (h ? h + 'h ' : '') + (h || m ? m + 'm ' : '') + (s % 60) + 's';
+  }
+  function fmtCost(v) { return typeof v === 'number' ? '$' + v.toFixed(4) : '-'; }
+  function short(text, n) {
+    text = String(text === undefined || text === null ? '' : text);
+    return text.length &gt; n ? text.slice(0, n) + '…' : text;
+  }
+
+  function render() {
+    var y = window.scrollY;
+    var frag = document.createDocumentFragment();
+    var run = data.runs[state.run];
+    frag.appendChild(renderHeader());
+    if (!run) {
+      frag.appendChild(el('section', 'muted', 'ยังไม่มีรอบรันใน log'));
+    } else {
+      frag.appendChild(renderFindings(run));
+      frag.appendChild(renderSummary(run));
+      frag.appendChild(renderCalls(run));
+      frag.appendChild(renderTimeline(run));
+    }
+    app.textContent = '';
+    app.appendChild(frag);
+    window.scrollTo(0, y);
+  }
+
+  function renderHeader() {
+    var head = el('div', 'head');
+    head.appendChild(el('h1', null, 'agent-team logs'));
+    head.appendChild(el('div', 'muted', data.projectDir));
+    var sel = el('select');
+    sel.setAttribute('aria-label', 'เลือกรอบรัน');
+    data.runs.forEach(function (r, i) {
+      var label = 'รอบที่ ' + (i + 1) + ' · ' + fmtTime(r.start) + ' · ' + (RUN_STATUS[r.status] || r.status) + (r.jobId ? ' · ' + r.jobId : '');
+      var o = el('option', null, label);
+      o.value = String(i);
+      if (i === state.run) o.selected = true;
+      sel.appendChild(o);
+    });
+    sel.onchange = function () { state.run = Number(sel.value); state.open = {}; render(); };
+    if (data.runs.length) head.appendChild(sel);
+    head.appendChild(el('div', 'muted small', 'สร้างเมื่อ ' + fmtTime(data.generatedAt) + (window.__LIVE__ ? ' · live: อัปเดตอัตโนมัติทุก 3 วินาที' : '')));
+    return head;
+  }
+
+  function renderFindings(run) {
+    var sec = el('section');
+    sec.appendChild(el('h2', null, 'สาเหตุที่น่าจะเป็น'));
+    if (!run.findings.length) {
+      sec.appendChild(el('p', 'muted', run.status === 'unfinished' ? 'ยังไม่พบปัญหา (รอบนี้ยังไม่จบ)' : 'ไม่พบปัญหา'));
+      return sec;
+    }
+    run.findings.forEach(function (f) {
+      var box = el('div', 'finding sev-' + f.severity);
+      box.appendChild(el('strong', null, f.title + (f.count &gt; 1 ? ' ×' + f.count : '')));
+      if (f.detail) box.appendChild(el('div', 'detail', f.detail));
+      if (f.callIds.length) {
+        var links = el('div', 'small');
+        links.appendChild(el('span', 'muted', 'ดูครั้งที่เรียก agent: '));
+        f.callIds.forEach(function (id) {
+          var c = run.calls[id];
+          var b = el('button', null, '#' + (id + 1) + (c ? ' ' + c.role : ''));
+          b.onclick = function () { openCall(id); };
+          links.appendChild(b);
+        });
+        box.appendChild(links);
+      }
+      sec.appendChild(box);
+    });
+    return sec;
+  }
+
+  function openCall(id) {
+    state.open[id] = true;
+    render();
+    var target = document.getElementById('call-' + id);
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function stat(label, value, cls) {
+    var s = el('div', 'stat' + (cls ? ' ' + cls : ''));
+    s.appendChild(el('b', null, label));
+    s.appendChild(el('span', null, value));
+    return s;
+  }
+
+  function renderSummary(run) {
+    var sec = el('section');
+    sec.appendChild(el('h2', null, 'สรุปรอบนี้'));
+    var grid = el('div', 'stats');
+    var failed = run.calls.filter(function (c) { return c.status !== 'ok'; }).length;
+    var ms = run.end ? Date.parse(run.end) - Date.parse(run.start) : undefined;
+    grid.appendChild(stat('สถานะ', RUN_STATUS[run.status] || run.status, run.status === 'error' ? 'bad' : run.status === 'done' ? 'ok' : ''));
+    grid.appendChild(stat('เริ่ม', fmtTime(run.start)));
+    grid.appendChild(stat('ใช้เวลา', fmtDur(ms)));
+    grid.appendChild(stat('ค่าใช้จ่ายรวม (คิดตามราคา API)', fmtCost(run.totalCostUsd)));
+    grid.appendChild(stat('เรียก agent', run.calls.length + ' ครั้ง' + (failed ? ' (ไม่สำเร็จ ' + failed + ')' : '')));
+    grid.appendChild(stat('งาน (jobId)', run.jobId || '-'));
+    sec.appendChild(grid);
+    if (run.errorMessage) sec.appendChild(el('pre', 'bad', run.errorMessage));
+    return sec;
+  }
+
+  function renderCalls(run) {
+    var sec = el('section');
+    sec.appendChild(el('h2', null, 'การเรียก agent (' + run.calls.length + ')'));
+    if (!run.calls.length) sec.appendChild(el('p', 'muted', 'รอบนี้ยังไม่ได้เรียก agent'));
+    run.calls.forEach(function (c) {
+      var card = el('div', 'card' + (c.status === 'ok' ? '' : ' failed'));
+      card.id = 'call-' + c.id;
+      var icon = c.status === 'ok' ? '✅' : c.status === 'failed' ? '❌' : '⏳';
+      var head = el('button');
+      head.setAttribute('aria-expanded', state.open[c.id] ? 'true' : 'false');
+      [
+        icon + ' #' + (c.id + 1) + ' ' + c.role,
+        c.model || '',
+        fmtClock(c.start),
+        fmtDur(c.durationMs),
+        (c.turns === undefined ? '-' : c.turns) + ' turns',
+        fmtCost(c.costUsd),
+        c.status === 'ok' ? '' : (c.subtype || 'ยังไม่จบ')
+      ].forEach(function (t) { if (t) head.appendChild(el('span', null, t)); });
+      head.onclick = function () { state.open[c.id] = !state.open[c.id]; render(); };
+      card.appendChild(head);
+      if (state.open[c.id]) card.appendChild(renderTranscript(run.transcripts[String(c.id)], c));
+      sec.appendChild(card);
+    });
+    return sec;
+  }
+
+  function renderTranscript(t, c) {
+    var body = el('div', 'body');
+    if (c.sessionId) body.appendChild(el('div', 'muted small', 'session: ' + c.sessionId));
+    if (!t) {
+      body.appendChild(el('p', 'muted', 'ไม่มีข้อมูล transcript'));
+      return body;
+    }
+    if (t.file) body.appendChild(el('div', 'muted small', 'ไฟล์: ' + t.file));
+    if (t.note) body.appendChild(el('p', 'muted', t.note));
+    if (!t.steps.length &amp;&amp; !t.note) body.appendChild(el('p', 'muted', 'ไม่มีข้อความหรือ tool ในช่วงเวลานี้'));
+    t.steps.forEach(function (s) {
+      var row = el('div', 'step kind-' + s.kind);
+      row.appendChild(el('span', 't', fmtClock(s.time)));
+      if (s.kind === 'text') {
+        row.appendChild(el('span', null, '💬 ข้อความของ agent'));
+        row.appendChild(el('pre', null, s.text));
+      } else if (s.kind === 'tool_use') {
+        row.appendChild(el('span', null, '🔧 ' + s.name));
+        row.appendChild(el('pre', null, s.input));
+      } else if (s.kind === 'tool_result') {
+        row.appendChild(el('span', s.isError ? 'bad' : null, s.isError ? '⚠ ผลลัพธ์ (error)' : '↩ ผลลัพธ์'));
+        row.appendChild(el('pre', null, s.text));
+      } else if (s.kind === 'api_error') {
+        row.appendChild(el('span', null, '⛔ API error' + (s.status ? ' ' + s.status : '') + (s.networkDown ? ' (เชื่อมต่อไม่ได้)' : '') + ': ' + s.message));
+      }
+      body.appendChild(row);
+    });
+    return body;
+  }
+
+  function matches(ev) {
+    var f = state.filter;
+    var e = ev.event;
+    if (f === 'problem') return ev.level !== 'INFO';
+    if (f === 'agent') return e.indexOf('agent.') === 0 || e.indexOf('qa.') === 0 || e.indexOf('security.') === 0 || e === 'guard.deny' || e === 'escalate.decision';
+    if (f === 'user') return e.indexOf('user.') === 0;
+    if (f === 'say') return e === 'say';
+    return true;
+  }
+
+  function summaryOf(ev) {
+    var d = ev.data || {};
+    if (ev.event === 'say' || ev.event === 'raw') return d.text;
+    if (ev.event === 'user.input') return d.answer;
+    if (ev.event === 'user.question') return d.question;
+    if (ev.event === 'user.choice') return d.prompt + ' → ' + d.choice;
+    return JSON.stringify(d);
+  }
+
+  function renderTimeline(run) {
+    var sec = el('section');
+    sec.appendChild(el('h2', null, 'Timeline (' + run.events.length + ' event)'));
+    var bar = el('div', 'filters');
+    FILTERS.forEach(function (f) {
+      var b = el('button', state.filter === f[0] ? 'on' : null, f[1]);
+      b.onclick = function () { state.filter = f[0]; render(); };
+      bar.appendChild(b);
+    });
+    sec.appendChild(bar);
+    var shown = run.events.filter(matches);
+    if (!shown.length) sec.appendChild(el('p', 'muted', 'ไม่มี event ที่ตรงกับตัวกรอง'));
+    shown.forEach(function (ev) {
+      var d = el('details');
+      var s = el('summary');
+      s.appendChild(el('span', 't', fmtClock(ev.time)));
+      s.appendChild(el('span', 'lv lv-' + ev.level, ev.level));
+      s.appendChild(el('span', 'ev', ev.event));
+      s.appendChild(el('span', null, short(summaryOf(ev), 200)));
+      d.appendChild(s);
+      d.appendChild(el('pre', null, 'บรรทัด ' + ev.line + '\n' + JSON.stringify(ev.data, null, 2)));
+      sec.appendChild(d);
+    });
+    return sec;
+  }
+
+  if (window.__LIVE__) {
+    setInterval(function () {
+      fetch('/data', { cache: 'no-store' })
+        .then(function (r) { return r.json(); })
+        .then(function (next) {
+          var runs = JSON.stringify(next.runs);
+          if (runs === lastRuns) return;
+          var followLatest = state.run === data.runs.length - 1;
+          data = next;
+          lastRuns = runs;
+          if (followLatest || state.run &gt;= data.runs.length) state.run = data.runs.length - 1;
+          render();
+        })
+        .catch(function () { /* server หยุดแล้ว: คงหน้าเดิมไว้ */ });
+    }, 3000);
+  }
+
+  render();
+})();
+`;</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+<p>รัน: <code>npx vitest run tests/logview/render.test.ts</code> แล้ว <code>npm run typecheck</code> — คาดหวัง: PASS ทั้งหมด</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: Commit</strong></span></p>
+<pre><code>git add src/logview/view-data.ts src/logview/render.ts src/logview/page-assets.ts tests/logview/render.test.ts
+git commit -m "feat(logview): render self-contained HTML log report"</code></pre>
+</div>
+
+<!-- ============================ TASK 5 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 5: เปิดเบราว์เซอร์, live server และคำสั่ง logs (open-browser.ts, serve.ts, command.ts)</h3>
+<p class="meta"><strong>ไฟล์:</strong></p>
+<ul class="meta">
+  <li>สร้าง: <code>src/logview/open-browser.ts</code>, <code>src/logview/serve.ts</code>, <code>src/logview/command.ts</code></li>
+  <li>เทสต์: <code>tests/logview/open-browser.test.ts</code>, <code>tests/logview/serve.test.ts</code>, <code>tests/logview/command.test.ts</code></li>
+</ul>
+<p class="meta"><strong>Interfaces:</strong></p>
+<ul class="meta">
+  <li>ใช้จาก (Consumes): <code>buildViewData</code>, <code>ViewData</code> (Task 4); <code>renderHtml(data, { live })</code> (Task 4); <code>transcriptsDir(projectDir, env?, home?)</code> (Task 2)</li>
+  <li>ส่งต่อ (Produces): <code>browserCommand(target: string, platform?: NodeJS.Platform): { cmd: string; args: string[]; verbatim: boolean }</code>; <code>openInBrowser(target: string, deps?: { platform?: NodeJS.Platform; spawn?: SpawnFn }): void</code>; <code>LiveServer { url: string; close(): Promise&lt;void&gt; }</code>; <code>startLiveServer(opts: { load: () =&gt; ViewData; port?: number }): Promise&lt;LiveServer&gt;</code>; <code>LogsCommandDeps { say: (text: string) =&gt; void; open?: (target: string) =&gt; void; env?: NodeJS.ProcessEnv; home?: string }</code>; <code>runLogsCommand(projectDir: string, live: boolean, deps: LogsCommandDeps): Promise&lt;LiveServer | undefined&gt;</code></li>
+</ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+<p>สร้าง <code>tests/logview/open-browser.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import { browserCommand, openInBrowser } from '../../src/logview/open-browser';
+
+describe('browserCommand', () =&gt; {
+  it('Windows ใช้ cmd start พร้อม quote path (verbatim)', () =&gt; {
+    expect(browserCommand('C:\\a b\\logs.html', 'win32')).toEqual({
+      cmd: 'cmd',
+      args: ['/c', 'start', '""', '"C:\\a b\\logs.html"'],
+      verbatim: true,
+    });
+  });
+
+  it('macOS ใช้ open, Linux ใช้ xdg-open', () =&gt; {
+    expect(browserCommand('/x.html', 'darwin')).toEqual({ cmd: 'open', args: ['/x.html'], verbatim: false });
+    expect(browserCommand('/x.html', 'linux')).toEqual({ cmd: 'xdg-open', args: ['/x.html'], verbatim: false });
+  });
+});
+
+describe('openInBrowser', () =&gt; {
+  it('spawn แบบ detached แล้ว unref', () =&gt; {
+    const calls: unknown[] = [];
+    let unref = false;
+    openInBrowser('/x.html', {
+      platform: 'linux',
+      spawn: (cmd, args, opts) =&gt; {
+        calls.push([cmd, args, opts]);
+        return { on: () =&gt; undefined, unref: () =&gt; { unref = true; } };
+      },
+    });
+    expect(calls).toEqual([
+      ['xdg-open', ['/x.html'], { detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: false }],
+    ]);
+    expect(unref).toBe(true);
+  });
+
+  it('spawn โยน error -&gt; ไม่ทำให้ล้ม', () =&gt; {
+    expect(() =&gt;
+      openInBrowser('/x.html', {
+        platform: 'linux',
+        spawn: () =&gt; {
+          throw new Error('ENOENT');
+        },
+      }),
+    ).not.toThrow();
+  });
+});</code></pre>
+<p>สร้าง <code>tests/logview/serve.test.ts</code>:</p>
+<pre><code>import * as http from 'node:http';
+import { afterEach, describe, expect, it } from 'vitest';
+import { startLiveServer, type LiveServer } from '../../src/logview/serve';
+import type { ViewData } from '../../src/logview/view-data';
+
+let server: LiveServer | undefined;
+afterEach(async () =&gt; {
+  await server?.close();
+  server = undefined;
+});
+
+const data = (n: number): ViewData =&gt; ({
+  projectDir: '/work/app',
+  logFile: 'x',
+  generatedAt: '2026-01-10T00:00:00.000Z',
+  runs: Array.from({ length: n }, (_, i) =&gt; ({
+    index: i,
+    start: '',
+    status: 'done' as const,
+    events: [],
+    calls: [],
+    totalCostUsd: 0,
+    findings: [],
+    transcripts: {},
+  })),
+});
+
+describe('startLiveServer', () =&gt; {
+  it('GET /data สร้างข้อมูลใหม่ทุกครั้ง', async () =&gt; {
+    let n = 0;
+    server = await startLiveServer({ load: () =&gt; data(++n) });
+    expect(server.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/);
+    const a = (await (await fetch(`${server.url}data`)).json()) as ViewData;
+    const b = (await (await fetch(`${server.url}data`)).json()) as ViewData;
+    expect([a.runs.length, b.runs.length]).toEqual([1, 2]);
+  });
+
+  it('GET / ส่งหน้า HTML แบบ live', async () =&gt; {
+    server = await startLiveServer({ load: () =&gt; data(1) });
+    const res = await fetch(server.url);
+    expect(res.headers.get('content-type')).toContain('text/html');
+    expect(await res.text()).toContain('window.__LIVE__ = true');
+  });
+
+  it('path อื่น -&gt; 404, load พัง -&gt; 500 พร้อมข้อความ', async () =&gt; {
+    server = await startLiveServer({
+      load: () =&gt; {
+        throw new Error('boom');
+      },
+    });
+    expect((await fetch(`${server.url}nope`)).status).toBe(404);
+    const res = await fetch(`${server.url}data`);
+    expect(res.status).toBe(500);
+    expect(await res.text()).toBe('boom');
+  });
+
+  it('Host header ไม่ใช่ 127.0.0.1/localhost -&gt; 403 (กัน DNS rebinding)', async () =&gt; {
+    server = await startLiveServer({ load: () =&gt; data(1) });
+    const port = Number(new URL(server.url).port);
+    const status = await new Promise&lt;number&gt;((resolve, reject) =&gt; {
+      http
+        .get({ host: '127.0.0.1', port, path: '/data', headers: { host: 'evil.example' } }, (res) =&gt; {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        })
+        .on('error', reject);
+    });
+    expect(status).toBe(403);
+  });
+});</code></pre>
+<p>สร้าง <code>tests/logview/command.test.ts</code>:</p>
+<pre><code>import { existsSync, readFileSync } from 'node:fs';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { runLogsCommand } from '../../src/logview/command';
+import type { ViewData } from '../../src/logview/view-data';
+
+const LOG = '2026-01-10T09:00:00.000Z INFO  run.start {"projectDir":"/work/app","resume":false,"pid":1}\n';
+let project: string;
+let said: string[];
+let opened: string[];
+
+const deps = () =&gt; ({
+  say: (t: string) =&gt; {
+    said.push(t);
+  },
+  open: (t: string) =&gt; {
+    opened.push(t);
+  },
+  env: { CLAUDE_CONFIG_DIR: path.join(project, 'cfg') },
+  home: project,
+});
+const logFile = () =&gt; path.join(project, '.agent-team', 'agent-team.log');
+const writeLog = async () =&gt; {
+  await fs.mkdir(path.join(project, '.agent-team'), { recursive: true });
+  await fs.writeFile(logFile(), LOG);
+};
+
+beforeEach(async () =&gt; {
+  project = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-team-logs-'));
+  said = [];
+  opened = [];
+});
+
+describe('runLogsCommand', () =&gt; {
+  it('ยังไม่มี log -&gt; error ที่บอก path', async () =&gt; {
+    await expect(runLogsCommand(project, false, deps())).rejects.toThrow('ไม่พบ log');
+  });
+
+  it('แบบไฟล์: เขียน .agent-team/logs.html แล้วเปิดเบราว์เซอร์', async () =&gt; {
+    await writeLog();
+    expect(await runLogsCommand(project, false, deps())).toBeUndefined();
+    const out = path.join(project, '.agent-team', 'logs.html');
+    expect(existsSync(out)).toBe(true);
+    expect(readFileSync(out, 'utf8')).toContain('window.__LIVE__ = false');
+    expect(opened).toEqual([out]);
+    expect(said.join('\n')).toContain(out);
+  });
+
+  it('แบบ live: เปิด server และเปิด url, /data อ่าน log ล่าสุดทุกครั้ง', async () =&gt; {
+    await writeLog();
+    const server = await runLogsCommand(project, true, deps());
+    try {
+      expect(opened).toEqual([server!.url]);
+      expect(said.join('\n')).toContain(server!.url);
+      const first = (await (await fetch(`${server!.url}data`)).json()) as ViewData;
+      expect(first.runs).toHaveLength(1);
+      await fs.appendFile(logFile(), LOG);
+      const second = (await (await fetch(`${server!.url}data`)).json()) as ViewData;
+      expect(second.runs).toHaveLength(2);
+    } finally {
+      await server!.close();
+    }
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+<p>รัน: <code>npx vitest run tests/logview/open-browser.test.ts tests/logview/serve.test.ts tests/logview/command.test.ts</code> — คาดหวัง: FAIL ด้วย "Failed to resolve import"</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน <code>src/logview/open-browser.ts</code></strong></span></p>
+<pre><code>import { spawn, type SpawnOptions } from 'node:child_process';
+
+export type SpawnFn = (
+  cmd: string,
+  args: string[],
+  opts: SpawnOptions,
+) =&gt; { on(event: 'error', listener: (e: Error) =&gt; void): unknown; unref(): void };
+
+const defaultSpawn: SpawnFn = (cmd, args, opts) =&gt; spawn(cmd, args, opts);
+
+export function browserCommand(
+  target: string,
+  platform: NodeJS.Platform = process.platform,
+): { cmd: string; args: string[]; verbatim: boolean } {
+  // start ของ cmd ถือ argument แรกที่มี quote เป็นชื่อหน้าต่าง จึงต้องใส่ "" ก่อน และ quote path เอง (verbatim)
+  if (platform === 'win32') return { cmd: 'cmd', args: ['/c', 'start', '""', `"${target}"`], verbatim: true };
+  if (platform === 'darwin') return { cmd: 'open', args: [target], verbatim: false };
+  return { cmd: 'xdg-open', args: [target], verbatim: false };
+}
+
+/** เปิดไฟล์/URL ด้วยเบราว์เซอร์ของระบบ เปิดไม่ได้ก็ไม่เป็นไร (ผู้ใช้เปิดเองจาก path ที่พิมพ์ไว้) */
+export function openInBrowser(target: string, deps: { platform?: NodeJS.Platform; spawn?: SpawnFn } = {}): void {
+  const { cmd, args, verbatim } = browserCommand(target, deps.platform);
+  try {
+    const child = (deps.spawn ?? defaultSpawn)(cmd, args, {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      windowsVerbatimArguments: verbatim,
+    });
+    child.on('error', () =&gt; {});
+    child.unref();
+  } catch {
+    // ignore
+  }
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: เขียน <code>src/logview/serve.ts</code></strong></span></p>
+<pre><code>import * as http from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { renderHtml } from './render';
+import type { ViewData } from './view-data';
+
+export interface LiveServer {
+  url: string;
+  close(): Promise&lt;void&gt;;
+}
+
+/** server ของ agent-team logs --live: bind 127.0.0.1 เท่านั้น สร้างข้อมูลใหม่จาก log ทุก request */
+export function startLiveServer(opts: { load: () =&gt; ViewData; port?: number }): Promise&lt;LiveServer&gt; {
+  let allowedHosts: string[] = [];
+  const server = http.createServer((req, res) =&gt; {
+    // กัน DNS rebinding: เว็บอื่นที่ชี้ชื่อโดเมนมาที่ 127.0.0.1 จะส่ง Host เป็นชื่อโดเมนนั้น
+    if (!allowedHosts.includes(req.headers.host ?? '')) {
+      send(res, 403, 'text/plain; charset=utf-8', 'forbidden');
+      return;
+    }
+    const url = (req.url ?? '/').split('?')[0];
+    try {
+      if (req.method === 'GET' &amp;&amp; url === '/') {
+        send(res, 200, 'text/html; charset=utf-8', renderHtml(opts.load(), { live: true }));
+      } else if (req.method === 'GET' &amp;&amp; url === '/data') {
+        send(res, 200, 'application/json; charset=utf-8', JSON.stringify(opts.load()));
+      } else {
+        send(res, 404, 'text/plain; charset=utf-8', 'not found');
+      }
+    } catch (e) {
+      send(res, 500, 'text/plain; charset=utf-8', e instanceof Error ? e.message : String(e));
+    }
+  });
+  return new Promise((resolve, reject) =&gt; {
+    server.once('error', reject);
+    server.listen(opts.port ?? 0, '127.0.0.1', () =&gt; {
+      const { port } = server.address() as AddressInfo;
+      allowedHosts = [`127.0.0.1:${port}`, `localhost:${port}`];
+      resolve({
+        url: `http://127.0.0.1:${port}/`,
+        close: () =&gt;
+          new Promise&lt;void&gt;((done) =&gt; {
+            server.closeAllConnections();
+            server.close(() =&gt; done());
+          }),
+      });
+    });
+  });
+}
+
+function send(res: http.ServerResponse, status: number, type: string, body: string): void {
+  res.writeHead(status, { 'content-type': type, 'cache-control': 'no-store' });
+  res.end(body);
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: เขียน <code>src/logview/command.ts</code></strong></span></p>
+<pre><code>import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { openInBrowser } from './open-browser';
+import { renderHtml } from './render';
+import { startLiveServer, type LiveServer } from './serve';
+import { transcriptsDir } from './transcripts';
+import { buildViewData, type ViewData } from './view-data';
+
+export interface LogsCommandDeps {
+  say: (text: string) =&gt; void;
+  /** เปิดไฟล์/URL (เทสต์ส่งตัวปลอมได้) */
+  open?: (target: string) =&gt; void;
+  env?: NodeJS.ProcessEnv;
+  home?: string;
+}
+
+/** agent-team logs: คืน LiveServer เมื่อ live (ผู้เรียกต้อง close เอง) */
+export async function runLogsCommand(
+  projectDir: string,
+  live: boolean,
+  deps: LogsCommandDeps,
+): Promise&lt;LiveServer | undefined&gt; {
+  const logFile = path.join(projectDir, '.agent-team', 'agent-team.log');
+  if (!fs.existsSync(logFile)) {
+    throw new Error(`ไม่พบ log: ${logFile} (โปรเจกต์นี้ยังไม่เคยรัน agent-team)`);
+  }
+  const dir = transcriptsDir(projectDir, deps.env, deps.home);
+  const load = (): ViewData =&gt;
+    buildViewData({ projectDir, logFile, logText: fs.readFileSync(logFile, 'utf8'), transcriptsDir: dir });
+  const open = deps.open ?? ((target: string) =&gt; openInBrowser(target));
+
+  if (live) {
+    const server = await startLiveServer({ load });
+    deps.say(`เปิดหน้า log แบบ live ที่ ${server.url} (กด Ctrl+C เพื่อหยุด)`);
+    open(server.url);
+    return server;
+  }
+  const out = path.join(projectDir, '.agent-team', 'logs.html');
+  fs.writeFileSync(out, renderHtml(load()), 'utf8');
+  deps.say(`สร้างหน้า log แล้ว: ${out}`);
+  open(out);
+  return undefined;
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+<p>รัน: <code>npx vitest run tests/logview</code> แล้ว <code>npm run typecheck</code> — คาดหวัง: PASS ทั้งหมด (ถ้า <code>server.closeAllConnections</code> ไม่มีใน type ของ <code>@types/node</code> ให้รายงาน ห้ามลบการตรวจ Host)</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: Commit</strong></span></p>
+<pre><code>git add src/logview/open-browser.ts src/logview/serve.ts src/logview/command.ts tests/logview/open-browser.test.ts tests/logview/serve.test.ts tests/logview/command.test.ts
+git commit -m "feat(logview): logs command with browser open and --live server"</code></pre>
+</div>
+
+<!-- ============================ TASK 6 ============================ -->
+<div class="frame frame-task">
+  <h3>Task 6: ต่อคำสั่ง agent-team logs เข้า CLI + README</h3>
+<p class="meta"><strong>ไฟล์:</strong></p>
+<ul class="meta">
+  <li>แก้ไข: <code>src/args.ts</code> (ทั้งไฟล์), <code>src/index.ts</code> (import, ช่วงหลัง <code>process.off('SIGINT', quitBeforeStart)</code>, และ catch ของ <code>runTeam</code>), <code>src/runner.ts:223</code>, <code>README.md</code> (เพิ่มหัวข้อก่อน <code>## state</code>)</li>
+  <li>เทสต์: <code>tests/args.test.ts</code> (ทั้งไฟล์), <code>tests/runner.test.ts:153</code></li>
+</ul>
+<p class="meta"><strong>Interfaces:</strong></p>
+<ul class="meta">
+  <li>ใช้จาก (Consumes): <code>runLogsCommand(projectDir, live, { say })</code> คืน <code>Promise&lt;LiveServer | undefined&gt;</code> (Task 5)</li>
+  <li>ส่งต่อ (Produces): <code>type Command = 'run' | 'logs'</code>; <code>CliArgs { command: Command; projectDir: string | undefined; resume: boolean; live: boolean }</code></li>
+</ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: แก้ test ของ args (fail)</strong></span></p>
+<p>แทนที่ <code>tests/args.test.ts</code> ทั้งไฟล์:</p>
+<pre><code>import * as path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { parseArgs } from '../src/args';
+
+describe('parseArgs', () =&gt; {
+  it('อ่าน --project และแปลงเป็นพาธเต็ม', () =&gt; {
+    expect(parseArgs(['--project', 'some/app'])).toEqual({
+      command: 'run',
+      projectDir: path.resolve('some/app'),
+      resume: false,
+      live: false,
+    });
+  });
+
+  it('อ่านรูปแบบ --project=พาธ', () =&gt; {
+    expect(parseArgs(['--project=some/app']).projectDir).toBe(path.resolve('some/app'));
+  });
+
+  it('รับ path แบบ positional', () =&gt; {
+    expect(parseArgs(['some/app']).projectDir).toBe(path.resolve('some/app'));
+    expect(parseArgs(['.']).projectDir).toBe(path.resolve('.'));
+  });
+
+  it('อ่าน --resume และตัวย่อ -r', () =&gt; {
+    expect(parseArgs(['--project', 'a', '--resume']).resume).toBe(true);
+    expect(parseArgs(['a', '-r']).resume).toBe(true);
+  });
+
+  it('ไม่ระบุโปรเจกต์ -&gt; projectDir เป็น undefined (ให้เลือกจากเมนู)', () =&gt; {
+    expect(parseArgs([])).toEqual({ command: 'run', projectDir: undefined, resume: false, live: false });
+    expect(parseArgs(['-r'])).toEqual({ command: 'run', projectDir: undefined, resume: true, live: false });
+  });
+
+  it('--project ที่ไม่มีค่า หรือค่าเป็น flag อื่น หรือว่าง -&gt; error', () =&gt; {
+    expect(() =&gt; parseArgs(['--project', '--resume'])).toThrow('--project');
+    expect(() =&gt; parseArgs(['--project', '-r'])).toThrow('--project');
+    expect(() =&gt; parseArgs(['--project'])).toThrow('--project');
+    expect(() =&gt; parseArgs(['--project='])).toThrow('--project');
+  });
+
+  it('ระบุโปรเจกต์มากกว่าหนึ่งครั้ง -&gt; error', () =&gt; {
+    expect(() =&gt; parseArgs(['a', 'b'])).toThrow('ครั้งเดียว');
+    expect(() =&gt; parseArgs(['--project', 'a', 'b'])).toThrow('ครั้งเดียว');
+  });
+
+  it('อาร์กิวเมนต์ที่ไม่รู้จัก -&gt; error', () =&gt; {
+    expect(() =&gt; parseArgs(['--project', 'a', '--nope'])).toThrow('--nope');
+    expect(() =&gt; parseArgs(['-x'])).toThrow('-x');
+  });
+
+  it('logs เป็นคำสั่งย่อย: ไม่มี path / มี path / --live', () =&gt; {
+    expect(parseArgs(['logs'])).toEqual({ command: 'logs', projectDir: undefined, resume: false, live: false });
+    expect(parseArgs(['logs', 'some/app', '--live'])).toEqual({
+      command: 'logs',
+      projectDir: path.resolve('some/app'),
+      resume: false,
+      live: true,
+    });
+    expect(parseArgs(['logs', '--project', 'a']).projectDir).toBe(path.resolve('a'));
+  });
+
+  it('โฟลเดอร์ชื่อ logs ต้องพิมพ์ ./logs', () =&gt; {
+    expect(parseArgs(['./logs'])).toMatchObject({ command: 'run', projectDir: path.resolve('logs') });
+  });
+
+  it('--live นอก logs และ -r กับ logs -&gt; error', () =&gt; {
+    expect(() =&gt; parseArgs(['--live'])).toThrow('--live');
+    expect(() =&gt; parseArgs(['logs', '-r'])).toThrow('--resume');
+  });
+});</code></pre>
+<p>รัน: <code>npx vitest run tests/args.test.ts</code> — คาดหวัง: FAIL (ยังไม่มี <code>command</code>/<code>live</code>)</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: เขียน <code>src/args.ts</code> ใหม่</strong></span></p>
+<pre><code>import * as path from 'node:path';
+
+export type Command = 'run' | 'logs';
+
+export interface CliArgs {
+  /** logs = agent-team logs (ดู log เป็น HTML) */
+  command: Command;
+  /** undefined = ให้เลือกจากเมนูโปรเจกต์ */
+  projectDir: string | undefined;
+  resume: boolean;
+  /** agent-team logs --live */
+  live: boolean;
+}
+
+export function parseArgs(argv: string[]): CliArgs {
+  // logs เป็นคำสั่งย่อยเฉพาะตำแหน่งแรก (โฟลเดอร์ชื่อ logs ให้พิมพ์ ./logs)
+  const command: Command = argv[0] === 'logs' ? 'logs' : 'run';
+  const rest = command === 'logs' ? argv.slice(1) : argv;
+  let projectDir: string | undefined;
+  let resume = false;
+  let live = false;
+  const setProject = (value: string): void =&gt; {
+    if (projectDir !== undefined) throw new Error('ระบุโปรเจกต์ได้ครั้งเดียว');
+    projectDir = value;
+  };
+  for (let i = 0; i &lt; rest.length; i++) {
+    const arg = rest[i] ?? '';
+    if (arg === '--resume' || arg === '-r') resume = true;
+    else if (arg === '--live') live = true;
+    else if (arg === '--project') {
+      const value = rest[++i];
+      if (value === undefined || value === '' || value.startsWith('-')) throw new Error('ต้องระบุพาธหลัง --project');
+      setProject(value);
+    } else if (arg.startsWith('--project=')) {
+      const value = arg.slice('--project='.length);
+      if (value === '') throw new Error('ต้องระบุพาธหลัง --project');
+      setProject(value);
+    } else if (arg.startsWith('-')) throw new Error(`อาร์กิวเมนต์ไม่รู้จัก: ${arg}`);
+    else setProject(arg);
+  }
+  if (live &amp;&amp; command !== 'logs') throw new Error('--live ใช้ได้กับ agent-team logs เท่านั้น');
+  if (resume &amp;&amp; command === 'logs') throw new Error('-r/--resume ใช้กับ agent-team logs ไม่ได้');
+  return { command, projectDir: projectDir === undefined ? undefined : path.resolve(projectDir), resume, live };
+}</code></pre>
+<p>รัน: <code>npx vitest run tests/args.test.ts</code> — คาดหวัง: PASS</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: ต่อสาย <code>src/index.ts</code></strong></span></p>
+<p>เพิ่ม import (เรียงตามตัวอักษรกับ import เดิม):</p>
+<pre><code>import { runLogsCommand } from './logview/command';</code></pre>
+<p>หลังบรรทัด <code>process.off('SIGINT', quitBeforeStart);</code> เพิ่ม (ก่อน <code>const config = loadConfig();</code>):</p>
+<pre><code>  if (args.command === 'logs') {
+    cli.close();
+    const server = await runLogsCommand(projectDir, args.live, { say: (text) =&gt; console.log(text) });
+    if (server) {
+      process.on('SIGINT', () =&gt; {
+        void server.close().then(() =&gt; process.exit(0));
+      });
+    }
+    return;
+  }</code></pre>
+<p>ใน <code>catch (e)</code> ของ <code>runTeam</code> หลังบรรทัด <code>if (jobId) console.error('รันใหม่แล้วเลือกงานนี้จากเมนู ...');</code> เพิ่ม:</p>
+<pre><code>    console.error(`ดูสาเหตุ: agent-team logs "${projectDir}"`);</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: แก้ข้อความใน <code>src/runner.ts:223</code> และเทสต์</strong></span></p>
+<p>ใน <code>src/runner.ts</code> เปลี่ยน <code>'จบงานโดยไม่ได้ส่ง structured output (ดู guard.deny ใน log)'</code> เป็น <code>'จบงานโดยไม่ได้ส่ง structured output (ดูสาเหตุด้วย agent-team logs)'</code></p>
+<p>ใน <code>tests/runner.test.ts:153</code> เปลี่ยนข้อความที่คาดหวังเป็น <code>'pm: จบงานโดยไม่ได้ส่ง structured output (ดูสาเหตุด้วย agent-team logs)'</code></p>
+<p>รัน: <code>npm test</code> แล้ว <code>npm run typecheck</code> — คาดหวัง: ผ่านทั้งคู่</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: เพิ่มหัวข้อใน README</strong></span></p>
+<p>ใน <code>README.md</code> เพิ่มหัวข้อนี้ก่อนบรรทัด <code>## state</code> (โค้ดบล็อกเยื้อง 4 ช่องตามสไตล์เดิม):</p>
+<pre><code>## ดู log / หาสาเหตุเมื่อ agent error
+    agent-team logs                  # เลือกโปรเจกต์จากเมนู → สร้างหน้า log แล้วเปิดเบราว์เซอร์
+    agent-team logs C:/path/to/app   # ระบุโปรเจกต์ตรง ๆ (หรือ agent-team logs . ในโฟลเดอร์โปรเจกต์)
+    agent-team logs . --live         # เปิด server ที่ 127.0.0.1 หน้าเว็บอัปเดตเองทุก 3 วินาที (Ctrl+C เพื่อหยุด)
+
+- แบบปกติเขียนไฟล์ `&lt;project&gt;/.agent-team/logs.html` (ไฟล์เดียว เปิด offline ได้) แล้วเปิดเบราว์เซอร์ให้ ถ้าเบราว์เซอร์ไม่เปิดเอง ให้เปิดไฟล์ตาม path ที่พิมพ์ไว้
+- บนสุดคือกล่อง "สาเหตุที่น่าจะเป็น" ที่วิเคราะห์จาก log + transcript ของ agent: 529 Overloaded (เซิร์ฟเวอร์ Anthropic รับโหลดไม่ไหว), เชื่อมต่อ API ไม่ได้, 429 rate limit, 401/403, ใช้ turn/งบเกิน, guard ปฏิเสธคำสั่ง, agent จบโดยไม่ส่งผลลัพธ์, agent หยุดกลางคัน
+- เลือกรอบรันได้จาก dropdown (ค่าเริ่มต้นคือรอบล่าสุด) มีสรุปเวลา/ค่าใช้จ่าย, การ์ดของแต่ละครั้งที่เรียก agent (กดขยายดู transcript ย่อ: ข้อความ agent, tool ที่เรียกพร้อมผล, API error — ตัดแต่ละชิ้นที่ 2,000 ตัวอักษร ไม่แสดง prompt เต็ม) และ timeline ทุก event พร้อมตัวกรอง
+- transcript อ่านจาก `~/.claude/projects/&lt;path โปรเจกต์ที่แปลงเป็นชื่อโฟลเดอร์&gt;/&lt;sessionId&gt;.jsonl` ที่ Claude Agent SDK เขียนไว้ (ใช้ `CLAUDE_CONFIG_DIR` ถ้าตั้งไว้) ถ้าไฟล์ถูกลบหรือเปิดจากคนละเครื่องจะขึ้นว่าไม่พบ transcript
+- `logs.html` มีสิ่งที่คุณพิมพ์และข้อความของ agent อยู่ด้วย ระวังก่อนส่งต่อ และให้ `.agent-team/` อยู่ใน `.gitignore`
+- `logs` ต้องเป็นคำแรกหลัง `agent-team` เสมอ ถ้าโฟลเดอร์โปรเจกต์ชื่อ `logs` ให้พิมพ์ `agent-team ./logs`; `--live` ใช้ได้กับ `logs` เท่านั้น และใช้ `-r` กับ `logs` ไม่ได้
+- งานที่หยุดเพราะ error จะพิมพ์ `ดูสาเหตุ: agent-team logs "&lt;path&gt;"` ให้ copy ไปรันได้เลย</code></pre>
+<p>และในหัวข้อ <code>## log</code> ถ้ามีข้อความที่บอกให้ "ดู guard.deny ใน log" ให้คงไว้ได้ (ยังถูกต้อง) ไม่ต้องแก้</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: ตรวจกับ log จริง (ไม่เรียก model)</strong></span></p>
+<p>รัน: <code>node bin/agent-team.mjs logs C:/work/my/mail-sender</code></p>
+<p>คาดหวัง: พิมพ์ <code>สร้างหน้า log แล้ว: C:\work\my\mail-sender\.agent-team\logs.html</code> และเปิดเบราว์เซอร์ จากนั้นตรวจไฟล์ด้วย <code>grep -c "529 Overloaded" C:/work/my/mail-sender/.agent-team/logs.html</code> ต้องได้มากกว่า 0 (รอบรันแรกของ mail-sender ล้มเพราะ QA เจอ 529 Overloaded และเชื่อมต่อ API ไม่ได้) บันทึกผลลงรายงาน</p>
+<p>รัน: <code>node bin/agent-team.mjs logs --live</code> ห้ามรัน (ต้องเลือกโปรเจกต์แบบ interactive) — ข้าม</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: Commit</strong></span></p>
+<pre><code>git add src/args.ts src/index.ts src/runner.ts tests/args.test.ts tests/runner.test.ts README.md
+git commit -m "feat: agent-team logs command"</code></pre>
+</div>
+
+</body>
+</html>

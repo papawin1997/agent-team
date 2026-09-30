@@ -1,0 +1,1846 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>Multi-job Resume Implementation Plan</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; line-height: 1.55;
+         max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1f2933;
+         background: #f5f7fa; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  pre { background: #1f2933; color: #e4e7eb; padding: .9rem 1rem;
+        border-radius: 6px; overflow-x: auto; }
+  code { background: #e4e7eb; padding: .1rem .35rem; border-radius: 4px; }
+  pre code { background: none; padding: 0; color: inherit; }
+  .frame { border-left: 6px solid; border-radius: 8px; padding: 1rem 1.25rem;
+           margin: 1.25rem 0; background: #ffffff;
+           box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .frame-header     { border-color: #2563eb; background: #eff6ff; }
+  .frame-constraints{ border-color: #d97706; background: #fffbeb; }
+  .frame-task       { border-color: #059669; background: #ecfdf5; }
+  .frame h1, .frame h2, .frame h3 { margin-top: 0; }
+  .note { border-color: #7c3aed; background: #f5f3ff; }
+  .step { display: flex; gap: .5rem; align-items: baseline;
+          margin: .75rem 0 .25rem; }
+  .step input { transform: scale(1.2); margin-top: .15rem; }
+  .meta { color: #52606d; font-size: .9rem; }
+</style>
+</head>
+<body>
+
+<div class="frame frame-header">
+  <h1>Multi-job Resume Implementation Plan</h1>
+  <p><strong>เป้าหมาย:</strong> ให้ 1 โปรเจกต์เก็บงานค้างได้หลายงาน และตอนเริ่มรัน PM แสดงรายการงานค้างพร้อมสรุป แล้วให้ user เลือก ทำต่อ (<code>r&lt;เลข&gt;</code>) / ลบ (<code>d&lt;เลข&gt;</code>) / เริ่มใหม่ (<code>n</code>)</p>
+  <p><strong>สถาปัตยกรรม:</strong> แต่ละงานมีโฟลเดอร์ <code>.agent-team/jobs/&lt;jobId&gt;/</code> ของตัวเอง <code>FileStateStore</code> เปลี่ยนมารับ path โฟลเดอร์งาน (interface <code>StateStore</code> ไม่เปลี่ยน phase จึงแทบไม่ต้องแก้) <code>JobRepository</code> (<code>src/jobs.ts</code>) จัดการ create/list/remove/lock/migration ส่วน <code>selectJob</code> (<code>src/job-menu.ts</code>) เป็นเมนูตอนเริ่มรัน แล้ว <code>runTeam(deps)</code> ทำงานกับ store ของงานที่เลือก</p>
+  <p><strong>Tech Stack:</strong> TypeScript (strict, ESM), Node &gt;= 20, vitest, <code>node:fs</code> / <code>node:fs/promises</code> (ไม่มี dependency ใหม่)</p>
+  <p class="meta">Spec: <code>docs/superpowers/specs/2026-09-25-multi-job-resume-design.md</code> (commit <code>e3c6881</code>) · branch <code>feat/multi-job-resume</code> · baseline: <code>npm test</code> 524 pass (22 files), <code>npm run typecheck</code> clean</p>
+</div>
+
+<div class="frame note">
+  <strong>For agentic workers:</strong> REQUIRED SUB-SKILL: Use
+  tb-subagent-driven-development (recommended) or
+  tb-executing-plans to implement this plan task-by-task. Steps keep
+  the <code>- [ ]</code> marker next to each checkbox for tracking.
+</div>
+
+<div class="frame frame-constraints">
+  <h2>Global Constraints</h2>
+  <ul>
+    <li>ข้อความที่แสดงต่อ user ทั้งหมดเป็นภาษาไทย ตามข้อความตรงตัวที่ระบุในแต่ละ task (เทสต์เช็กข้อความ)</li>
+    <li>TypeScript <code>strict</code>, ESM (<code>"type": "module"</code>), import ภายในโปรเจกต์ไม่ใส่นามสกุล (เช่น <code>'./state'</code>) ตามโค้ดเดิม</li>
+    <li>ห้ามเพิ่ม dependency ใหม่</li>
+    <li>ทุก task ต้องจบด้วย <code>npm test</code> ผ่านทั้งหมด และ <code>npm run typecheck</code> ไม่มี error</li>
+    <li>โครงสร้าง: <code>&lt;project&gt;/.agent-team/jobs/&lt;jobId&gt;/{state.json, run.lock, requirements.json, design.json, reports/}</code>; <code>agent-team.log</code> อยู่ที่ <code>.agent-team/</code> ไฟล์เดียวร่วมกัน</li>
+    <li><code>jobId</code> = เวลาท้องถิ่นรูปแบบ <code>YYYYMMDD-HHmmss</code> ชนกันให้ต่อท้าย <code>-2</code>, <code>-3</code>, ...</li>
+    <li><code>State</code> ยังเป็น <code>version: 1</code>; field ใหม่ไม่บังคับ: <code>title?</code>, <code>updatedAt?</code>, <code>lastBuildAt?</code> (ISO 8601) ไม่มี <code>createdAt</code></li>
+    <li><code>run.lock</code> = JSON <code>{ pid, startedAt }</code>; unlock ลบเฉพาะ lock ของ process ตัวเอง; <code>EPERM</code> จาก <code>process.kill(pid, 0)</code> = process ยังอยู่</li>
+    <li>Commit: stage ไฟล์ตาม path ที่ระบุเท่านั้น ห้าม <code>git add -A</code> / <code>git add .</code>; ห้าม add <code>agent_structure.txt</code>, <code>HANDOFF.md</code>, <code>docs/check/</code>; ทุก commit ลงท้ายด้วย <code>Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;</code></li>
+    <li>เปิดไฟล์ในเทสต์ที่ใช้ filesystem จริงด้วย <code>fs.mkdtemp(path.join(os.tmpdir(), ...))</code> เหมือน <code>tests/state.test.ts</code></li>
+  </ul>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 1: State field ใหม่ + FileStateStore รับโฟลเดอร์งาน</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/state.ts</code> (ทั้งไฟล์)</li>
+    <li>แก้ไข: <code>src/index.ts:46</code> (บรรทัด <code>const store = new FileStateStore(...)</code>)</li>
+    <li>เทสต์: <code>tests/state.test.ts</code> (ทั้งไฟล์)</li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): ไม่มี</li>
+    <li>ส่งต่อ (Produces): <code>State.title?: string</code>, <code>State.updatedAt?: string</code>, <code>State.lastBuildAt?: string</code>; <code>new FileStateStore(dir: string, now: () =&gt; Date = () =&gt; new Date())</code> อ่าน/เขียน <code>&lt;dir&gt;/state.json</code> และ artifact ใต้ <code>&lt;dir&gt;</code>; <code>save()</code> ตั้ง <code>state.updatedAt</code> ทุกครั้ง และตั้ง <code>state.lastBuildAt</code> เมื่อ <code>phase === 'BUILD'</code> และมี <code>rounds &gt; 0</code> (แก้ object ที่ส่งเข้ามาด้วย)</li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail (แทนที่ทั้งไฟล์ tests/state.test.ts)</strong></span></p>
+<pre><code>import * as fs from &#x27;node:fs/promises&#x27;;
+import * as os from &#x27;node:os&#x27;;
+import * as path from &#x27;node:path&#x27;;
+import { beforeEach, describe, expect, it } from &#x27;vitest&#x27;;
+import { FileStateStore, newState } from &#x27;../src/state&#x27;;
+import { buildState } from &#x27;./helpers/builders&#x27;;
+
+let jobDir: string;
+const fixed = new Date(&#x27;2026-09-25T02:30:00.000Z&#x27;);
+const clock = () =&gt; fixed;
+
+beforeEach(async () =&gt; {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), &#x27;agent-team-&#x27;));
+  jobDir = path.join(tmp, &#x27;.agent-team&#x27;, &#x27;jobs&#x27;, &#x27;job-1&#x27;);
+});
+
+describe(&#x27;FileStateStore&#x27;, () =&gt; {
+  it(&#x27;load คืน undefined เมื่อยังไม่มี state&#x27;, async () =&gt; {
+    expect(await new FileStateStore(jobDir).load()).toBeUndefined();
+  });
+
+  it(&#x27;save แล้ว load ได้ข้อมูลเดิม&#x27;, async () =&gt; {
+    const store = new FileStateStore(jobDir);
+    const state = newState();
+    state.phase = &#x27;BUILD&#x27;;
+    state.pmSessionId = &#x27;abc&#x27;;
+    await store.save(state);
+    expect(await store.load()).toEqual(state);
+  });
+
+  it(&#x27;save เขียนที่ &lt;jobDir&gt;/state.json&#x27;, async () =&gt; {
+    await new FileStateStore(jobDir).save(newState());
+    const raw = await fs.readFile(path.join(jobDir, &#x27;state.json&#x27;), &#x27;utf8&#x27;);
+    expect(JSON.parse(raw).version).toBe(1);
+  });
+
+  it(&#x27;saveArtifact สร้างโฟลเดอร์ย่อยใต้โฟลเดอร์งานให้อัตโนมัติ&#x27;, async () =&gt; {
+    await new FileStateStore(jobDir).saveArtifact(&#x27;reports/api-round1.json&#x27;, { ok: true });
+    const raw = await fs.readFile(path.join(jobDir, &#x27;reports&#x27;, &#x27;api-round1.json&#x27;), &#x27;utf8&#x27;);
+    expect(JSON.parse(raw)).toEqual({ ok: true });
+  });
+
+  it(&#x27;load ปฏิเสธ state ที่ version ไม่ตรง&#x27;, async () =&gt; {
+    await fs.mkdir(jobDir, { recursive: true });
+    await fs.writeFile(path.join(jobDir, &#x27;state.json&#x27;), JSON.stringify({ version: 99 }), &#x27;utf8&#x27;);
+    await expect(new FileStateStore(jobDir).load()).rejects.toThrow(&#x27;version&#x27;);
+  });
+
+  it(&#x27;save ตั้ง updatedAt จากนาฬิกาทุกครั้ง&#x27;, async () =&gt; {
+    const store = new FileStateStore(jobDir, clock);
+    const state = newState();
+    await store.save(state);
+    expect(state.updatedAt).toBe(&#x27;2026-09-25T02:30:00.000Z&#x27;);
+    expect((await store.load())?.updatedAt).toBe(&#x27;2026-09-25T02:30:00.000Z&#x27;);
+  });
+
+  it(&#x27;lastBuildAt ไม่ถูกตั้งตอนเพิ่งเข้า BUILD (ยังไม่มีรอบ)&#x27;, async () =&gt; {
+    const state = buildState();
+    await new FileStateStore(jobDir, clock).save(state);
+    expect(state.lastBuildAt).toBeUndefined();
+  });
+
+  it(&#x27;lastBuildAt ถูกตั้งเมื่ออยู่ BUILD และมี rounds &gt; 0&#x27;, async () =&gt; {
+    const state = buildState();
+    state.progress.api!.rounds = 1;
+    await new FileStateStore(jobDir, clock).save(state);
+    expect(state.lastBuildAt).toBe(&#x27;2026-09-25T02:30:00.000Z&#x27;);
+  });
+
+  it(&#x27;นอกเฟส BUILD ไม่แตะ lastBuildAt เดิม&#x27;, async () =&gt; {
+    const state = buildState();
+    state.progress.api!.rounds = 2;
+    state.phase = &#x27;DELIVER&#x27;;
+    state.lastBuildAt = &#x27;2026-09-01T00:00:00.000Z&#x27;;
+    await new FileStateStore(jobDir, clock).save(state);
+    expect(state.lastBuildAt).toBe(&#x27;2026-09-01T00:00:00.000Z&#x27;);
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/state.test.ts</code><br>
+     คาดหวัง: FAIL — เทสต์ path (<code>&lt;jobDir&gt;/state.json</code>), <code>updatedAt</code> และ <code>lastBuildAt</code> ไม่ผ่าน เพราะ store ยังเขียนที่ <code>&lt;dir&gt;/.agent-team/state.json</code> และยังไม่ตั้ง field ใหม่</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation (แทนที่ทั้งไฟล์ src/state.ts)</strong></span></p>
+<pre><code>import * as fs from &#x27;node:fs/promises&#x27;;
+import * as path from &#x27;node:path&#x27;;
+import type { StateStore } from &#x27;./deps&#x27;;
+import type { Design, QAReport, Requirements } from &#x27;./schemas&#x27;;
+
+export type Phase =
+  | &#x27;REQUIREMENTS&#x27;
+  | &#x27;DESIGN&#x27;
+  | &#x27;REVIEW&#x27;
+  | &#x27;BUILD&#x27;
+  | &#x27;DELIVER&#x27;
+  | &#x27;DONE&#x27;
+  | &#x27;ABORTED&#x27;;
+
+export interface TaskProgress {
+  rounds: number;
+  maxRounds: number;
+  done: boolean;
+  acceptedWithIssues: boolean;
+  securityReviewed: boolean;
+  lastReport?: QAReport;
+}
+
+export interface State {
+  version: 1;
+  phase: Phase;
+  /** ชื่องาน จากข้อความแรกที่ user พิมพ์ใน REQUIREMENTS */
+  title?: string;
+  /** ISO 8601 ตั้งทุกครั้งที่ save */
+  updatedAt?: string;
+  /** ISO 8601 ตั้งตอน save ในเฟส BUILD ที่มีรอบแล้ว (worker แก้โค้ดได้แค่ในเฟสนี้) */
+  lastBuildAt?: string;
+  pmSessionId?: string;
+  pendingPrompt?: string;
+  designFeedback?: string;
+  requirements?: Requirements;
+  design?: Design;
+  progress: Record&lt;string, TaskProgress&gt;;
+}
+
+export function newState(): State {
+  return { version: 1, phase: &#x27;REQUIREMENTS&#x27;, progress: {} };
+}
+
+/** เก็บ state และ artifact ของงานหนึ่งงานในโฟลเดอร์ .agent-team/jobs/&lt;jobId&gt;/ */
+export class FileStateStore implements StateStore {
+  constructor(
+    private readonly dir: string,
+    private readonly now: () =&gt; Date = () =&gt; new Date(),
+  ) {}
+
+  async load(): Promise&lt;State | undefined&gt; {
+    let raw: string;
+    try {
+      raw = await fs.readFile(path.join(this.dir, &#x27;state.json&#x27;), &#x27;utf8&#x27;);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === &#x27;ENOENT&#x27;) return undefined;
+      throw e;
+    }
+    const parsed = JSON.parse(raw) as { version?: number };
+    if (parsed.version !== 1) {
+      throw new Error(`state.json มี version ที่ไม่รองรับ: ${String(parsed.version)}`);
+    }
+    return parsed as State;
+  }
+
+  async save(state: State): Promise&lt;void&gt; {
+    const at = this.now().toISOString();
+    state.updatedAt = at;
+    if (state.phase === &#x27;BUILD&#x27; &amp;&amp; Object.values(state.progress).some((p) =&gt; p.rounds &gt; 0)) {
+      state.lastBuildAt = at;
+    }
+    await fs.mkdir(this.dir, { recursive: true });
+    const file = path.join(this.dir, &#x27;state.json&#x27;);
+    const tmp = `${file}.tmp`;
+    await fs.writeFile(tmp, JSON.stringify(state, null, 2), &#x27;utf8&#x27;);
+    await fs.rename(tmp, file);
+  }
+
+  async saveArtifact(name: string, data: unknown): Promise&lt;void&gt; {
+    const file = path.join(this.dir, name);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, JSON.stringify(data, null, 2), &#x27;utf8&#x27;);
+  }
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: ให้ index.ts ยังเขียนที่เดิม (.agent-team/) ระหว่างที่ยังไม่มีเมนู</strong></span></p>
+  <p>ใน <code>src/index.ts</code> เปลี่ยนบรรทัด</p>
+<pre><code>  const store = new FileStateStore(args.projectDir);</code></pre>
+  <p>เป็น</p>
+<pre><code>  const store = new FileStateStore(path.join(args.projectDir, &#x27;.agent-team&#x27;));</code></pre>
+  <p>(<code>path</code> ถูก import อยู่แล้ว; บรรทัดนี้จะถูกแทนทั้งไฟล์ใน Task 9)</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: รัน test ทั้งหมด + typecheck</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/state.test.ts &amp;&amp; npm test &amp;&amp; npm run typecheck</code><br>
+     คาดหวัง: PASS ทั้งหมด, typecheck ไม่มี error</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: Commit</strong></span></p>
+<pre><code>git add src/state.ts src/index.ts tests/state.test.ts
+git commit -m &quot;feat: job-scoped FileStateStore with updatedAt/lastBuildAt&quot; -m &quot;Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;&quot;</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 2: runTeam(deps) ไม่มี flag resume</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/orchestrator.ts:9-26</code></li>
+    <li>แก้ไข: <code>src/index.ts</code> (บรรทัดที่เรียก <code>runTeam</code>)</li>
+    <li>เทสต์: <code>tests/orchestrator.test.ts</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): ไม่มี (ใช้ <code>StateStore</code> เดิม)</li>
+    <li>ส่งต่อ (Produces): <code>runTeam(deps: Deps): Promise&lt;State&gt;</code> ใช้ <code>(await store.load()) ?? newState()</code> และ save เฉพาะเมื่อยังไม่มี state</li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>เพิ่มใน <code>tests/orchestrator.test.ts</code> เป็นเทสต์แรกใน <code>describe('runTeam', ...)</code>:</p>
+<pre><code>  it(&#x27;ไม่มี flag: ใช้ state ที่มีอยู่ทันที (งานที่จบแล้วคืนค่าเลยโดยไม่ save)&#x27;, async () =&gt; {
+    const { deps, runner, store } = makeDeps({}, []);
+    const done = buildState();
+    done.phase = &#x27;DONE&#x27;;
+    store.state = done;
+
+    const final = await runTeam(deps);
+
+    expect(final.phase).toBe(&#x27;DONE&#x27;);
+    expect(runner.calls).toHaveLength(0);
+    expect(store.saves).toBe(0);
+  });</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/orchestrator.test.ts -t &quot;ไม่มี flag&quot;</code><br>
+     คาดหวัง: FAIL ด้วย TypeError: Cannot read properties of undefined (reading 'resume')</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p>ใน <code>src/orchestrator.ts</code> แทนตั้งแต่ <code>export async function runTeam(</code> ถึงบรรทัด <code>log.log('INFO', 'team.start', ...)</code> ด้วย:</p>
+<pre><code>export async function runTeam(deps: Deps): Promise&lt;State&gt; {
+  const existing = await deps.store.load();
+  const state = existing ?? newState();
+  if (!existing) await deps.store.save(state);
+
+  const log = deps.log ?? nullLogger;
+  log.log(&#x27;INFO&#x27;, &#x27;team.start&#x27;, { phase: state.phase });</code></pre>
+  <p>ส่วน <code>while</code> loop ที่เหลือไม่เปลี่ยน ใน <code>src/index.ts</code> เปลี่ยน</p>
+<pre><code>    const final = await runTeam({ runner, io, store, config, log: logger }, { resume: args.resume });</code></pre>
+  <p>เป็น</p>
+<pre><code>    const final = await runTeam({ runner, io, store, config, log: logger });</code></pre>
+  <p>(ระหว่าง Task 2 ถึง Task 8 การรันโดยไม่ใส่ <code>--resume</code> จะทำต่อ state เดิมเงียบ ๆ ซึ่งจะถูกแทนด้วยเมนูใน Task 9)</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: ปรับเทสต์เดิมให้เข้ากับ signature ใหม่</strong></span></p>
+  <p>4a. เปลี่ยนทุกการเรียก <code>runTeam(deps..., { resume: ... })</code> เป็น <code>runTeam(deps...)</code>:</p>
+<pre><code>sed -i -E &#x27;s/runTeam\((deps( as any)?), \{ resume: (true|false) \}\)/runTeam(\1)/&#x27; tests/orchestrator.test.ts</code></pre>
+<pre><code>grep -n &quot;resume:&quot; tests/orchestrator.test.ts</code></pre>
+  <p>คาดหวัง: ไม่มีผลลัพธ์</p>
+  <p>4b. ลบ 3 เทสต์ที่พฤติกรรมไม่มีแล้ว (งานใหม่อยู่คนละโฟลเดอร์เสมอ): ลบข้อความทั้งหมด<strong>ตั้งแต่</strong>บรรทัด <code>  it('resume โดยไม่มี state -&gt; error', async () =&gt; {</code> <strong>จนถึงก่อน</strong>บรรทัด <code>  it('initial state is saved when first ask throws', async () =&gt; {</code> ช่วงนี้มีเทสต์ <code>resume โดยไม่มี state -&gt; error</code>, <code>เริ่มใหม่ทั้งที่มีงานค้าง -&gt; error บอกให้ใช้ --resume</code> และ <code>it.each</code> <code>เริ่มใหม่จากสถานะ $existingPhase ด้วย resume: false -&gt; ทำความสะอาดข้อมูลเก่า</code> (ก่อนแก้คือบรรทัด 165-214)</p>
+<pre><code>grep -n &quot;ไม่พบ state\|--resume\|ทำความสะอาดข้อมูลเก่า&quot; tests/orchestrator.test.ts</code></pre>
+  <p>คาดหวัง: ไม่มีผลลัพธ์ ส่วนเทสต์ <code>initial state is saved when first ask throws</code> ยังอยู่ โดย assertion ไม่ต้องแก้</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: รัน test ทั้งหมด + typecheck</strong></span></p>
+  <p>รัน: <code>npm test &amp;&amp; npm run typecheck</code><br>
+     คาดหวัง: PASS ทั้งหมด (จำนวนเทสต์ลดลง 3 จากก่อน task นี้: เพิ่ม 1 ลบ 4 เพราะ it.each นับเป็น 2), typecheck ไม่มี error</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: Commit</strong></span></p>
+<pre><code>git add src/orchestrator.ts src/index.ts tests/orchestrator.test.ts
+git commit -m &quot;refactor: runTeam loads or creates state without resume flag&quot; -m &quot;Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;&quot;</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 3: ตั้งชื่องาน (title) จากข้อความแรกใน REQUIREMENTS</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/phases/requirements.ts:12</code> (ต่อจากบรรทัด <code>let prompt = ...</code>)</li>
+    <li>เทสต์: <code>tests/phases/requirements.test.ts</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>State.title</code> จาก Task 1</li>
+    <li>ส่งต่อ (Produces): หลังได้ข้อความแรก ถ้า <code>!state.title &amp;&amp; !state.pmSessionId</code> จะตั้ง <code>state.title</code> (ตัดเหลือ 60 ตัวอักษร) แล้ว <code>store.save(state)</code> ก่อนเรียก PM</li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>เพิ่มท้าย <code>describe('runRequirements', ...)</code> ใน <code>tests/phases/requirements.test.ts</code>:</p>
+<pre><code>  it(&#x27;ตั้ง title จากข้อความแรกและ save ก่อนเรียก PM&#x27;, async () =&gt; {
+    const { deps, store } = makeDeps({ pm: [] }, [&#x27;อยากได้ระบบ todo&#x27;]);
+    const state = newState();
+    await expect(runRequirements(deps, state)).rejects.toThrow(&#x27;pm script หมด&#x27;);
+    expect(store.state?.title).toBe(&#x27;อยากได้ระบบ todo&#x27;);
+  });
+
+  it(&#x27;title ถูกตัดเหลือ 60 ตัวอักษร&#x27;, async () =&gt; {
+    const { deps } = makeDeps({ pm: [proposal()] }, [&#x27;ก&#x27;.repeat(80), &#x27;confirm&#x27;]);
+    const state = newState();
+    await runRequirements(deps, state);
+    expect(state.title).toBe(&#x27;ก&#x27;.repeat(60));
+  });
+
+  it(&#x27;ไม่เขียนทับ title ที่มีอยู่แล้ว&#x27;, async () =&gt; {
+    const { deps } = makeDeps({ pm: [proposal()] }, [&#x27;ข้อความใหม่&#x27;, &#x27;confirm&#x27;]);
+    const state = newState();
+    state.title = &#x27;ชื่อเดิม&#x27;;
+    await runRequirements(deps, state);
+    expect(state.title).toBe(&#x27;ชื่อเดิม&#x27;);
+  });
+
+  it(&#x27;ไม่ตั้ง title ถ้ามี pmSessionId อยู่แล้ว (งาน legacy ที่คุยค้าง)&#x27;, async () =&gt; {
+    const { deps } = makeDeps({ pm: [proposal()] }, [&#x27;ต่อเลย&#x27;, &#x27;confirm&#x27;]);
+    const state = newState();
+    state.pmSessionId = &#x27;pm-session&#x27;;
+    await runRequirements(deps, state);
+    expect(state.title).toBeUndefined();
+  });</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/phases/requirements.test.ts</code><br>
+     คาดหวัง: FAIL 2 เทสต์ (<code>ตั้ง title ...</code> และ <code>title ถูกตัด ...</code>) เพราะ title ยังเป็น undefined</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p>ใน <code>src/phases/requirements.ts</code> ต่อจากบรรทัด</p>
+<pre><code>  let prompt = state.pendingPrompt ?? (await askNonEmpty(io, opening));</code></pre>
+  <p>เพิ่ม:</p>
+<pre><code>  if (!state.title &amp;&amp; !state.pmSessionId) {
+    // save ก่อนเรียก PM: ถ้า Ctrl+C ระหว่าง PM ตอบ งานก็ยังมีชื่อ ไม่กลายเป็นงานเปล่า
+    state.title = Array.from(prompt).slice(0, 60).join(&#x27;&#x27;);
+    await store.save(state);
+  }</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test ทั้งหมด + typecheck</strong></span></p>
+  <p>รัน: <code>npm test &amp;&amp; npm run typecheck</code><br>
+     คาดหวัง: PASS ทั้งหมด, typecheck ไม่มี error</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/phases/requirements.ts tests/phases/requirements.test.ts
+git commit -m &quot;feat: record job title from first requirements message&quot; -m &quot;Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;&quot;</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 4: JobRepository — create / list / lock / unlock / remove</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/jobs.ts</code></li>
+    <li>เทสต์: <code>tests/jobs.test.ts</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>new FileStateStore(dir, now)</code>, <code>newState()</code>, <code>State</code> จาก Task 1; <code>Logger</code>, <code>nullLogger</code> จาก <code>src/logger.ts</code></li>
+    <li>ส่งต่อ (Produces): <code>interface JobLock { pid: number; startedAt: string }</code>; <code>interface JobInfo { id: string; state: State; updatedAt: Date; lock?: JobLock }</code>; <code>interface JobRepositoryOptions { now?; log?; pid?; isAlive? }</code>; <code>isProcessAlive(pid): boolean</code>; <code>formatJobId(d: Date): string</code>; <code>isEmptyJob(state: State): boolean</code>; <code>class JobRepository(projectDir, opts?)</code> มี <code>root</code>, <code>jobsDir</code>, <code>jobDir(id)</code>, <code>lockPath(id)</code>, <code>store(id): FileStateStore</code>, <code>create(): Promise&lt;{ id: string; store: FileStateStore }&gt;</code>, <code>list(): Promise&lt;JobInfo[]&gt;</code>, <code>lock(id): Promise&lt;boolean&gt;</code>, <code>unlock(id): Promise&lt;void&gt;</code>, <code>unlockSync(id): void</code>, <code>remove(id): Promise&lt;void&gt;</code></li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail (สร้าง tests/jobs.test.ts)</strong></span></p>
+<pre><code>import { spawnSync } from &#x27;node:child_process&#x27;;
+import { existsSync } from &#x27;node:fs&#x27;;
+import * as fs from &#x27;node:fs/promises&#x27;;
+import * as os from &#x27;node:os&#x27;;
+import * as path from &#x27;node:path&#x27;;
+import { beforeEach, describe, expect, it } from &#x27;vitest&#x27;;
+import {
+  formatJobId,
+  isEmptyJob,
+  isProcessAlive,
+  JobRepository,
+  type JobRepositoryOptions,
+} from &#x27;../src/jobs&#x27;;
+import { newState } from &#x27;../src/state&#x27;;
+import { buildState } from &#x27;./helpers/builders&#x27;;
+
+let projectDir: string;
+const at = new Date(2026, 8, 25, 9, 30, 15);
+const alive = new Set&lt;number&gt;();
+const make = (opts: JobRepositoryOptions = {}) =&gt;
+  new JobRepository(projectDir, { now: () =&gt; at, pid: 1000, isAlive: (pid) =&gt; alive.has(pid), ...opts });
+
+beforeEach(async () =&gt; {
+  projectDir = await fs.mkdtemp(path.join(os.tmpdir(), &#x27;agent-team-jobs-&#x27;));
+  alive.clear();
+  alive.add(1000);
+});
+
+describe(&#x27;formatJobId&#x27;, () =&gt; {
+  it(&#x27;ใช้เวลาท้องถิ่นรูปแบบ YYYYMMDD-HHmmss&#x27;, () =&gt; {
+    expect(formatJobId(new Date(2026, 0, 2, 3, 4, 5))).toBe(&#x27;20260102-030405&#x27;);
+  });
+});
+
+describe(&#x27;isProcessAlive&#x27;, () =&gt; {
+  it(&#x27;process ตัวเองยังอยู่&#x27;, () =&gt; {
+    expect(isProcessAlive(process.pid)).toBe(true);
+  });
+
+  it(&#x27;process ที่จบไปแล้วไม่อยู่&#x27;, () =&gt; {
+    const child = spawnSync(process.execPath, [&#x27;-e&#x27;, &#x27;&#x27;]);
+    expect(isProcessAlive(child.pid!)).toBe(false);
+  });
+});
+
+describe(&#x27;isEmptyJob&#x27;, () =&gt; {
+  it(&#x27;งานใหม่ที่ยังไม่มีอะไรเลยเป็นงานเปล่า&#x27;, () =&gt; {
+    expect(isEmptyJob(newState())).toBe(true);
+  });
+
+  it(&#x27;มี title หรือ pmSessionId แล้วไม่ใช่งานเปล่า&#x27;, () =&gt; {
+    const titled = newState();
+    titled.title = &#x27;x&#x27;;
+    const talked = newState();
+    talked.pmSessionId = &#x27;s&#x27;;
+    expect(isEmptyJob(titled)).toBe(false);
+    expect(isEmptyJob(talked)).toBe(false);
+  });
+
+  it(&#x27;เฟสอื่นไม่ใช่งานเปล่า&#x27;, () =&gt; {
+    expect(isEmptyJob(buildState())).toBe(false);
+  });
+});
+
+describe(&#x27;JobRepository&#x27;, () =&gt; {
+  it(&#x27;create สร้างโฟลเดอร์งาน, lock และ state.json เริ่มต้น&#x27;, async () =&gt; {
+    const repo = make();
+    const { id } = await repo.create();
+    expect(id).toBe(&#x27;20260925-093015&#x27;);
+    const dir = path.join(projectDir, &#x27;.agent-team&#x27;, &#x27;jobs&#x27;, id);
+    expect(JSON.parse(await fs.readFile(path.join(dir, &#x27;state.json&#x27;), &#x27;utf8&#x27;)).phase).toBe(&#x27;REQUIREMENTS&#x27;);
+    expect(JSON.parse(await fs.readFile(path.join(dir, &#x27;run.lock&#x27;), &#x27;utf8&#x27;))).toEqual({
+      pid: 1000,
+      startedAt: at.toISOString(),
+    });
+  });
+
+  it(&#x27;create ในวินาทีเดียวกันได้ id ไม่ซ้ำ&#x27;, async () =&gt; {
+    const repo = make();
+    const ids = [(await repo.create()).id, (await repo.create()).id, (await repo.create()).id];
+    expect(ids).toEqual([&#x27;20260925-093015&#x27;, &#x27;20260925-093015-2&#x27;, &#x27;20260925-093015-3&#x27;]);
+  });
+
+  it(&#x27;list คืนงานพร้อม updatedAt และข้ามโฟลเดอร์ที่ไม่มี/อ่าน state ไม่ได้&#x27;, async () =&gt; {
+    const events: string[] = [];
+    const repo = make({ log: { log: (_level, event) =&gt; void events.push(event) } });
+    const { id, store } = await repo.create();
+    await store.save(buildState());
+    await fs.mkdir(path.join(repo.jobsDir, &#x27;no-state&#x27;));
+    await fs.mkdir(path.join(repo.jobsDir, &#x27;broken&#x27;));
+    await fs.writeFile(path.join(repo.jobsDir, &#x27;broken&#x27;, &#x27;state.json&#x27;), &#x27;{bad&#x27;, &#x27;utf8&#x27;);
+
+    const jobs = await repo.list();
+
+    expect(jobs.map((j) =&gt; j.id)).toEqual([id]);
+    expect(jobs[0]!.state.phase).toBe(&#x27;BUILD&#x27;);
+    expect(jobs[0]!.updatedAt.getTime()).toBe(at.getTime());
+    expect(events).toEqual(expect.arrayContaining([&#x27;job.missing_state&#x27;, &#x27;job.unreadable&#x27;]));
+  });
+
+  it(&#x27;list คืน [] เมื่อยังไม่มีโฟลเดอร์ jobs&#x27;, async () =&gt; {
+    expect(await make().list()).toEqual([]);
+  });
+
+  it(&#x27;list แสดง lock เฉพาะเมื่อ process ที่ถือยังอยู่&#x27;, async () =&gt; {
+    const repo = make();
+    const { id } = await repo.create();
+    expect((await repo.list())[0]!.lock).toEqual({ pid: 1000, startedAt: at.toISOString() });
+
+    await repo.unlock(id);
+    alive.add(2000);
+    expect(await make({ pid: 2000 }).lock(id)).toBe(true);
+    expect((await repo.list())[0]!.lock?.pid).toBe(2000);
+
+    alive.delete(2000);
+    expect((await repo.list())[0]!.lock).toBeUndefined();
+  });
+
+  it(&#x27;lock ไม่ได้ถ้า process อื่นที่ยังอยู่ถือ lock&#x27;, async () =&gt; {
+    const { id } = await make().create();
+    alive.add(2000);
+    expect(await make({ pid: 2000 }).lock(id)).toBe(false);
+  });
+
+  it(&#x27;lock ซ้ำโดย process เดิมสำเร็จ&#x27;, async () =&gt; {
+    const repo = make();
+    const { id } = await repo.create();
+    expect(await repo.lock(id)).toBe(true);
+  });
+
+  it(&#x27;lock ค้างจาก pid ที่ตายแล้วถูกลบแล้วได้ lock ใหม่&#x27;, async () =&gt; {
+    const repo = make();
+    const { id } = await repo.create();
+    alive.delete(1000);
+    expect(await make({ pid: 2000 }).lock(id)).toBe(true);
+    expect(JSON.parse(await fs.readFile(repo.lockPath(id), &#x27;utf8&#x27;)).pid).toBe(2000);
+  });
+
+  it(&#x27;ไฟล์ lock พังถือว่าค้าง&#x27;, async () =&gt; {
+    const repo = make();
+    const { id } = await repo.create();
+    await fs.writeFile(repo.lockPath(id), &#x27;garbage&#x27;, &#x27;utf8&#x27;);
+    expect(await make({ pid: 2000 }).lock(id)).toBe(true);
+  });
+
+  it(&#x27;unlock/unlockSync ลบเฉพาะ lock ของตัวเอง&#x27;, async () =&gt; {
+    const repo = make();
+    const { id } = await repo.create();
+    const other = make({ pid: 2000 });
+
+    await other.unlock(id);
+    other.unlockSync(id);
+    expect(existsSync(repo.lockPath(id))).toBe(true);
+
+    repo.unlockSync(id);
+    expect(existsSync(repo.lockPath(id))).toBe(false);
+
+    await repo.lock(id);
+    await repo.unlock(id);
+    expect(existsSync(repo.lockPath(id))).toBe(false);
+  });
+
+  it(&#x27;unlock ไม่ throw เมื่อไม่มีไฟล์ lock&#x27;, async () =&gt; {
+    const repo = make();
+    const { id } = await repo.create();
+    await repo.unlock(id);
+    await expect(repo.unlock(id)).resolves.toBeUndefined();
+    expect(() =&gt; repo.unlockSync(id)).not.toThrow();
+  });
+
+  it(&#x27;remove ลบทั้งโฟลเดอร์งาน&#x27;, async () =&gt; {
+    const repo = make();
+    const { id, store } = await repo.create();
+    await store.saveArtifact(&#x27;design.json&#x27;, {});
+    await repo.remove(id);
+    expect(existsSync(repo.jobDir(id))).toBe(false);
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/jobs.test.ts</code><br>
+     คาดหวัง: FAIL ด้วย "Failed to load url ../src/jobs" (ยังไม่มีไฟล์)</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation (สร้าง src/jobs.ts)</strong></span></p>
+<pre><code>import * as fs from &#x27;node:fs&#x27;;
+import * as fsp from &#x27;node:fs/promises&#x27;;
+import * as path from &#x27;node:path&#x27;;
+import { nullLogger, type Logger } from &#x27;./logger&#x27;;
+import { FileStateStore, newState, type State } from &#x27;./state&#x27;;
+
+export interface JobLock {
+  pid: number;
+  startedAt: string;
+}
+
+export interface JobInfo {
+  id: string;
+  state: State;
+  updatedAt: Date;
+  /** มีค่าเมื่อ process ที่ถือ lock ยังทำงานอยู่ */
+  lock?: JobLock;
+}
+
+export interface JobRepositoryOptions {
+  now?: () =&gt; Date;
+  log?: Logger;
+  /** pid ของ process นี้ (เทสต์ส่งค่าปลอมได้) */
+  pid?: number;
+  /** เช็กว่า pid ยังทำงานอยู่ไหม (เทสต์ส่งค่าปลอมได้) */
+  isAlive?: (pid: number) =&gt; boolean;
+}
+
+const errCode = (e: unknown): string | undefined =&gt; (e as NodeJS.ErrnoException).code;
+const errMessage = (e: unknown): string =&gt; (e instanceof Error ? e.message : String(e));
+
+export function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // EPERM = process มีอยู่แต่เราไม่มีสิทธิ์ส่ง signal
+    return errCode(e) === &#x27;EPERM&#x27;;
+  }
+}
+
+export function formatJobId(d: Date): string {
+  const p = (n: number) =&gt; String(n).padStart(2, &#x27;0&#x27;);
+  return (
+    `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` +
+    `-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
+  );
+}
+
+/** งานที่ยังไม่มีข้อมูลอะไรเลย เช่นกด n แล้ว Ctrl+C ก่อนพิมพ์ */
+export function isEmptyJob(state: State): boolean {
+  return state.phase === &#x27;REQUIREMENTS&#x27; &amp;&amp; !state.title &amp;&amp; !state.pmSessionId &amp;&amp; !state.requirements;
+}
+
+function parseLock(raw: string): JobLock | undefined {
+  try {
+    const data = JSON.parse(raw) as Partial&lt;JobLock&gt;;
+    if (typeof data.pid === &#x27;number&#x27; &amp;&amp; typeof data.startedAt === &#x27;string&#x27;) {
+      return { pid: data.pid, startedAt: data.startedAt };
+    }
+  } catch {
+    // ไฟล์ lock พัง = ถือว่าค้าง
+  }
+  return undefined;
+}
+
+export class JobRepository {
+  readonly root: string;
+  readonly jobsDir: string;
+  private readonly now: () =&gt; Date;
+  private readonly log: Logger;
+  private readonly pid: number;
+  private readonly isAlive: (pid: number) =&gt; boolean;
+
+  constructor(projectDir: string, opts: JobRepositoryOptions = {}) {
+    this.root = path.join(projectDir, &#x27;.agent-team&#x27;);
+    this.jobsDir = path.join(this.root, &#x27;jobs&#x27;);
+    this.now = opts.now ?? (() =&gt; new Date());
+    this.log = opts.log ?? nullLogger;
+    this.pid = opts.pid ?? process.pid;
+    this.isAlive = opts.isAlive ?? isProcessAlive;
+  }
+
+  jobDir(id: string): string {
+    return path.join(this.jobsDir, id);
+  }
+
+  lockPath(id: string): string {
+    return path.join(this.jobDir(id), &#x27;run.lock&#x27;);
+  }
+
+  store(id: string): FileStateStore {
+    return new FileStateStore(this.jobDir(id), this.now);
+  }
+
+  async create(): Promise&lt;{ id: string; store: FileStateStore }&gt; {
+    await fsp.mkdir(this.jobsDir, { recursive: true });
+    const base = formatJobId(this.now());
+    for (let n = 1; ; n++) {
+      const id = n === 1 ? base : `${base}-${n}`;
+      try {
+        // ไม่ recursive: EEXIST = มีงาน (หรืออีก process) ใช้ชื่อนี้แล้ว
+        await fsp.mkdir(this.jobDir(id));
+      } catch (e) {
+        if (errCode(e) === &#x27;EEXIST&#x27;) continue;
+        throw e;
+      }
+      // lock ก่อน state.json เพื่อไม่ให้อีก process เห็นเป็นงานเปล่าที่ไม่มีใครถือ
+      if (!(await this.lock(id))) throw new Error(`lock งานใหม่ ${id} ไม่สำเร็จ`);
+      const store = this.store(id);
+      await store.save(newState());
+      return { id, store };
+    }
+  }
+
+  async list(): Promise&lt;JobInfo[]&gt; {
+    let entries: fs.Dirent[];
+    try {
+      entries = await fsp.readdir(this.jobsDir, { withFileTypes: true });
+    } catch (e) {
+      if (errCode(e) === &#x27;ENOENT&#x27;) return [];
+      throw e;
+    }
+    const ids = entries.filter((d) =&gt; d.isDirectory()).map((d) =&gt; d.name).sort();
+    const jobs: JobInfo[] = [];
+    for (const id of ids) {
+      let state: State | undefined;
+      try {
+        state = await this.store(id).load();
+      } catch (e) {
+        this.log.log(&#x27;WARN&#x27;, &#x27;job.unreadable&#x27;, { jobId: id, message: errMessage(e) });
+        continue;
+      }
+      if (!state) {
+        this.log.log(&#x27;WARN&#x27;, &#x27;job.missing_state&#x27;, { jobId: id });
+        continue;
+      }
+      const updatedAt = state.updatedAt
+        ? new Date(state.updatedAt)
+        : (await fsp.stat(path.join(this.jobDir(id), &#x27;state.json&#x27;))).mtime;
+      const lock = await this.liveLock(id);
+      jobs.push(lock ? { id, state, updatedAt, lock } : { id, state, updatedAt });
+    }
+    return jobs;
+  }
+
+  async lock(id: string): Promise&lt;boolean&gt; {
+    const file = this.lockPath(id);
+    const body = JSON.stringify({ pid: this.pid, startedAt: this.now().toISOString() });
+    if (await this.tryCreateLock(file, body)) return true;
+    const held = await this.readLock(file);
+    if (held?.pid === this.pid) return true;
+    if (held &amp;&amp; this.isAlive(held.pid)) return false;
+    // lock ค้าง: ลบแล้วลอง wx ใหม่ 1 ครั้ง (ไม่เขียนทับ) ถ้าอีก process ชิงไปก่อนจะได้ false
+    await fsp.rm(file, { force: true });
+    return this.tryCreateLock(file, body);
+  }
+
+  async unlock(id: string): Promise&lt;void&gt; {
+    const file = this.lockPath(id);
+    try {
+      if ((await this.readLock(file))?.pid === this.pid) await fsp.rm(file, { force: true });
+    } catch (e) {
+      this.log.log(&#x27;WARN&#x27;, &#x27;job.unlock_failed&#x27;, { jobId: id, message: errMessage(e) });
+    }
+  }
+
+  /** สำหรับ signal handler ที่จบด้วย process.exit จึงต้องเสร็จแบบ sync */
+  unlockSync(id: string): void {
+    const file = this.lockPath(id);
+    try {
+      if (parseLock(fs.readFileSync(file, &#x27;utf8&#x27;))?.pid === this.pid) fs.rmSync(file, { force: true });
+    } catch (e) {
+      if (errCode(e) !== &#x27;ENOENT&#x27;) {
+        this.log.log(&#x27;WARN&#x27;, &#x27;job.unlock_failed&#x27;, { jobId: id, message: errMessage(e) });
+      }
+    }
+  }
+
+  async remove(id: string): Promise&lt;void&gt; {
+    await fsp.rm(this.jobDir(id), { recursive: true, force: true });
+  }
+
+  private async tryCreateLock(file: string, body: string): Promise&lt;boolean&gt; {
+    try {
+      await fsp.writeFile(file, body, { encoding: &#x27;utf8&#x27;, flag: &#x27;wx&#x27; });
+      return true;
+    } catch (e) {
+      if (errCode(e) === &#x27;EEXIST&#x27;) return false;
+      throw e;
+    }
+  }
+
+  private async readLock(file: string): Promise&lt;JobLock | undefined&gt; {
+    try {
+      return parseLock(await fsp.readFile(file, &#x27;utf8&#x27;));
+    } catch (e) {
+      if (errCode(e) === &#x27;ENOENT&#x27;) return undefined;
+      throw e;
+    }
+  }
+
+  private async liveLock(id: string): Promise&lt;JobLock | undefined&gt; {
+    const held = await this.readLock(this.lockPath(id));
+    if (!held) return undefined;
+    return held.pid === this.pid || this.isAlive(held.pid) ? held : undefined;
+  }
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test ทั้งหมด + typecheck</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/jobs.test.ts &amp;&amp; npm test &amp;&amp; npm run typecheck</code><br>
+     คาดหวัง: PASS ทั้งหมด (tests/jobs.test.ts 18 เทสต์), typecheck ไม่มี error</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/jobs.ts tests/jobs.test.ts
+git commit -m &quot;feat: add JobRepository with per-job folders and pid lock&quot; -m &quot;Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;&quot;</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 5: ย้าย state แบบเก่าเข้า jobs/ (migrateLegacy)</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/jobs.ts</code> (เพิ่ม option <code>rename</code>, ค่าคงที่ และ 3 เมธอด)</li>
+    <li>เทสต์: <code>tests/jobs.test.ts</code> (เพิ่ม describe ท้ายไฟล์)</li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>JobRepository</code>, <code>formatJobId</code>, <code>make</code>/<code>alive</code>/<code>projectDir</code> ในไฟล์เทสต์จาก Task 4</li>
+    <li>ส่งต่อ (Produces): <code>JobRepository.migrateLegacy(): Promise&lt;void&gt;</code>; <code>JobRepositoryOptions.rename?: (from: string, to: string) =&gt; Promise&lt;void&gt;</code> (ค่าเริ่มต้น <code>fs.promises.rename</code> ใช้ให้เทสต์จำลองการย้ายล้ม)</li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail (เพิ่มท้าย tests/jobs.test.ts)</strong></span></p>
+<pre><code>describe(&#x27;migrateLegacy&#x27;, () =&gt; {
+  const legacyAt = new Date(2026, 8, 20, 8, 0, 0);
+  const legacyId = &#x27;20260920-080000&#x27;;
+  const allFiles = [&#x27;state.json&#x27;, &#x27;requirements.json&#x27;, &#x27;design.json&#x27;, &#x27;reports/api-round1.json&#x27;];
+
+  async function writeLegacy(files: string[] = allFiles): Promise&lt;string&gt; {
+    const root = path.join(projectDir, &#x27;.agent-team&#x27;);
+    for (const f of files) {
+      const file = path.join(root, f);
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      const body = f === &#x27;state.json&#x27; ? JSON.stringify(buildState()) : JSON.stringify({ file: f });
+      await fs.writeFile(file, body, &#x27;utf8&#x27;);
+    }
+    if (files.includes(&#x27;state.json&#x27;)) await fs.utimes(path.join(root, &#x27;state.json&#x27;), legacyAt, legacyAt);
+    return root;
+  }
+
+  const failOn = (name: string, code: string) =&gt; async (from: string, to: string) =&gt; {
+    if (from.endsWith(name)) throw Object.assign(new Error(`${code} ${name}`), { code });
+    await fs.rename(from, to);
+  };
+
+  it(&#x27;ย้าย state และ artifact ทั้งหมดเข้า jobs/&lt;id จาก mtime&gt;/ และไม่แตะ log&#x27;, async () =&gt; {
+    const root = await writeLegacy();
+    await fs.writeFile(path.join(root, &#x27;agent-team.log&#x27;), &#x27;old log\n&#x27;, &#x27;utf8&#x27;);
+    const repo = make();
+
+    await repo.migrateLegacy();
+
+    const dir = path.join(root, &#x27;jobs&#x27;, legacyId);
+    for (const f of allFiles) {
+      expect(existsSync(path.join(dir, f))).toBe(true);
+      expect(existsSync(path.join(root, f))).toBe(false);
+    }
+    expect(existsSync(path.join(root, &#x27;agent-team.log&#x27;))).toBe(true);
+    const jobs = await repo.list();
+    expect(jobs.map((j) =&gt; j.id)).toEqual([legacyId]);
+    expect(jobs[0]!.state.phase).toBe(&#x27;BUILD&#x27;);
+  });
+
+  it(&#x27;ไม่มี legacy ก็ไม่ทำอะไร&#x27;, async () =&gt; {
+    await make().migrateLegacy();
+    expect(existsSync(path.join(projectDir, &#x27;.agent-team&#x27;, &#x27;jobs&#x27;))).toBe(false);
+  });
+
+  it(&#x27;ย้ายค้างครึ่งทางจากรอบก่อน: ใช้โฟลเดอร์เดิมต่อจนครบ ไม่ต่อท้าย -2&#x27;, async () =&gt; {
+    const root = await writeLegacy();
+    const dir = path.join(root, &#x27;jobs&#x27;, legacyId);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.rename(path.join(root, &#x27;requirements.json&#x27;), path.join(dir, &#x27;requirements.json&#x27;));
+
+    await make().migrateLegacy();
+
+    expect(await fs.readdir(path.join(root, &#x27;jobs&#x27;))).toEqual([legacyId]);
+    for (const f of allFiles) expect(existsSync(path.join(dir, f))).toBe(true);
+  });
+
+  it(&#x27;rename ล้มกลางทาง: throw พร้อมชื่อไฟล์ state.json ยังอยู่ที่ root แล้วรอบถัดไปย้ายต่อได้&#x27;, async () =&gt; {
+    const root = await writeLegacy();
+
+    await expect(make({ rename: failOn(&#x27;design.json&#x27;, &#x27;EBUSY&#x27;) }).migrateLegacy()).rejects.toThrow(&#x27;design.json&#x27;);
+    expect(existsSync(path.join(root, &#x27;state.json&#x27;))).toBe(true);
+
+    await make().migrateLegacy();
+
+    expect(await fs.readdir(path.join(root, &#x27;jobs&#x27;))).toEqual([legacyId]);
+    for (const f of allFiles) expect(existsSync(path.join(root, &#x27;jobs&#x27;, legacyId, f))).toBe(true);
+    expect(existsSync(path.join(root, &#x27;state.json&#x27;))).toBe(false);
+  });
+
+  it(&#x27;rename ได้ ENOENT (อีก process ย้ายไปแล้ว): ข้ามไฟล์นั้นแล้วทำต่อ&#x27;, async () =&gt; {
+    const root = await writeLegacy();
+    await make({ rename: failOn(&#x27;design.json&#x27;, &#x27;ENOENT&#x27;) }).migrateLegacy();
+    expect(existsSync(path.join(root, &#x27;jobs&#x27;, legacyId, &#x27;state.json&#x27;))).toBe(true);
+  });
+
+  it(&#x27;artifact ค้างที่ root โดยไม่มี state.json: WARN และไม่ throw ไม่ย้าย&#x27;, async () =&gt; {
+    const events: string[] = [];
+    const root = await writeLegacy([&#x27;design.json&#x27;]);
+    await make({ log: { log: (_level, event) =&gt; void events.push(event) } }).migrateLegacy();
+    expect(events).toContain(&#x27;job.legacy_leftover&#x27;);
+    expect(existsSync(path.join(root, &#x27;design.json&#x27;))).toBe(true);
+  });
+
+  it(&#x27;id ชนกับงานที่มี state.json อยู่แล้ว: ต่อท้าย -2&#x27;, async () =&gt; {
+    const root = await writeLegacy();
+    const taken = path.join(root, &#x27;jobs&#x27;, legacyId);
+    await fs.mkdir(taken, { recursive: true });
+    await fs.writeFile(path.join(taken, &#x27;state.json&#x27;), JSON.stringify(buildState()), &#x27;utf8&#x27;);
+
+    await make().migrateLegacy();
+
+    expect(existsSync(path.join(root, &#x27;jobs&#x27;, `${legacyId}-2`, &#x27;state.json&#x27;))).toBe(true);
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/jobs.test.ts -t migrateLegacy</code><br>
+     คาดหวัง: FAIL ด้วย "repo.migrateLegacy is not a function"</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p>3a. ใน <code>src/jobs.ts</code> เพิ่ม field ใน <code>JobRepositoryOptions</code> (ต่อจาก <code>isAlive?</code>):</p>
+<pre><code>  /** ย้ายไฟล์/โฟลเดอร์ (เทสต์ส่งตัวที่ล้มได้) */
+  rename?: (from: string, to: string) =&gt; Promise&lt;void&gt;;</code></pre>
+  <p>3b. เพิ่มค่าคงที่ใต้ <code>errMessage</code>:</p>
+<pre><code>/** artifact แบบเก่าที่อยู่ที่ .agent-team/ (state.json ย้ายแยกเป็นอย่างสุดท้าย) */
+const LEGACY_ARTIFACTS = [&#x27;requirements.json&#x27;, &#x27;design.json&#x27;, &#x27;reports&#x27;] as const;</code></pre>
+  <p>3c. ในคลาส เพิ่ม field <code>private readonly rename: (from: string, to: string) =&gt; Promise&lt;void&gt;;</code> ต่อจาก <code>isAlive</code> และในคอนสตรักเตอร์เพิ่ม:</p>
+<pre><code>    this.rename = opts.rename ?? fsp.rename;</code></pre>
+  <p>3d. เพิ่มเมธอดต่อจาก <code>remove()</code>:</p>
+<pre><code>  /** ย้าย .agent-team/state.json แบบเก่า (ก่อนมีหลายงาน) เข้า jobs/&lt;id&gt;/ รันซ้ำได้ผลเดิม */
+  async migrateLegacy(): Promise&lt;void&gt; {
+    const legacyState = path.join(this.root, &#x27;state.json&#x27;);
+    if (!fs.existsSync(legacyState)) {
+      const leftovers = LEGACY_ARTIFACTS.filter((name) =&gt; fs.existsSync(path.join(this.root, name)));
+      if (leftovers.length &gt; 0) this.log.log(&#x27;WARN&#x27;, &#x27;job.legacy_leftover&#x27;, { files: leftovers });
+      return;
+    }
+    let mtime: Date;
+    try {
+      mtime = (await fsp.stat(legacyState)).mtime;
+    } catch (e) {
+      if (errCode(e) === &#x27;ENOENT&#x27;) return; // อีก process ย้ายไปแล้ว
+      throw e;
+    }
+    const id = this.legacyTarget(formatJobId(mtime));
+    const dir = this.jobDir(id);
+    // state.json ย้ายเป็นอย่างสุดท้าย: ถ้าล้มกลางทาง รอบหน้ายังเจอ state.json และได้ id เดิมจาก mtime
+    for (const name of [...LEGACY_ARTIFACTS, &#x27;state.json&#x27;]) {
+      await this.moveIfPresent(path.join(this.root, name), path.join(dir, name));
+    }
+    this.log.log(&#x27;INFO&#x27;, &#x27;job.migrated&#x27;, { jobId: id });
+  }
+
+  /** id จาก mtime; ใช้โฟลเดอร์ที่ยังไม่มี state.json ต่อได้ (ย้ายค้างจากรอบก่อน) ถ้าชนงานจริงค่อยต่อท้าย suffix */
+  private legacyTarget(base: string): string {
+    for (let n = 1; ; n++) {
+      const id = n === 1 ? base : `${base}-${n}`;
+      if (!fs.existsSync(path.join(this.jobDir(id), &#x27;state.json&#x27;))) return id;
+    }
+  }
+
+  private async moveIfPresent(from: string, to: string): Promise&lt;void&gt; {
+    if (!fs.existsSync(from)) return;
+    await fsp.mkdir(path.dirname(to), { recursive: true });
+    try {
+      await this.rename(from, to);
+    } catch (e) {
+      if (errCode(e) === &#x27;ENOENT&#x27;) return; // อีก process ที่เริ่มพร้อมกันย้ายไปแล้ว
+      throw new Error(`ย้าย ${from} ไป ${to} ไม่สำเร็จ: ${errMessage(e)}`);
+    }
+  }</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test ทั้งหมด + typecheck</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/jobs.test.ts &amp;&amp; npm test &amp;&amp; npm run typecheck</code><br>
+     คาดหวัง: PASS ทั้งหมด, typecheck ไม่มี error</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/jobs.ts tests/jobs.test.ts
+git commit -m &quot;feat: migrate legacy single-state folder into jobs/&quot; -m &quot;Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;&quot;</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 6: สรุปงานสำหรับเมนู (jobTitle / formatJobSummary / codeChangedWarning)</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/format.ts</code> (เพิ่ม import และฟังก์ชันท้ายไฟล์)</li>
+    <li>เทสต์: <code>tests/format.test.ts</code> (เพิ่ม import และ describe ท้ายไฟล์)</li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>JobInfo</code> (type) จาก Task 4; <code>State</code>, <code>Phase</code> จาก Task 1</li>
+    <li>ส่งต่อ (Produces): <code>jobTitle(state: State): string</code>; <code>formatJobSummary(job: JobInfo, n: number, warning?: string): string</code>; <code>codeChangedWarning(job: JobInfo, all: readonly JobInfo[]): string | undefined</code></li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>ใน <code>tests/format.test.ts</code> แก้ import บรรทัดบนเป็น:</p>
+<pre><code>import { describe, expect, it } from &#x27;vitest&#x27;;
+import { codeChangedWarning, formatDesign, formatJobSummary, formatRequirements, jobTitle } from &#x27;../src/format&#x27;;
+import type { JobInfo } from &#x27;../src/jobs&#x27;;
+import { newState, type State } from &#x27;../src/state&#x27;;
+import { buildState, makeDesign, makeRequirements } from &#x27;./helpers/builders&#x27;;</code></pre>
+  <p>แล้วเพิ่มท้ายไฟล์:</p>
+<pre><code>const lastRun = new Date(2026, 8, 24, 14, 10);
+const jobOf = (id: string, state: State, updatedAt = lastRun, lock?: JobInfo[&#x27;lock&#x27;]): JobInfo =&gt;
+  lock ? { id, state, updatedAt, lock } : { id, state, updatedAt };
+
+describe(&#x27;jobTitle&#x27;, () =&gt; {
+  it(&#x27;ใช้ requirements.goal ก่อน title&#x27;, () =&gt; {
+    const s = buildState();
+    s.title = &#x27;ข้อความแรก&#x27;;
+    expect(jobTitle(s)).toBe(&#x27;todo list&#x27;);
+  });
+
+  it(&#x27;ไม่มี requirements ใช้ title&#x27;, () =&gt; {
+    const s = newState();
+    s.title = &#x27;อยากได้ blog&#x27;;
+    expect(jobTitle(s)).toBe(&#x27;อยากได้ blog&#x27;);
+  });
+
+  it(&#x27;ไม่มีทั้งคู่ใช้ข้อความ fallback&#x27;, () =&gt; {
+    expect(jobTitle(newState())).toBe(&#x27;(ยังคุย requirements ไม่เสร็จ)&#x27;);
+  });
+});
+
+describe(&#x27;formatJobSummary&#x27;, () =&gt; {
+  it(&#x27;แสดงเลข ชื่อ เฟส ความคืบหน้า และเวลารันล่าสุด&#x27;, () =&gt; {
+    const s = buildState();
+    s.progress.api = { ...s.progress.api!, done: true, rounds: 1 };
+    s.progress.ui = { ...s.progress.ui!, rounds: 3 };
+    expect(formatJobSummary(jobOf(&#x27;a&#x27;, s), 1)).toBe(
+      &#x27;  1) &quot;todo list&quot; — เฟส BUILD (สร้างงาน/QA), เสร็จ 1/2 task (กำลังทำ ui: QA รอบ 3/5) · รันล่าสุด 2026-09-24 14:10&#x27;,
+    );
+  });
+
+  it(&#x27;ยังไม่มี design ไม่แสดงความคืบหน้า&#x27;, () =&gt; {
+    const s = newState();
+    s.title = &#x27;blog&#x27;;
+    expect(formatJobSummary(jobOf(&#x27;a&#x27;, s), 2)).toBe(
+      &#x27;  2) &quot;blog&quot; — เฟส REQUIREMENTS (คุย requirements กับ PM) · รันล่าสุด 2026-09-24 14:10&#x27;,
+    );
+  });
+
+  it(&#x27;มี design แต่ยังไม่มีรอบ ไม่แสดง &quot;กำลังทำ&quot;&#x27;, () =&gt; {
+    const s = buildState();
+    s.phase = &#x27;REVIEW&#x27;;
+    expect(formatJobSummary(jobOf(&#x27;a&#x27;, s), 1)).toContain(&#x27;เฟส REVIEW (รอยืนยัน design), เสร็จ 0/2 task · รันล่าสุด&#x27;);
+  });
+
+  it(&#x27;แสดงสถานะ lock และคำเตือนบรรทัดถัดไป&#x27;, () =&gt; {
+    const lock = { pid: 4120, startedAt: new Date(2026, 8, 25, 9, 12).toISOString() };
+    const text = formatJobSummary(jobOf(&#x27;a&#x27;, buildState(), lastRun, lock), 1, &#x27;⚠ เตือน&#x27;);
+    const [line, warning] = text.split(&#x27;\n&#x27;);
+    expect(line).toContain(&#x27;· รันล่าสุด 2026-09-24 14:10 (กำลังรันอยู่ pid 4120 ตั้งแต่ 09:12)&#x27;);
+    expect(warning).toBe(&#x27;     ⚠ เตือน&#x27;);
+  });
+});
+
+describe(&#x27;codeChangedWarning&#x27;, () =&gt; {
+  const me = jobOf(&#x27;me&#x27;, buildState());
+  const other = (id: string, title: string, lastBuild?: Date): JobInfo =&gt; {
+    const s = newState();
+    s.title = title;
+    if (lastBuild) s.lastBuildAt = lastBuild.toISOString();
+    return jobOf(id, s, new Date(2026, 8, 25, 12, 0));
+  };
+
+  it(&#x27;งานอื่นแค่คุยกับ PM (ไม่มี lastBuildAt) ไม่เตือน&#x27;, () =&gt; {
+    expect(codeChangedWarning(me, [me, other(&#x27;y&#x27;, &#x27;แค่คุย&#x27;)])).toBeUndefined();
+  });
+
+  it(&#x27;lastBuildAt ของงานอื่นเก่ากว่า updatedAt ของงานนี้ ไม่เตือน&#x27;, () =&gt; {
+    expect(codeChangedWarning(me, [me, other(&#x27;y&#x27;, &#x27;เก่า&#x27;, new Date(2026, 8, 23))])).toBeUndefined();
+  });
+
+  it(&#x27;งานอื่นแก้โค้ดหลังจากนี้ -&gt; เตือนพร้อมชื่องาน&#x27;, () =&gt; {
+    expect(codeChangedWarning(me, [me, other(&#x27;y&#x27;, &#x27;หน้า report&#x27;, new Date(2026, 8, 25, 9, 0))])).toBe(
+      &#x27;⚠ งาน &quot;หน้า report&quot; แก้โค้ดหลังจากงานนี้ โค้ดอาจเปลี่ยนไปแล้ว&#x27;,
+    );
+  });
+
+  it(&#x27;หลายงาน แสดงงานที่แก้ล่าสุดและจำนวนที่เหลือ&#x27;, () =&gt; {
+    const all = [me, other(&#x27;y&#x27;, &#x27;ก่อน&#x27;, new Date(2026, 8, 25, 8, 0)), other(&#x27;z&#x27;, &#x27;หลัง&#x27;, new Date(2026, 8, 25, 9, 0))];
+    expect(codeChangedWarning(me, all)).toBe(&#x27;⚠ งาน &quot;หลัง&quot; และอีก 1 งาน แก้โค้ดหลังจากงานนี้ โค้ดอาจเปลี่ยนไปแล้ว&#x27;);
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/format.test.ts</code><br>
+     คาดหวัง: FAIL ด้วย "jobTitle is not a function" (หรือ export ไม่มี)</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p>ใน <code>src/format.ts</code> แก้ import บรรทัดแรกเป็น:</p>
+<pre><code>import type { JobInfo } from &#x27;./jobs&#x27;;
+import type { Design, Requirements } from &#x27;./schemas&#x27;;
+import type { Phase, State } from &#x27;./state&#x27;;</code></pre>
+  <p>แล้วเพิ่มท้ายไฟล์:</p>
+<pre><code>const PHASE_LABELS: Record&lt;Phase, string&gt; = {
+  REQUIREMENTS: &#x27;คุย requirements กับ PM&#x27;,
+  DESIGN: &#x27;ออกแบบ&#x27;,
+  REVIEW: &#x27;รอยืนยัน design&#x27;,
+  BUILD: &#x27;สร้างงาน/QA&#x27;,
+  DELIVER: &#x27;รอตรวจรับ&#x27;,
+  DONE: &#x27;เสร็จแล้ว&#x27;,
+  ABORTED: &#x27;ยกเลิกแล้ว&#x27;,
+};
+
+const pad2 = (n: number): string =&gt; String(n).padStart(2, &#x27;0&#x27;);
+const hhmm = (d: Date): string =&gt; `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+const localDateTime = (d: Date): string =&gt;
+  `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${hhmm(d)}`;
+
+export function jobTitle(state: State): string {
+  return state.requirements?.goal ?? state.title ?? &#x27;(ยังคุย requirements ไม่เสร็จ)&#x27;;
+}
+
+function progressText(state: State): string | undefined {
+  const tasks = state.design?.tasks;
+  if (!tasks) return undefined;
+  const done = tasks.filter((t) =&gt; state.progress[t.id]?.done).length;
+  const current = tasks.find((t) =&gt; {
+    const p = state.progress[t.id];
+    return p !== undefined &amp;&amp; !p.done &amp;&amp; p.rounds &gt; 0;
+  });
+  const p = current ? state.progress[current.id] : undefined;
+  const working = current &amp;&amp; p ? ` (กำลังทำ ${current.id}: QA รอบ ${p.rounds}/${p.maxRounds})` : &#x27;&#x27;;
+  return `เสร็จ ${done}/${tasks.length} task${working}`;
+}
+
+/** หนึ่งงานในเมนูเลือกงาน: บรรทัดสรุป + คำเตือน (ถ้ามี) บรรทัดถัดไป */
+export function formatJobSummary(job: JobInfo, n: number, warning?: string): string {
+  const { state } = job;
+  const progress = progressText(state);
+  const lock = job.lock
+    ? ` (กำลังรันอยู่ pid ${job.lock.pid} ตั้งแต่ ${hhmm(new Date(job.lock.startedAt))})`
+    : &#x27;&#x27;;
+  const line =
+    `  ${n}) &quot;${jobTitle(state)}&quot; — เฟส ${state.phase} (${PHASE_LABELS[state.phase]})` +
+    `${progress ? `, ${progress}` : &#x27;&#x27;} · รันล่าสุด ${localDateTime(job.updatedAt)}${lock}`;
+  return warning ? `${line}\n     ${warning}` : line;
+}
+
+/** เตือนเมื่อมีงานอื่นแก้โค้ด (lastBuildAt) หลังจากงานนี้รันล่าสุด */
+export function codeChangedWarning(job: JobInfo, all: readonly JobInfo[]): string | undefined {
+  const newer = all
+    .filter(
+      (o) =&gt;
+        o.id !== job.id &amp;&amp;
+        o.state.lastBuildAt !== undefined &amp;&amp;
+        Date.parse(o.state.lastBuildAt) &gt; job.updatedAt.getTime(),
+    )
+    .sort((a, b) =&gt; Date.parse(b.state.lastBuildAt!) - Date.parse(a.state.lastBuildAt!));
+  const latest = newer[0];
+  if (!latest) return undefined;
+  const more = newer.length &gt; 1 ? ` และอีก ${newer.length - 1} งาน` : &#x27;&#x27;;
+  return `⚠ งาน &quot;${jobTitle(latest.state)}&quot;${more} แก้โค้ดหลังจากงานนี้ โค้ดอาจเปลี่ยนไปแล้ว`;
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test ทั้งหมด + typecheck</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/format.test.ts &amp;&amp; npm test &amp;&amp; npm run typecheck</code><br>
+     คาดหวัง: PASS ทั้งหมด, typecheck ไม่มี error</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/format.ts tests/format.test.ts
+git commit -m &quot;feat: format pending-job summaries and code-change warning&quot; -m &quot;Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;&quot;</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 7: เมนูเลือกงาน selectJob</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/job-menu.ts</code></li>
+    <li>เทสต์: <code>tests/job-menu.test.ts</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>JobRepository</code> (create/list/lock/unlock/remove/store/lockPath/migrateLegacy), <code>isEmptyJob</code>, <code>JobInfo</code> จาก Task 4-5; <code>jobTitle</code>, <code>formatJobSummary</code>, <code>codeChangedWarning</code> จาก Task 6; <code>UserIO</code>, <code>StateStore</code> จาก <code>src/deps.ts</code></li>
+    <li>ส่งต่อ (Produces): <code>interface SelectedJob { id: string; store: StateStore }</code>; <code>selectJob(repo: JobRepository, io: UserIO, opts: { resume: boolean }): Promise&lt;SelectedJob&gt;</code> งานที่คืนออกมาถูก lock ไว้แล้วเสมอ</li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail (สร้าง tests/job-menu.test.ts)</strong></span></p>
+<pre><code>import { existsSync, readFileSync } from &#x27;node:fs&#x27;;
+import * as fs from &#x27;node:fs/promises&#x27;;
+import * as os from &#x27;node:os&#x27;;
+import * as path from &#x27;node:path&#x27;;
+import { beforeEach, describe, expect, it } from &#x27;vitest&#x27;;
+import { selectJob } from &#x27;../src/job-menu&#x27;;
+import { JobRepository } from &#x27;../src/jobs&#x27;;
+import { newState, type State } from &#x27;../src/state&#x27;;
+import { buildState } from &#x27;./helpers/builders&#x27;;
+import { ScriptedIO } from &#x27;./helpers/fakes&#x27;;
+
+let projectDir: string;
+let clock: Date;
+const alive = new Set&lt;number&gt;();
+const repoFor = (pid: number) =&gt;
+  new JobRepository(projectDir, { now: () =&gt; clock, pid, isAlive: (p) =&gt; alive.has(p) });
+const d = (day: number, hour: number) =&gt; new Date(2026, 8, day, hour, 0, 0);
+
+beforeEach(async () =&gt; {
+  projectDir = await fs.mkdtemp(path.join(os.tmpdir(), &#x27;agent-team-menu-&#x27;));
+  clock = d(26, 12);
+  alive.clear();
+  alive.add(1000);
+});
+
+/** สร้างงานค้างที่ไม่มีใครถือ lock โดย updatedAt = at */
+async function seed(title: string, at: Date, edit: (s: State) =&gt; void = () =&gt; {}): Promise&lt;string&gt; {
+  clock = at;
+  const setup = repoFor(9999);
+  const { id, store } = await setup.create();
+  const s = newState();
+  s.title = title;
+  edit(s);
+  await store.save(s);
+  await setup.unlock(id);
+  clock = d(26, 12);
+  return id;
+}
+
+const lockHolder = (repo: JobRepository, id: string): number =&gt;
+  (JSON.parse(readFileSync(repo.lockPath(id), &#x27;utf8&#x27;)) as { pid: number }).pid;
+
+class HookIO extends ScriptedIO {
+  constructor(answers: string[], private readonly beforeAsk: (index: number) =&gt; Promise&lt;void&gt;) {
+    super(answers);
+  }
+  override async ask(prompt: string): Promise&lt;string&gt; {
+    await this.beforeAsk(this.asked.length);
+    return super.ask(prompt);
+  }
+}
+
+describe(&#x27;selectJob&#x27;, () =&gt; {
+  it(&#x27;ไม่มีงานค้าง: สร้างงานใหม่เลยโดยไม่ถาม&#x27;, async () =&gt; {
+    clock = d(26, 12);
+    const repo = repoFor(1000);
+    const io = new ScriptedIO([]);
+
+    const job = await selectJob(repo, io, { resume: false });
+
+    expect((await repo.list()).map((j) =&gt; j.id)).toEqual([job.id]);
+    expect(io.asked).toHaveLength(0);
+    expect((await job.store.load())?.phase).toBe(&#x27;REQUIREMENTS&#x27;);
+  });
+
+  it(&#x27;งานที่ DONE/ABORTED ไม่นับเป็นงานค้าง&#x27;, async () =&gt; {
+    await seed(&#x27;จบแล้ว&#x27;, d(24, 9), (s) =&gt; void (s.phase = &#x27;DONE&#x27;));
+    await seed(&#x27;ยกเลิก&#x27;, d(24, 10), (s) =&gt; void (s.phase = &#x27;ABORTED&#x27;));
+    const io = new ScriptedIO([]);
+    const job = await selectJob(repoFor(1000), io, { resume: false });
+    expect(io.asked).toHaveLength(0);
+    expect((await job.store.load())?.phase).toBe(&#x27;REQUIREMENTS&#x27;);
+  });
+
+  it(&#x27;ย้าย state แบบเก่าก่อนแสดงเมนู&#x27;, async () =&gt; {
+    const root = path.join(projectDir, &#x27;.agent-team&#x27;);
+    await fs.mkdir(root, { recursive: true });
+    await fs.writeFile(path.join(root, &#x27;state.json&#x27;), JSON.stringify(buildState()), &#x27;utf8&#x27;);
+    const io = new ScriptedIO([&#x27;r1&#x27;]);
+
+    const job = await selectJob(repoFor(1000), io, { resume: false });
+
+    expect((await job.store.load())?.phase).toBe(&#x27;BUILD&#x27;);
+    expect(io.said.join(&#x27;\n&#x27;)).toContain(&#x27;1) &quot;todo list&quot;&#x27;);
+  });
+
+  describe(&#x27;--resume&#x27;, () =&gt; {
+    it(&#x27;ไม่มีงานค้าง -&gt; error&#x27;, async () =&gt; {
+      await expect(selectJob(repoFor(1000), new ScriptedIO([]), { resume: true })).rejects.toThrow(
+        &#x27;ไม่พบงานค้างให้ resume&#x27;,
+      );
+    });
+
+    it(&#x27;เลือกงานค้างที่รันล่าสุด, lock และบอกชื่องาน&#x27;, async () =&gt; {
+      await seed(&#x27;เก่า&#x27;, d(24, 9));
+      const newer = await seed(&#x27;ใหม่&#x27;, d(25, 9));
+      const repo = repoFor(1000);
+      const io = new ScriptedIO([]);
+
+      const job = await selectJob(repo, io, { resume: true });
+
+      expect(job.id).toBe(newer);
+      expect(io.said).toContain(`ทำต่องาน &quot;ใหม่&quot; (${newer})`);
+      expect(lockHolder(repo, newer)).toBe(1000);
+    });
+
+    it(&#x27;ข้ามงานที่ process อื่นถือ lock อยู่&#x27;, async () =&gt; {
+      const older = await seed(&#x27;เก่า&#x27;, d(24, 9));
+      const newer = await seed(&#x27;ใหม่&#x27;, d(25, 9));
+      alive.add(2000);
+      await repoFor(2000).lock(newer);
+      const io = new ScriptedIO([]);
+
+      const job = await selectJob(repoFor(1000), io, { resume: true });
+
+      expect(job.id).toBe(older);
+      expect(io.said).toContain(`ทำต่องาน &quot;เก่า&quot; (${older})`);
+    });
+
+    it(&#x27;ทุกงานถูก lock -&gt; error&#x27;, async () =&gt; {
+      const only = await seed(&#x27;งาน&#x27;, d(24, 9));
+      alive.add(2000);
+      await repoFor(2000).lock(only);
+      await expect(selectJob(repoFor(1000), new ScriptedIO([]), { resume: true })).rejects.toThrow(
+        &#x27;งานค้างทั้งหมดกำลังรันอยู่ใน process อื่น&#x27;,
+      );
+    });
+  });
+
+  describe(&#x27;เมนู&#x27;, () =&gt; {
+    it(&#x27;เรียงใหม่ไปเก่า แล้ว r2 ทำต่องานที่ 2&#x27;, async () =&gt; {
+      const older = await seed(&#x27;เก่า&#x27;, d(24, 9));
+      await seed(&#x27;ใหม่&#x27;, d(25, 9));
+      const repo = repoFor(1000);
+      const io = new ScriptedIO([&#x27;r2&#x27;]);
+
+      const job = await selectJob(repo, io, { resume: false });
+
+      expect(job.id).toBe(older);
+      const menu = io.said.join(&#x27;\n&#x27;);
+      expect(menu).toContain(&#x27;[PM] มีงานค้าง 2 งาน:&#x27;);
+      expect(menu.indexOf(&#x27;1) &quot;ใหม่&quot;&#x27;)).toBeGreaterThanOrEqual(0);
+      expect(menu.indexOf(&#x27;2) &quot;เก่า&quot;&#x27;)).toBeGreaterThan(menu.indexOf(&#x27;1) &quot;ใหม่&quot;&#x27;));
+      expect(menu).toContain(&#x27;เลือก: r&lt;เลข&gt; = ทำต่องานนั้น   d&lt;เลข&gt; = ลบงานนั้น   n = เริ่มงานใหม่&#x27;);
+      expect(lockHolder(repo, older)).toBe(1000);
+    });
+
+    it(&#x27;n: สร้างงานใหม่ และงานค้างเดิมยังอยู่&#x27;, async () =&gt; {
+      const a = await seed(&#x27;เก่า&#x27;, d(24, 9));
+      const b = await seed(&#x27;ใหม่&#x27;, d(25, 9));
+      const repo = repoFor(1000);
+
+      const job = await selectJob(repo, new ScriptedIO([&#x27;new&#x27;]), { resume: false });
+
+      expect([a, b]).not.toContain(job.id);
+      expect((await repo.list()).map((j) =&gt; j.id).sort()).toEqual([a, b, job.id].sort());
+    });
+
+    it(&#x27;พิมพ์ผิดแล้วถามซ้ำ และไม่สนตัวพิมพ์ใหญ่&#x27;, async () =&gt; {
+      const b = await seed(&#x27;ใหม่&#x27;, d(25, 9));
+      const io = new ScriptedIO([&#x27;x&#x27;, &#x27;r9&#x27;, &#x27;R1&#x27;]);
+
+      const job = await selectJob(repoFor(1000), io, { resume: false });
+
+      expect(job.id).toBe(b);
+      expect(io.said.filter((t) =&gt; t.startsWith(&#x27;เลือกไม่ถูกต้อง&#x27;))).toHaveLength(2);
+    });
+
+    it(&#x27;d1 + y: ลบงานแล้วแสดงเมนูใหม่&#x27;, async () =&gt; {
+      const a = await seed(&#x27;เก่า&#x27;, d(24, 9));
+      const b = await seed(&#x27;ใหม่&#x27;, d(25, 9));
+      const repo = repoFor(1000);
+      const io = new ScriptedIO([&#x27;d1&#x27;, &#x27;y&#x27;, &#x27;r1&#x27;]);
+
+      const job = await selectJob(repo, io, { resume: false });
+
+      expect(job.id).toBe(a);
+      expect(existsSync(repo.jobDir(b))).toBe(false);
+      expect(io.asked[1]).toBe(&#x27;ลบงาน &quot;ใหม่&quot; ถาวรใช่ไหม? (y/n)\n&gt; &#x27;);
+      expect(io.said).toContain(&#x27;ลบงาน &quot;ใหม่&quot; แล้ว&#x27;);
+    });
+
+    it(&#x27;d1 + no: ไม่ลบ&#x27;, async () =&gt; {
+      await seed(&#x27;เก่า&#x27;, d(24, 9));
+      const b = await seed(&#x27;ใหม่&#x27;, d(25, 9));
+      const repo = repoFor(1000);
+
+      const job = await selectJob(repo, new ScriptedIO([&#x27;d1&#x27;, &#x27;no&#x27;, &#x27;r1&#x27;]), { resume: false });
+
+      expect(job.id).toBe(b);
+      expect(existsSync(repo.jobDir(b))).toBe(true);
+    });
+
+    it(&#x27;ตอบยืนยันผิดรูปแบบแล้วถามซ้ำ&#x27;, async () =&gt; {
+      const a = await seed(&#x27;เก่า&#x27;, d(24, 9));
+      await seed(&#x27;ใหม่&#x27;, d(25, 9));
+      const io = new ScriptedIO([&#x27;d1&#x27;, &#x27;maybe&#x27;, &#x27;yes&#x27;, &#x27;r1&#x27;]);
+
+      const job = await selectJob(repoFor(1000), io, { resume: false });
+
+      expect(job.id).toBe(a);
+      expect(io.said).toContain(&#x27;กรุณาตอบ y หรือ n&#x27;);
+    });
+
+    it(&#x27;ลบจนไม่เหลืองานค้าง: เริ่มงานใหม่ทันที&#x27;, async () =&gt; {
+      const a = await seed(&#x27;งานเดียว&#x27;, d(24, 9));
+      const repo = repoFor(1000);
+      const io = new ScriptedIO([&#x27;d1&#x27;, &#x27;y&#x27;]);
+
+      const job = await selectJob(repo, io, { resume: false });
+
+      expect(job.id).not.toBe(a);
+      expect(io.asked).toHaveLength(2);
+      expect((await repo.list()).map((j) =&gt; j.id)).toEqual([job.id]);
+    });
+
+    it(&#x27;r/d งานที่ process อื่นถือ lock ถูกปฏิเสธพร้อมบอก path ของ lock&#x27;, async () =&gt; {
+      const a = await seed(&#x27;เก่า&#x27;, d(24, 9));
+      const b = await seed(&#x27;ใหม่&#x27;, d(25, 9));
+      alive.add(2000);
+      await repoFor(2000).lock(b);
+      const repo = repoFor(1000);
+      const io = new ScriptedIO([&#x27;r1&#x27;, &#x27;d1&#x27;, &#x27;r2&#x27;]);
+
+      const job = await selectJob(repo, io, { resume: false });
+
+      expect(job.id).toBe(a);
+      expect(existsSync(repo.jobDir(b))).toBe(true);
+      const said = io.said.join(&#x27;\n&#x27;);
+      expect(said).toContain(&#x27;(กำลังรันอยู่ pid 2000 ตั้งแต่&#x27;);
+      expect(said).toContain(`ให้ลบไฟล์ ${repo.lockPath(b)} แล้วเลือกใหม่`);
+      expect(io.asked).toHaveLength(3);
+    });
+
+    it(&#x27;งานถูก lock หลังแสดงเมนูแล้ว: d + y ถูกปฏิเสธและโฟลเดอร์ยังอยู่&#x27;, async () =&gt; {
+      const a = await seed(&#x27;เก่า&#x27;, d(24, 9));
+      const b = await seed(&#x27;ใหม่&#x27;, d(25, 9));
+      alive.add(2000);
+      const repo = repoFor(1000);
+      const io = new HookIO([&#x27;d1&#x27;, &#x27;y&#x27;, &#x27;r2&#x27;], async (index) =&gt; {
+        if (index === 1) await repoFor(2000).lock(b); // อีก process เลือกงานนี้ระหว่างรอยืนยัน
+      });
+
+      const job = await selectJob(repo, io, { resume: false });
+
+      expect(job.id).toBe(a);
+      expect(existsSync(repo.jobDir(b))).toBe(true);
+      expect(io.said.join(&#x27;\n&#x27;)).toContain(&#x27;กำลังรันอยู่ใน process อื่น&#x27;);
+    });
+
+    it(&#x27;งานเปล่าไม่ขึ้นในเมนูและถูกลบ&#x27;, async () =&gt; {
+      const real = await seed(&#x27;งานจริง&#x27;, d(24, 9));
+      clock = d(25, 9);
+      const setup = repoFor(9999);
+      const empty = (await setup.create()).id;
+      await setup.unlock(empty);
+      const repo = repoFor(1000);
+      const io = new ScriptedIO([&#x27;r1&#x27;]);
+
+      const job = await selectJob(repo, io, { resume: false });
+
+      expect(job.id).toBe(real);
+      expect(existsSync(repo.jobDir(empty))).toBe(false);
+      expect(io.said.join(&#x27;\n&#x27;)).toContain(&#x27;[PM] มีงานค้าง 1 งาน:&#x27;);
+    });
+
+    it(&#x27;งานเปล่าที่ process อื่นถือ lock อยู่ไม่ถูกลบและไม่ขึ้นในเมนู&#x27;, async () =&gt; {
+      const real = await seed(&#x27;งานจริง&#x27;, d(24, 9));
+      alive.add(2000);
+      clock = d(25, 9);
+      const busy = (await repoFor(2000).create()).id;
+      const repo = repoFor(1000);
+      const io = new ScriptedIO([&#x27;r1&#x27;]);
+
+      const job = await selectJob(repo, io, { resume: false });
+
+      expect(job.id).toBe(real);
+      expect(existsSync(repo.jobDir(busy))).toBe(true);
+      expect(io.said.join(&#x27;\n&#x27;)).toContain(&#x27;[PM] มีงานค้าง 1 งาน:&#x27;);
+    });
+
+    it(&#x27;เตือนเมื่องานอื่นแก้โค้ดหลังจากงานนี้&#x27;, async () =&gt; {
+      await seed(&#x27;เก่า&#x27;, d(24, 9));
+      await seed(&#x27;หน้า report&#x27;, d(25, 9), (s) =&gt; {
+        Object.assign(s, buildState(), { title: &#x27;หน้า report&#x27; });
+        s.progress.api!.rounds = 1;
+      });
+      const io = new ScriptedIO([&#x27;r1&#x27;]);
+
+      await selectJob(repoFor(1000), io, { resume: false });
+
+      const menu = io.said.join(&#x27;\n&#x27;);
+      expect(menu).toContain(&#x27;     ⚠ งาน &quot;todo list&quot; แก้โค้ดหลังจากงานนี้ โค้ดอาจเปลี่ยนไปแล้ว&#x27;);
+      expect(menu.match(/⚠/g)).toHaveLength(1);
+    });
+
+    it(&#x27;งานอื่นแค่คุยกับ PM ไม่ทำให้ขึ้นคำเตือน&#x27;, async () =&gt; {
+      await seed(&#x27;เก่า&#x27;, d(24, 9));
+      await seed(&#x27;คุยอย่างเดียว&#x27;, d(25, 9), (s) =&gt; void (s.pmSessionId = &#x27;pm&#x27;));
+      const io = new ScriptedIO([&#x27;r1&#x27;]);
+
+      await selectJob(repoFor(1000), io, { resume: false });
+
+      expect(io.said.join(&#x27;\n&#x27;)).not.toContain(&#x27;⚠&#x27;);
+    });
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/job-menu.test.ts</code><br>
+     คาดหวัง: FAIL ด้วย "Failed to load url ../src/job-menu"</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation (สร้าง src/job-menu.ts)</strong></span></p>
+<pre><code>import type { StateStore, UserIO } from &#x27;./deps&#x27;;
+import { codeChangedWarning, formatJobSummary, jobTitle } from &#x27;./format&#x27;;
+import { isEmptyJob, type JobInfo, type JobRepository } from &#x27;./jobs&#x27;;
+
+export interface SelectedJob {
+  id: string;
+  store: StateStore;
+}
+
+const MENU_HELP = &#x27;เลือก: r&lt;เลข&gt; = ทำต่องานนั้น   d&lt;เลข&gt; = ลบงานนั้น   n = เริ่มงานใหม่&#x27;;
+
+const isPending = (job: JobInfo): boolean =&gt;
+  job.state.phase !== &#x27;DONE&#x27; &amp;&amp; job.state.phase !== &#x27;ABORTED&#x27; &amp;&amp; !isEmptyJob(job.state);
+
+/** เลือกงานตอนเริ่มรัน งานที่คืนออกมาถูก lock ไว้แล้วเสมอ */
+export async function selectJob(
+  repo: JobRepository,
+  io: UserIO,
+  opts: { resume: boolean },
+): Promise&lt;SelectedJob&gt; {
+  await repo.migrateLegacy();
+  for (;;) {
+    const all = await repo.list();
+    await removeEmptyJobs(repo, all);
+    const pending = all.filter(isPending).sort((a, b) =&gt; b.updatedAt.getTime() - a.updatedAt.getTime());
+
+    if (pending.length === 0) {
+      if (opts.resume) throw new Error(&#x27;ไม่พบงานค้างให้ resume&#x27;);
+      return repo.create();
+    }
+    if (opts.resume) return resumeLatest(repo, io, pending);
+    const picked = await menu(repo, io, pending, all);
+    if (picked) return picked;
+  }
+}
+
+async function removeEmptyJobs(repo: JobRepository, all: readonly JobInfo[]): Promise&lt;void&gt; {
+  for (const job of all) {
+    if (!isEmptyJob(job.state) || job.lock) continue;
+    // lock ก่อนลบ: สถานะ lock ที่อ่านจาก list() อาจเก่าแล้ว
+    if (await repo.lock(job.id)) await repo.remove(job.id);
+  }
+}
+
+async function resumeLatest(repo: JobRepository, io: UserIO, pending: readonly JobInfo[]): Promise&lt;SelectedJob&gt; {
+  for (const job of pending) {
+    if (job.lock || !(await repo.lock(job.id))) continue;
+    io.say(`ทำต่องาน &quot;${jobTitle(job.state)}&quot; (${job.id})`);
+    return { id: job.id, store: repo.store(job.id) };
+  }
+  throw new Error(&#x27;งานค้างทั้งหมดกำลังรันอยู่ใน process อื่น&#x27;);
+}
+
+function renderMenu(pending: readonly JobInfo[], all: readonly JobInfo[]): string {
+  const lines = pending.map((job, i) =&gt; formatJobSummary(job, i + 1, codeChangedWarning(job, all)));
+  return [`[PM] มีงานค้าง ${pending.length} งาน:`, ...lines, MENU_HELP].join(&#x27;\n&#x27;);
+}
+
+function lockedMessage(repo: JobRepository, job: JobInfo): string {
+  const who = job.lock ? ` (pid ${job.lock.pid})` : &#x27;&#x27;;
+  return (
+    `งาน &quot;${jobTitle(job.state)}&quot; กำลังรันอยู่ใน process อื่น${who} — ` +
+    `ถ้าแน่ใจว่าไม่ได้รันอยู่ ให้ลบไฟล์ ${repo.lockPath(job.id)} แล้วเลือกใหม่`
+  );
+}
+
+async function confirmDelete(io: UserIO, job: JobInfo): Promise&lt;boolean&gt; {
+  for (;;) {
+    const answer = (await io.ask(`ลบงาน &quot;${jobTitle(job.state)}&quot; ถาวรใช่ไหม? (y/n)\n&gt; `)).trim().toLowerCase();
+    if (answer === &#x27;y&#x27; || answer === &#x27;yes&#x27;) return true;
+    if (answer === &#x27;n&#x27; || answer === &#x27;no&#x27;) return false;
+    io.say(&#x27;กรุณาตอบ y หรือ n&#x27;);
+  }
+}
+
+/** คืนงานที่เลือก หรือ undefined เมื่อต้องอ่านรายการงานแล้วแสดงเมนูใหม่ (พิมพ์ผิด, หลังลบ, ยกเลิกการลบ หรือเจอ lock) */
+async function menu(
+  repo: JobRepository,
+  io: UserIO,
+  pending: readonly JobInfo[],
+  all: readonly JobInfo[],
+): Promise&lt;SelectedJob | undefined&gt; {
+  io.say(renderMenu(pending, all));
+  const answer = (await io.ask(&#x27;&gt; &#x27;)).trim().toLowerCase();
+  if (answer === &#x27;n&#x27; || answer === &#x27;new&#x27;) return repo.create();
+  const match = /^([rd])\s*(\d+)$/.exec(answer);
+  const job = match ? pending[Number(match[2]) - 1] : undefined;
+  if (!match || !job) {
+    io.say(`เลือกไม่ถูกต้อง — ${MENU_HELP}`);
+    return undefined;
+  }
+  if (job.lock) {
+    io.say(lockedMessage(repo, job));
+    return undefined;
+  }
+  if (match[1] === &#x27;r&#x27;) {
+    if (await repo.lock(job.id)) return { id: job.id, store: repo.store(job.id) };
+    io.say(lockedMessage(repo, job));
+    return undefined;
+  }
+  if (!(await confirmDelete(io, job))) return undefined;
+  // lock ก่อนลบ: ระหว่างรอ user ตอบ อีก process อาจเลือกงานนี้ไปแล้ว
+  if (!(await repo.lock(job.id))) {
+    io.say(lockedMessage(repo, job));
+    return undefined;
+  }
+  try {
+    await repo.remove(job.id);
+    io.say(`ลบงาน &quot;${jobTitle(job.state)}&quot; แล้ว`);
+  } catch (e) {
+    io.say(`ลบงานไม่สำเร็จ: ${e instanceof Error ? e.message : String(e)}`);
+    await repo.unlock(job.id);
+  }
+  return undefined;
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test ทั้งหมด + typecheck</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/job-menu.test.ts &amp;&amp; npm test &amp;&amp; npm run typecheck</code><br>
+     คาดหวัง: PASS ทั้งหมด (tests/job-menu.test.ts 20 เทสต์), typecheck ไม่มี error</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/job-menu.ts tests/job-menu.test.ts
+git commit -m &quot;feat: add PM job menu to resume, delete, or start jobs&quot; -m &quot;Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;&quot;</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 8: signal handler ที่เทสต์ได้ (makeInterruptHandler)</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/interrupt.ts</code></li>
+    <li>เทสต์: <code>tests/interrupt.test.ts</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>JobRepository.unlockSync(id)</code>, <code>lockPath(id)</code>, <code>create()</code> จาก Task 4; <code>Logger</code> จาก <code>src/logger.ts</code></li>
+    <li>ส่งต่อ (Produces): <code>interface InterruptDeps { repo: Pick&lt;JobRepository, 'unlockSync'&gt;; getJobId: () =&gt; string | undefined; logger: Logger; abort: () =&gt; void; closeCli: () =&gt; void; print: (text: string) =&gt; void; exit: (code: number) =&gt; void }</code>; <code>makeInterruptHandler(deps: InterruptDeps): (signal: 'SIGINT' | 'SIGHUP') =&gt; void</code></li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail (สร้าง tests/interrupt.test.ts)</strong></span></p>
+<pre><code>import { existsSync } from &#x27;node:fs&#x27;;
+import * as fs from &#x27;node:fs/promises&#x27;;
+import * as os from &#x27;node:os&#x27;;
+import * as path from &#x27;node:path&#x27;;
+import { describe, expect, it } from &#x27;vitest&#x27;;
+import { makeInterruptHandler } from &#x27;../src/interrupt&#x27;;
+import { JobRepository } from &#x27;../src/jobs&#x27;;
+
+async function setup(jobId: &#x27;created&#x27; | &#x27;none&#x27;) {
+  const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), &#x27;agent-team-int-&#x27;));
+  const repo = new JobRepository(projectDir);
+  const id = jobId === &#x27;created&#x27; ? (await repo.create()).id : undefined;
+  const calls: string[] = [];
+  const printed: string[] = [];
+  const exits: number[] = [];
+  const handler = makeInterruptHandler({
+    repo,
+    getJobId: () =&gt; id,
+    logger: { log: (_level, event, data) =&gt; void calls.push(`${event}:${String(data?.signal)}`) },
+    abort: () =&gt; void calls.push(&#x27;abort&#x27;),
+    closeCli: () =&gt; void calls.push(&#x27;close&#x27;),
+    print: (text) =&gt; void printed.push(text),
+    exit: (code) =&gt; void exits.push(code),
+  });
+  return { repo, id, calls, printed, exits, handler };
+}
+
+describe(&#x27;makeInterruptHandler&#x27;, () =&gt; {
+  it.each([&#x27;SIGINT&#x27;, &#x27;SIGHUP&#x27;] as const)(&#x27;%s: ปล่อย lock แบบ sync, abort, ปิด cli แล้ว exit 130&#x27;, async (signal) =&gt; {
+    const { repo, id, calls, printed, exits, handler } = await setup(&#x27;created&#x27;);
+
+    handler(signal);
+
+    expect(existsSync(repo.lockPath(id!))).toBe(false);
+    expect(calls).toEqual([`run.interrupted:${signal}`, &#x27;abort&#x27;, &#x27;close&#x27;]);
+    expect(printed).toEqual([
+      `\nหยุดแล้ว — งาน ${id} ถูกบันทึกไว้ รันใหม่แล้วเลือกงานนี้จากเมนู หรือใช้ --resume`,
+    ]);
+    expect(exits).toEqual([130]);
+  });
+
+  it(&#x27;ยังไม่ได้เลือกงาน (กดตอนอยู่ในเมนู): ไม่ throw และพิมพ์แค่ หยุดแล้ว&#x27;, async () =&gt; {
+    const { printed, exits, handler } = await setup(&#x27;none&#x27;);
+
+    expect(() =&gt; handler(&#x27;SIGINT&#x27;)).not.toThrow();
+    expect(printed).toEqual([&#x27;\nหยุดแล้ว&#x27;]);
+    expect(exits).toEqual([130]);
+  });
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/interrupt.test.ts</code><br>
+     คาดหวัง: FAIL ด้วย "Failed to load url ../src/interrupt"</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation (สร้าง src/interrupt.ts)</strong></span></p>
+<pre><code>import type { JobRepository } from &#x27;./jobs&#x27;;
+import type { Logger } from &#x27;./logger&#x27;;
+
+export interface InterruptDeps {
+  repo: Pick&lt;JobRepository, &#x27;unlockSync&#x27;&gt;;
+  /** ยังไม่มีค่าเมื่อกด Ctrl+C ตอนอยู่ในเมนูเลือกงาน */
+  getJobId: () =&gt; string | undefined;
+  logger: Logger;
+  abort: () =&gt; void;
+  closeCli: () =&gt; void;
+  print: (text: string) =&gt; void;
+  /** index.ts ส่ง process.exit เทสต์ส่งตัวปลอม */
+  exit: (code: number) =&gt; void;
+}
+
+/** handler เดียวใช้กับทั้ง SIGINT และ SIGHUP ทุกขั้นเป็น sync เพราะจบด้วย exit */
+export function makeInterruptHandler(deps: InterruptDeps): (signal: &#x27;SIGINT&#x27; | &#x27;SIGHUP&#x27;) =&gt; void {
+  return (signal) =&gt; {
+    deps.logger.log(&#x27;WARN&#x27;, &#x27;run.interrupted&#x27;, { signal });
+    deps.abort();
+    const jobId = deps.getJobId();
+    if (jobId) deps.repo.unlockSync(jobId);
+    deps.closeCli();
+    deps.print(
+      jobId
+        ? `\nหยุดแล้ว — งาน ${jobId} ถูกบันทึกไว้ รันใหม่แล้วเลือกงานนี้จากเมนู หรือใช้ --resume`
+        : &#x27;\nหยุดแล้ว&#x27;,
+    );
+    deps.exit(130);
+  };
+}</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test ทั้งหมด + typecheck</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/interrupt.test.ts &amp;&amp; npm test &amp;&amp; npm run typecheck</code><br>
+     คาดหวัง: PASS ทั้งหมด, typecheck ไม่มี error</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/interrupt.ts tests/interrupt.test.ts
+git commit -m &quot;feat: testable SIGINT/SIGHUP handler that releases job lock&quot; -m &quot;Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;&quot;</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 9: ต่อทุกอย่างเข้า index.ts + README + ทดสอบรันจริง</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/index.ts</code> (ทั้งไฟล์)</li>
+    <li>แก้ไข: <code>README.md:13-16</code>, <code>README.md:29-32</code>, บรรทัด <code>grep " guard.deny "</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>JobRepository</code> (Task 4-5), <code>selectJob</code> (Task 7), <code>makeInterruptHandler</code> (Task 8), <code>runTeam(deps)</code> (Task 2)</li>
+    <li>ส่งต่อ (Produces): โปรแกรมที่รันด้วย <code>npm start -- --project &lt;โฟลเดอร์&gt; [--resume]</code> แล้วแสดงเมนูงานค้าง; log event ใหม่ <code>job.selected { jobId, resume }</code></li>
+  </ul>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: แทนที่ทั้งไฟล์ src/index.ts</strong></span></p>
+<pre><code>import * as fs from &#x27;node:fs&#x27;;
+import * as path from &#x27;node:path&#x27;;
+import { parseArgs } from &#x27;./args&#x27;;
+import { CliIO } from &#x27;./cli&#x27;;
+import { loadConfig } from &#x27;./config&#x27;;
+import { presentBillingVars } from &#x27;./env&#x27;;
+import { makeInterruptHandler } from &#x27;./interrupt&#x27;;
+import { selectJob } from &#x27;./job-menu&#x27;;
+import { JobRepository } from &#x27;./jobs&#x27;;
+import { FileLogger, LoggingIO } from &#x27;./logger&#x27;;
+import { runTeam } from &#x27;./orchestrator&#x27;;
+import { SdkRoleRunner } from &#x27;./runner&#x27;;
+
+async function main(): Promise&lt;void&gt; {
+  const args = parseArgs(process.argv.slice(2));
+  if (!fs.existsSync(args.projectDir) || !fs.statSync(args.projectDir).isDirectory()) {
+    console.error(`ไม่พบโฟลเดอร์โปรเจกต์: ${args.projectDir} (สร้างโฟลเดอร์ก่อนแล้วรันใหม่)`);
+    process.exit(1);
+  }
+
+  const config = loadConfig();
+  const abortController = new AbortController();
+  const logFile = path.join(args.projectDir, &#x27;.agent-team&#x27;, &#x27;agent-team.log&#x27;);
+  const logger = new FileLogger(logFile);
+  const cli = new CliIO();
+  const io = new LoggingIO(cli, logger);
+  logger.log(&#x27;INFO&#x27;, &#x27;run.start&#x27;, {
+    projectDir: args.projectDir,
+    resume: args.resume,
+    pid: process.pid,
+    node: process.version,
+    debug: process.env.AGENT_TEAM_DEBUG === &#x27;1&#x27;,
+  });
+  io.say(`บันทึก log ที่ ${logFile}`);
+  const ignored = presentBillingVars();
+  if (ignored.length &gt; 0) {
+    io.say(`ไม่ส่ง ${ignored.join(&#x27;, &#x27;)} ให้ agent — ใช้โควตา subscription ที่ login ไว้เท่านั้น`);
+  }
+  const runner = new SdkRoleRunner({
+    projectDir: args.projectDir,
+    config,
+    abortController,
+    logger,
+    log: (line) =&gt; io.say(line),
+    debug: process.env.AGENT_TEAM_DEBUG === &#x27;1&#x27;,
+  });
+  const repo = new JobRepository(args.projectDir, { log: logger });
+  let jobId: string | undefined;
+
+  const onSignal = makeInterruptHandler({
+    repo,
+    getJobId: () =&gt; jobId,
+    logger,
+    abort: () =&gt; abortController.abort(),
+    closeCli: () =&gt; cli.close(),
+    print: (text) =&gt; console.log(text),
+    exit: (code) =&gt; process.exit(code),
+  });
+  process.on(&#x27;SIGINT&#x27;, () =&gt; onSignal(&#x27;SIGINT&#x27;));
+  process.on(&#x27;SIGHUP&#x27;, () =&gt; onSignal(&#x27;SIGHUP&#x27;));
+
+  try {
+    const job = await selectJob(repo, io, { resume: args.resume });
+    jobId = job.id;
+    logger.log(&#x27;INFO&#x27;, &#x27;job.selected&#x27;, { jobId, resume: args.resume });
+    const final = await runTeam({ runner, io, store: job.store, config, log: logger });
+    console.log(
+      final.phase === &#x27;DONE&#x27;
+        ? &#x27;\nเสร็จสมบูรณ์&#x27;
+        : `\nยกเลิกงานแล้ว (state ยังอยู่ใน .agent-team/jobs/${jobId}/)`,
+    );
+    logger.log(&#x27;INFO&#x27;, &#x27;run.end&#x27;, { phase: final.phase, jobId });
+  } catch (e) {
+    console.error(`\nหยุดเพราะ error: ${e instanceof Error ? e.message : String(e)}`);
+    if (jobId) console.error(&#x27;รันใหม่แล้วเลือกงานนี้จากเมนู หรือใช้ --resume เพื่อทำต่องานล่าสุด&#x27;);
+    logger.log(&#x27;ERROR&#x27;, &#x27;run.error&#x27;, {
+      jobId,
+      message: e instanceof Error ? e.message : String(e),
+      stack: e instanceof Error ? e.stack : undefined,
+    });
+    process.exitCode = 1;
+  } finally {
+    if (jobId) await repo.unlock(jobId);
+    cli.close();
+  }
+}
+
+main().catch((e) =&gt; {
+  console.error(e instanceof Error ? e.message : e);
+  process.exit(1);
+});</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: typecheck + test</strong></span></p>
+  <p>รัน: <code>npm run typecheck &amp;&amp; npm test</code><br>
+     คาดหวัง: typecheck ไม่มี error และเทสต์ PASS ทั้งหมด</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แก้ README ส่วนวิธีใช้</strong></span></p>
+  <p>ใน <code>README.md</code> แทนข้อความ:</p>
+<pre><code>    npm start -- --project C:/path/to/app --resume  # ทำต่อจากที่หยุดไว้
+Ctrl+C หยุดได้ทุกเมื่อ: state ถูกบันทึกทุกครั้งที่เปลี่ยน phase/รอบ จึงเสียอย่างมากแค่รอบที่กำลังทำอยู่ แล้วรันต่อด้วย --resume (stdin ที่ถูกปิด/pipe จะหยุดพร้อมข้อความ EOF ไม่ค้าง)</code></pre>
+  <p>ด้วย:</p>
+<pre><code>    npm start -- --project C:/path/to/app --resume  # ทำต่องานค้างล่าสุดทันทีโดยไม่ถาม
+ถ้ามีงานค้าง PM จะแสดงรายการงานค้างทั้งหมด (เป้าหมาย, เฟส, ความคืบหน้า, เวลารันล่าสุด) แล้วให้เลือก:
+`r&lt;เลข&gt;` ทำต่องานนั้น, `d&lt;เลข&gt;` ลบงานนั้น (ถามยืนยัน y/n แล้วลบถาวร), `n` เริ่มงานใหม่ (งานค้างเดิมยังอยู่)
+ถ้ามีงานอื่นแก้โค้ดหลังจากงานที่ค้างไว้ จะมีคำเตือน ⚠ ว่าโค้ดอาจเปลี่ยนไปแล้ว (ยังทำต่อได้)
+`--resume` ข้ามเมนูแล้วทำต่องานค้างที่รันล่าสุดซึ่งไม่มี process อื่นใช้อยู่ และบอกชื่องานที่เลือก ถ้าไม่มีงานค้างจะ error
+Ctrl+C หยุดได้ทุกเมื่อ: state ถูกบันทึกทุกครั้งที่เปลี่ยน phase/รอบ จึงเสียอย่างมากแค่รอบที่กำลังทำอยู่ แล้วรันใหม่เลือกงานนี้จากเมนู หรือใช้ --resume (stdin ที่ถูกปิด/pipe จะหยุดพร้อมข้อความ EOF ไม่ค้าง)</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: แก้ README ส่วน state และ log</strong></span></p>
+  <p>แทนข้อความ:</p>
+<pre><code>บันทึกใน `&lt;project&gt;/.agent-team/` (`state.json`, `requirements.json`, `design.json`,
+`reports/&lt;taskId&gt;-round&lt;n&gt;.json`) แนะนำให้เพิ่ม `.agent-team/` ใน `.gitignore` ของโปรเจกต์นั้น
+ถ้าใช้ `--resume` ระหว่างคุยกับ PM ให้พิมพ์ข้อความต่อจากบทสนทนาเดิม</code></pre>
+  <p>ด้วย:</p>
+<pre><code>แต่ละงานเก็บแยกโฟลเดอร์ที่ `&lt;project&gt;/.agent-team/jobs/&lt;jobId&gt;/` (`state.json`, `requirements.json`, `design.json`,
+`reports/&lt;taskId&gt;-round&lt;n&gt;.json`) โดย `jobId` คือเวลาที่สร้างงาน แนะนำให้เพิ่ม `.agent-team/` ใน `.gitignore` ของโปรเจกต์นั้น
+ถ้าเจอ `.agent-team/state.json` แบบเก่า (ก่อนรองรับหลายงาน) จะย้ายเข้า `jobs/` ให้อัตโนมัติตอนเริ่มรัน
+งานที่กำลังรันมีไฟล์ `run.lock` (pid) กันไม่ให้ process อื่นทำต่อหรือลบงานเดียวกัน ถ้า lock ค้าง
+(เช่น pid ถูก process อื่นเอาไปใช้ซ้ำ) เมนูจะบอก path ของไฟล์ให้ลบเอง
+ถ้าทำต่องานที่ค้างระหว่างคุยกับ PM ให้พิมพ์ข้อความต่อจากบทสนทนาเดิม</code></pre>
+  <p>และต่อจากบรรทัด <code>    grep " guard.deny "      .agent-team/agent-team.log   # คำสั่ง/ไฟล์ที่ guard ปฏิเสธ</code> เพิ่ม:</p>
+<pre><code>    grep &quot; job.selected &quot;    .agent-team/agent-team.log   # งานที่เลือกในแต่ละรอบรัน (jobId)</code></pre>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: ทดสอบรันจริงแบบไม่เรียก LLM (stdin ปิดทันที)</strong></span></p>
+  <p>ใช้ Git Bash รันใน scratch folder (ไม่ใช่ repo นี้):</p>
+<pre><code>T=$(mktemp -d)
+echo &quot;&quot; | npm start -- --project &quot;$T&quot;; echo &quot;exit=$?&quot;
+ls &quot;$T/.agent-team/jobs&quot;; ls &quot;$T/.agent-team/jobs&quot;/*
+echo &quot;&quot; | npm start -- --project &quot;$T&quot;; echo &quot;exit=$?&quot;
+ls &quot;$T/.agent-team/jobs&quot;
+grep &quot; job.selected &quot; &quot;$T/.agent-team/agent-team.log&quot;</code></pre>
+  <p>คาดหวัง: รอบแรกไม่มีงานค้าง จึงสร้างงานใหม่แล้วหยุดด้วยข้อความ EOF (<code>exit=1</code>) โดยไม่มีการเรียก agent; ในโฟลเดอร์งานมี <code>state.json</code> และ<strong>ไม่มี</strong> <code>run.lock</code> (ถูกปล่อยใน finally); รอบที่สองงานเดิมเป็นงานเปล่าจึงถูกลบ และถูกสร้างงานใหม่แทน (<code>jobs/</code> มี 1 โฟลเดอร์); log มี <code>job.selected</code> 2 บรรทัด</p>
+<pre><code>echo &quot;&quot; | npm start -- --project &quot;$T&quot; --resume; echo &quot;exit=$?&quot;</code></pre>
+  <p>คาดหวัง: <code>หยุดเพราะ error: ไม่พบงานค้างให้ resume</code> และ <code>exit=1</code> (งานเปล่าไม่นับเป็นงานค้าง)</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: ตรวจรอบสุดท้าย</strong></span></p>
+  <p>รัน: <code>npm test &amp;&amp; npm run typecheck &amp;&amp; git status --short</code><br>
+     คาดหวัง: เทสต์ PASS ทั้งหมด, typecheck ไม่มี error, git status แสดงเฉพาะ <code>src/index.ts</code>, <code>README.md</code> และไฟล์ untracked เดิม</p>
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: Commit</strong></span></p>
+<pre><code>git add src/index.ts README.md
+git commit -m &quot;feat: wire job menu, per-job lock and signal handling into CLI&quot; -m &quot;Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;&quot;</code></pre>
+</div>
+
+</body>
+</html>

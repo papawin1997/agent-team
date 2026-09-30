@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scrutinize: PM free chat</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --ink:#15181d; --muted:#5b6472; --line:#e2e6ec;
+    --blocker:#c62828; --blocker-bg:#fdecec;
+    --major:#e06c00; --major-bg:#fff4e6;
+    --nit:#6b7280; --nit-bg:#f1f3f5;
+    --ok:#2e7d32;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --bg:#14171c; --card:#1c2027; --ink:#e8eaee; --muted:#9aa4b2; --line:#2b313a;
+      --blocker-bg:#3a1c1c; --major-bg:#3a2a12; --nit-bg:#22262d;
+      --blocker:#ff6b6b; --major:#ffab4d; --nit:#9aa4b2; --ok:#6bd28f;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#14171c; --card:#1c2027; --ink:#e8eaee; --muted:#9aa4b2; --line:#2b313a;
+    --blocker-bg:#3a1c1c; --major-bg:#3a2a12; --nit-bg:#22262d;
+    --blocker:#ff6b6b; --major:#ffab4d; --nit:#9aa4b2; --ok:#6bd28f;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.7 "Segoe UI","Noto Sans Thai",system-ui,-apple-system,sans-serif;}
+  .wrap{max-width:900px;margin:0 auto;padding:40px 16px 72px}
+  header{border-bottom:2px solid var(--line);padding-bottom:18px;margin-bottom:28px}
+  h1{font-size:26px;margin:0 0 6px;line-height:1.35}
+  .sub{color:var(--muted);font-size:14px}
+  h2{font-size:19px;margin:36px 0 14px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  .intent{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px}
+  .intent p{margin:0 0 10px}
+  .intent p:last-child{margin:0}
+  .card{background:var(--card);border:1px solid var(--line);border-left-width:6px;
+    border-radius:10px;padding:18px 20px;margin:0 0 16px}
+  .card.blocker{border-left-color:var(--blocker);background:var(--blocker-bg)}
+  .card.major{border-left-color:var(--major);background:var(--major-bg)}
+  .card.nit{border-left-color:var(--nit);background:var(--nit-bg)}
+  .tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;padding:3px 9px;border-radius:999px;color:#fff;margin-bottom:10px}
+  .blocker .tag{background:var(--blocker)}
+  .major .tag{background:var(--major)}
+  .nit .tag{background:var(--nit)}
+  .card h3{margin:0 0 12px;font-size:16.5px;line-height:1.5}
+  .row{margin:11px 0}
+  .row b{display:block;font-size:12.5px;letter-spacing:.04em;color:var(--muted);
+    text-transform:uppercase;margin-bottom:3px}
+  code{font-family:"Cascadia Code",Consolas,monospace;font-size:13.5px;
+    background:rgba(127,127,127,.16);padding:1px 5px;border-radius:4px;word-break:break-word}
+  pre{font-family:"Cascadia Code",Consolas,monospace;font-size:13px;line-height:1.6;
+    background:rgba(127,127,127,.12);padding:12px 14px;border-radius:8px;overflow-x:auto;margin:8px 0}
+  ul{margin:6px 0;padding-left:22px}
+  li{margin:3px 0}
+  .verdict{display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+    background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px}
+  .badge{font-size:19px;font-weight:800;letter-spacing:.03em;padding:10px 22px;
+    border-radius:999px;color:#1a1a1a;background:#f2c94c;white-space:nowrap}
+  .verdict p{margin:0;flex:1;min-width:260px}
+  .checked{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px}
+  footer{margin-top:40px;color:var(--muted);font-size:13px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Scrutinize — feature: PM free chat (พิมพ์คำถามแทนการเลือกตัวเลือกได้ทุกจุดตัดสินใจ)</h1>
+  <div class="sub">
+    repo <code>agent-team</code> · commit range <code>9138733..fc70302</code> (merged เข้า <code>main</code> แล้ว) ·
+    ตรวจวันที่ 2026-09-25 · ฐาน: โค้ดจริงบน working tree
+  </div>
+</header>
+
+<h2>1. เจตนา</h2>
+<div class="intent">
+  <p><b>สรุปด้วยคำพูดตัวเอง:</b> ทำให้ตอนที่ระบบหยุดรอให้คนกดเลือก (ยืนยัน / ขอแก้ / ทำต่อ / รับงาน)
+  คนสามารถพิมพ์คำถามคุยกับ PM ในบทสนทนาเดิมก่อน แล้วค่อยกลับมาเลือก โดยไม่เสียสถานะและไม่ต้องเริ่ม session ใหม่</p>
+  <p><b>มีวิธีที่ง่ายกว่าไหม — มี.</b> ปัญหาจริงคือ “แยกไม่ออกว่าข้อความที่พิมพ์เป็นการตัดสินใจหรือคำถาม”
+  ดีไซน์นี้เลือกเดาเอาจากข้อความ (<code>parseChoice</code> ไม่ตรง = ถือเป็นคำถาม) แล้วผลักภาระการแยกแยะที่เหลือ
+  ไปไว้ใน prompt ของ PM (<code>PM_PROMPT</code> rule 4, <code>src/prompts.ts:24</code>) ซึ่ง<strong>ไม่มีการบังคับที่ระดับโค้ดเลย</strong>
+  — finding B-1 ด้านล่างเกิดจากตรงนี้โดยตรง ทางที่เล็กกว่าและ deterministic กว่าคือทำ “คำถาม” ให้เป็น intent ที่ชัดเจน
+  เช่น เพิ่มตัวเลือก <code>ask</code> เข้าไปในเมนู หรือให้ใช้ prefix <code>?</code> นำหน้าเมื่ออยากถาม
+  ได้ผล ~90% ของ feature นี้ โดยตัดทิ้งไปทั้งก้อน: ความกำกวมของ <code>parseChoice</code>, rule 4 ใน PM prompt,
+  และเคสพิมพ์ผิดแล้วเสียเงินยิงหา PM</p>
+</div>
+
+<h2>2. Findings</h2>
+
+<div class="card blocker">
+  <span class="tag">blocker</span>
+  <h3>B-1 — <code>decide()</code> ทิ้ง <code>turn.requirements</code> ที่ PM ส่งกลับมาระหว่างตอบคำถาม ทำให้ “ยืนยัน” บันทึก requirements เวอร์ชันเก่าแบบเงียบ ๆ (<code>src/io-util.ts:25-28</code> + <code>src/phases/requirements.ts:24-31</code>)</h3>
+  <div class="row"><b>ทำไมถึงสำคัญ</b>
+    user ถาม “เพิ่มแจ้งเตือนได้ไหม” → PM ตอบ “ได้ครับ ผมเพิ่มให้แล้ว” → ระบบถามเมนูเดิมซ้ำ
+    <em>โดยไม่แสดง requirements ใหม่</em> → user กด confirm ตามธรรมชาติ →
+    <code>requirements.json</code> และ <code>state.requirements</code> คือของเก่าที่ไม่มีแจ้งเตือน
+    จากนั้น DESIGN/BUILD ทั้งสายวิ่งต่อจาก requirements ผิด เสียเงินและเวลาทั้ง cycle โดยไม่มีใครรู้ตัว
+    สิ่งที่กัน bug นี้อยู่มีแค่ประโยคใน prompt (<code>src/prompts.ts:24</code>) ไม่ใช่โค้ด
+  </div>
+  <div class="row"><b>หลักฐาน</b>
+    <ul>
+      <li>เส้นทาง: <code>requirements.ts:19</code> ได้ <code>turn</code> (proposal เก่า) → <code>:25</code> แสดงผล →
+        <code>:26</code> <code>decide()</code> → ใน <code>io-util.ts:25</code> ได้ <code>turn</code> ตัวใหม่
+        แต่ใช้แค่ <code>turn.message</code> (<code>:28</code>) ไม่เคยอ่าน <code>turn.status</code> / <code>turn.requirements</code> เลย →
+        กลับมา <code>requirements.ts:28</code> ซึ่ง assign จากตัวแปร <code>turn</code> ของ closure รอบนอก = ของเก่า</li>
+      <li>ยืนยันด้วยการรันจริง (probe test ชั่วคราว, ลบออกแล้ว): script PM = [proposal(goal ‘todo list (เวอร์ชันแรก)’),
+        proposal(goal ‘todo list + แจ้งเตือน’)] , input = [‘อยากได้ todo list’, ‘เพิ่มแจ้งเตือนได้ไหม’, ‘confirm’]
+<pre>SAVED GOAL  : todo list (เวอร์ชันแรก)
+SAVED FEATS : ["เพิ่ม/ลบ todo"]
+ARTIFACT    : {"goal":"todo list (เวอร์ชันแรก)", ...}</pre>
+        โดยที่ user เพิ่งเห็นข้อความ <code>[PM] ได้ครับ ผมเพิ่มฟีเจอร์แจ้งเตือนให้แล้ว</code> ก่อนกด confirm</li>
+      <li>ไม่มีเทสใดคลุมเคสนี้ — เทสทุกตัวใน <code>tests/io-util.test.ts</code> ป้อน PM turn แบบ <code>asking()</code> เท่านั้น</li>
+    </ul>
+  </div>
+  <div class="row"><b>แนวทางแก้ไข</b>
+    ให้ <code>decide()</code> คืนผลของ turn ที่เกิดใหม่ออกไปด้วย แทนที่จะกลืน — ที่เล็กที่สุดคือเปลี่ยน return type เป็น
+    <code>{ choice: T } | { newTurn: PmTurn }</code> แล้วให้ <code>requirements.ts</code> วน loop ใหม่จาก turn ล่าสุด
+    (แสดง <code>formatRequirements</code> ซ้ำ แล้วถามยืนยันใหม่). ถ้าอยากแก้ให้เล็กกว่านั้นจริง ๆ:
+    ใน <code>decide()</code> ถ้า <code>turn.status === 'proposal'</code> ให้แจ้ง user ว่า PM เสนอชุดใหม่แล้วบังคับให้เลือก
+    <code>revise</code> — แต่อย่าปล่อยให้ confirm บันทึกของเก่าโดยไม่บอก
+  </div>
+</div>
+
+<div class="card major">
+  <span class="tag">major</span>
+  <h3>M-1 — PM ไม่เคยได้รับ “ตัวเลือกที่ค้างอยู่” ทำให้ rule 4 ของ <code>PM_PROMPT</code> ทำตามไม่ได้ใน 3 จาก 4 จุด (<code>src/io-util.ts:20,25</code> เทียบกับ <code>src/prompts.ts:24</code>)</h3>
+  <div class="row"><b>ทำไมถึงสำคัญ</b>
+    rule 4 สั่งว่า “ถ้าข้อความของ user คือหนึ่งในตัวเลือกที่ค้างอยู่ในรูปประโยคอื่น ให้บอกคำที่ต้องพิมพ์ให้ชัด”
+    แต่โค้ดส่งเข้าไปแค่ <code>result.text</code> เปล่า ๆ — ไม่ส่งทั้ง <code>prompt</code> และ <code>options</code>
+    PM จึงไม่รู้ว่าตอนนี้ตัวเลือกคือ <code>confirm/revise</code> หรือ <code>accept/change</code> ต้องเดาเอา
+    ผลคือคำแนะนำที่ PM ให้จะชี้ตัวเลือกผิดคำ user ก็พิมพ์ผิด แล้ววนเสียเงินอีกรอบ
+  </div>
+  <div class="row"><b>หลักฐาน</b>
+    <ul>
+      <li><code>io-util.ts:20</code> รับ <code>prompt</code>/<code>options</code> มาใช้แค่กับ <code>io.chooseOrText</code>
+        ส่วน <code>:25</code> ส่งเข้า PM เฉพาะ <code>{ sessionId, prompt: result.text }</code></li>
+      <li>จุดเดียวที่ PM บังเอิญรู้ตัวเลือกคือ BUILD escalate เพราะมีข้อความ
+        <code>'อธิบายตัวเลือก: continue / accept / abort'</code> เขียนไว้ใน prompt ตั้งต้น (<code>src/phases/build.ts:209</code>)
+        ส่วน REQUIREMENTS (<code>requirements.ts:26</code>), REVIEW (<code>design.ts:58</code>) และ DELIVER (<code>deliver.ts:29</code>)
+        ไม่เคยส่งคำว่า confirm/revise/accept/change เข้า session เลย</li>
+      <li>เทส <code>tests/prompts.test.ts</code> เช็คแค่ว่า string rule 4 มีอยู่ใน prompt ไม่ได้เช็คว่าข้อมูลที่ rule 4 ต้องใช้ถูกส่งไปถึงจริง</li>
+    </ul>
+  </div>
+  <div class="row"><b>แนวทางแก้ไข</b>
+    ใน <code>decide()</code> ห่อคำถามของ user ด้วยบริบทสั้น ๆ เช่น
+    <code>`user ถามระหว่างรอการตัดสินใจ "${prompt}" (ตัวเลือก: ${options.join(' / ')})\n\n${result.text}`</code>
+    ระวังทำเครื่องหมายให้ชัดว่าส่วนของ user เป็น data ไม่ใช่คำสั่ง (โปรเจกต์มี pattern <code>untrustedResult()</code> อยู่แล้วใน <code>prompts.ts:7</code>)
+  </div>
+</div>
+
+<div class="card major">
+  <span class="tag">major</span>
+  <h3>M-2 — <code>parseChoice</code> ตีความตัวเลขหลวมเกินไป และการเผลอตรงกับเลข 3 ที่ escalate = abort ทั้งรัน ซึ่งกู้คืนไม่ได้ (<code>src/cli.ts:17-19</code>)</h3>
+  <div class="row"><b>ทำไมถึงสำคัญ</b>
+    PM ถูกสั่งให้สรุปเป็นข้อความ/รายการ (<code>prompts.ts:21-24</code>) การที่ user พิมพ์ <code>3</code>
+    เพื่อจะหมายถึง “ข้อ 3 ที่ PM สรุปมา” จึงเป็นพฤติกรรมที่เกิดได้จริง แต่ที่ BUILD escalate มันคือ <code>abort</code> ทันที
+    ไม่มีการถามยืนยันซ้ำ และ abort นั้นย้อนไม่ได้
+  </div>
+  <div class="row"><b>หลักฐาน</b>
+    <ul>
+      <li>รัน <code>parseChoice</code> จริงกับ options 2 ตัว ได้ผลดังนี้:
+<pre>"+1"     -> confirm      "1e0"  -> confirm
+"0x2"    -> revise       "1.0"  -> confirm
+"01"     -> confirm      "  1  ." -> confirm</pre>
+        เพราะ <code>:17</code> ตัด <code>[.)]+$</code> ออกก่อน แล้ว <code>:18</code> ใช้ <code>Number()</code>
+        ซึ่งรับ hex / exponent / เครื่องหมายบวก / เลขนำศูนย์ ทั้งหมด</li>
+      <li>เส้นทาง abort: <code>build.ts:214</code> <code>decide(...['continue','accept','abort'])</code> →
+        <code>:185</code> return <code>'aborted'</code> → <code>:127-128</code> <code>state.phase='ABORTED'</code> + save →
+        <code>orchestrator.ts:29</code> while loop ไม่ทำงานเลย จบทันที</li>
+      <li>กู้ไม่ได้: รันใหม่ด้วย <code>--resume</code> ก็จบทันทีเหมือนเดิม; รันใหม่แบบไม่ใส่ <code>--resume</code>
+        ผ่านเงื่อนไข <code>orchestrator.ts:17</code> (เพราะ ABORTED ถือว่าไม่ค้าง) แล้ว <code>:22</code> <code>newState()</code>
+        ทิ้ง requirements/design/progress ทั้งหมด</li>
+    </ul>
+  </div>
+  <div class="row"><b>แนวทางแก้ไข</b>
+    (ก) เปลี่ยนการเช็คเลขเป็น strict: <code>if (/^\d+$/.test(text))</code> แล้วค่อย <code>Number</code>;
+    (ข) ใส่ยืนยันซ้ำหนึ่งชั้นเฉพาะ <code>abort</code> (พิมพ์คำว่า abort เต็ม ๆ) เพราะเป็น action ที่ทำลาย state ถาวรเพียงอันเดียวในระบบ
+  </div>
+</div>
+
+<div class="card major">
+  <span class="tag">major</span>
+  <h3>M-3 — Q&amp;A loop ไม่มีเพดานใด ๆ ทั้งจำนวนรอบ, cost สะสม และขนาด session ที่โตไปเรื่อย ๆ (<code>src/io-util.ts:19-32</code> → <code>src/options.ts:34-35</code>)</h3>
+  <div class="row"><b>ทำไมถึงสำคัญ</b>
+    <code>maxTurns: 20</code> / <code>maxBudgetUsd: 2</code> ของ role pm (<code>config.ts:62</code>) เป็นค่า
+    <em>ต่อ query หนึ่งครั้ง</em> ไม่ใช่ยอดสะสม เพราะ <code>runner.once()</code> สร้าง query ใหม่ทุกครั้งพร้อม
+    <code>maxBudgetUsd</code> ชุดเดิม ดังนั้นถาม 10 รอบ = เพดานจริง $20 ไม่ใช่ $2
+    และเพราะทุกรอบ <code>resume</code> session เดิม transcript จะยาวขึ้นเรื่อย ๆ ทำให้ราคาต่อรอบแพงขึ้นเรื่อย ๆ ด้วย
+    PM session นี้ยังถูกใช้ร่วมกันตั้งแต่ REQUIREMENTS ยัน DELIVER และไม่เคยถูก compact/reset เลย
+  </div>
+  <div class="row"><b>หลักฐาน</b>
+    <ul>
+      <li><code>io-util.ts:19</code> <code>for(;;)</code> ออกได้ทางเดียวคือ user เลือกตัวเลือกตรง — ไม่มีตัวนับรอบ</li>
+      <li><code>runner.ts:62-64</code> → <code>runValidated</code> → <code>once()</code> → <code>buildQueryOptions</code>
+        (<code>options.ts:34-35</code>) ตั้ง <code>maxTurns</code>/<code>maxBudgetUsd</code> ใหม่ทุกครั้ง ไม่มี state สะสมข้ามครั้ง</li>
+      <li>เมื่อ session พังจริง (เช่นยาวเกิน context) <code>decide()</code> กลืน error ได้ (<code>:29-31</code>) แต่
+        <code>pmTurn</code> ที่<strong>ไม่ได้ครอบ try</strong> ที่ <code>requirements.ts:19</code>, <code>design.ts:49</code>,
+        <code>build.ts:204</code>, <code>deliver.ts:17</code> จะโยนทะลุถึง <code>index.ts:63</code> = ทั้งรันหยุด
+        (resilience ของ feature นี้เป็นแบบเฉพาะจุด ไม่สม่ำเสมอกับ pmTurn ที่เหลือ)</li>
+    </ul>
+  </div>
+  <div class="row"><b>แนวทางแก้ไข</b>
+    อย่างน้อยที่สุด: นับรอบใน <code>decide()</code> แล้วเมื่อครบ N (เช่น 5) ให้เตือน user ว่ากำลังใช้ budget
+    และ log จำนวนคำถาม/cost สะสมผ่าน <code>deps.log</code> (ตอนนี้ Q&amp;A loop ไม่ log อะไรลง FileLogger เลย
+    นอกจาก <code>user.question</code> ของ <code>LoggingIO</code>) ระยะยาวควรมีเพดาน budget ต่อ phase ไม่ใช่ต่อ query
+  </div>
+</div>
+
+<div class="card major">
+  <span class="tag">major</span>
+  <h3>M-4 — ถ้า <code>store.save</code> ล้ม คำตอบของ PM ที่จ่ายเงินไปแล้วจะหายไปทั้งก้อน แถมขึ้นข้อความเท็จว่า “ถาม PM ไม่สำเร็จ” (<code>src/io-util.ts:26-31</code>)</h3>
+  <div class="row"><b>ทำไมถึงสำคัญ</b>
+    นี่คือเคส “สำเร็จครึ่งเดียว”: PM ตอบเรียบร้อยแล้ว (เสียเงิน เสียเวลาไปแล้ว) แต่ <code>io.say(turn.message)</code>
+    อยู่<em>หลัง</em> <code>await store.save(state)</code> ในบล็อก try เดียวกัน พอ save โยน (disk เต็ม, permission,
+    หรือ <code>fs.rename</code> ชน EPERM/EBUSY ซึ่งเกิดได้จริงบน Windows ตามที่ <code>state.ts:61-67</code> ใช้ tmp+rename)
+    user จะไม่ได้เห็นคำตอบเลยสักตัวอักษร และยังถูกบอกว่า “ถาม PM ไม่สำเร็จ” ทั้งที่สำเร็จ —
+    ทำให้ user ถามซ้ำแล้วจ่ายเงินอีกรอบ
+  </div>
+  <div class="row"><b>หลักฐาน</b>
+    <ul>
+      <li>ลำดับในโค้ด: <code>:25</code> pmTurn สำเร็จ → <code>:26</code> set <code>pmSessionId</code> (ในหน่วยความจำ) →
+        <code>:27</code> <code>await store.save</code> (throw ได้) → <code>:28</code> ถึงจะ say ข้อความ →
+        catch ที่ <code>:29</code> ครอบทั้งสามบรรทัดจึงแยกไม่ออกว่าพังตรงไหน</li>
+      <li>เทสแยกกรณีนี้ไม่ได้เลย: ทุกเทสใช้ <code>MemoryStore.save</code> (<code>tests/helpers/fakes.ts:26-29</code>)
+        ที่ไม่มีทางล้ม ส่วนเทส “PM ตอบไม่สำเร็จ” (<code>tests/io-util.test.ts:101</code>) ทดสอบเฉพาะ pmTurn ที่ throw</li>
+    </ul>
+  </div>
+  <div class="row"><b>แนวทางแก้ไข</b>
+    ย้าย <code>io.say(turn.message)</code> ขึ้นมาก่อน <code>store.save</code> และแยก save ออกจาก try ของ pmTurn
+    (หรือ catch แยกแล้วขึ้นข้อความว่า “บันทึก state ไม่สำเร็จ” ต่างหาก) — คำตอบที่จ่ายเงินไปแล้วต้องถึงตา user เสมอ
+  </div>
+</div>
+
+<div class="card nit">
+  <span class="tag">nit</span>
+  <h3>N-1 — <code>UserIO.choose</code> ไม่มี production caller เหลือแล้ว แต่ยังต้อง implement 3 ที่ และเทสของมันให้ความมั่นใจผิด ๆ</h3>
+  <div class="row"><b>ทำไมถึงสำคัญ</b>
+    <code>grep "\.choose(" src/</code> เจอที่เดียวคือ <code>logger.ts:64</code> ซึ่งเป็น passthrough ของ <code>LoggingIO</code> เอง
+    — ทุกจุดตัดสินใจจริงไปทาง <code>decide()</code>/<code>chooseOrText</code> หมดแล้ว
+    ผลข้างเคียงคือเทส <code>CliIO.choose ถามซ้ำเมื่อพิมพ์ไม่ตรง</code> ยังเขียว ทั้งที่พฤติกรรมจริงที่ user เจอตอนนี้คือ
+    “พิมพ์ไม่ตรง = ยิงไปหา PM” ไม่ใช่ “ถามซ้ำฟรี”
+  </div>
+  <div class="row"><b>แนวทางแก้ไข</b> ลบ <code>choose</code> ออกจาก <code>UserIO</code> และจาก 3 implementation แล้วย้ายเทสมาคลุม <code>chooseOrText</code> แทน</div>
+</div>
+
+<div class="card nit">
+  <span class="tag">nit</span>
+  <h3>N-2 — พิมพ์ผิดเล็กน้อย (เช่น <code>confrim</code>) เสีย PM turn จริงหนึ่งครั้ง ทั้งเงินและเวลา</h3>
+  <div class="row"><b>หลักฐาน</b>
+    <code>cli.ts:72-73</code> ไม่ตรง = <code>{text}</code> → <code>io-util.ts:25</code> ยิง <code>pmTurn</code> ทันที
+    ไม่มี guard ใด ๆ; ก่อนหน้า change นี้ (<code>git show 9138733:src/cli.ts</code>) เป็นการ re-prompt ฟรี
+  </div>
+  <div class="row"><b>แนวทางแก้ไข</b> ถ้าข้อความสั้นมาก (เช่น ≤ 3 คำ, ไม่มีช่องว่าง) และ edit distance ใกล้ option ให้ถามยืนยันก่อนว่า “หมายถึง X ใช่ไหม” แทนการยิงเข้า PM</div>
+</div>
+
+<div class="card nit">
+  <span class="tag">nit</span>
+  <h3>N-3 — กฎการตัดเครื่องหมายท้ายข้อความไม่สม่ำเสมอ และป้ายภาษาไทยเทียบแบบ case-sensitive ต่างจาก option อังกฤษ (<code>src/cli.ts:17,21</code>)</h3>
+  <div class="row"><b>หลักฐาน</b>
+    รันจริง: <code>"confirm." -&gt; confirm</code> แต่ <code>"confirm?" -&gt; undefined</code> (กลายเป็นคำถามยิงหา PM);
+    <code>"ทำต่อ" -&gt; continue</code> แต่ <code>"ทำต่อ?" -&gt; undefined</code>;
+    <code>"ขอแก้/เพิ่ม"</code> ตรงกับ <code>change</code> ที่ DELIVER แต่ <code>"ขอแก้"</code> ไม่ตรงอะไรเลยที่ DELIVER
+    (เพราะ <code>LABELS.revise</code> ไม่ได้อยู่ใน options ของ phase นั้น) — user ที่คุ้นกับคำว่า “ขอแก้” จาก phase ก่อนหน้าจะสะดุด.
+    ฝั่ง option อังกฤษใช้ <code>toLowerCase()</code> ทั้งสองข้าง ส่วนป้ายไทยเทียบ <code>LABELS[o] === text</code> ตรง ๆ
+  </div>
+  <div class="row"><b>แนวทางแก้ไข</b> ตัด <code>[.)?!]+$</code> ให้ครบชุดเดียวกัน แล้วทำ normalize (trim + lower) ให้ทั้งสองฝั่งใช้เส้นทางเดียวกัน</div>
+</div>
+
+<div class="card nit">
+  <span class="tag">nit</span>
+  <h3>N-4 — 3 implementation ของ <code>chooseOrText</code> ไม่ตรงกันเรื่อง trim และ log เพี้ยนตอนกด Enter เปล่า</h3>
+  <div class="row"><b>หลักฐาน</b>
+    <code>CliIO.ask</code> trim ผลลัพธ์ (<code>cli.ts:66</code>) ดังนั้น <code>{text}</code> ที่ production ส่งเข้า PM ถูก trim แล้ว
+    ส่วน <code>ScriptedIO.ask</code> ไม่ trim (<code>tests/helpers/fakes.ts:49-54</code>) → <code>{text}</code> ในเทสต่างจากของจริง;
+    และเมื่อ user กด Enter เปล่า <code>LoggingIO.chooseOrText</code> จะ log <code>user.question { question: '' }</code>
+    (<code>logger.ts:74</code>) ทั้งที่ <code>io-util.ts:22</code> ไม่ได้ถาม PM เลย — อ่าน log ย้อนหลังแล้วเข้าใจผิดว่ามีคำถามที่ PM ไม่ตอบ
+  </div>
+  <div class="row"><b>แนวทางแก้ไข</b> ให้ <code>ScriptedIO</code> trim เหมือน <code>CliIO</code>, และให้ <code>LoggingIO</code> ข้ามการ log เมื่อ <code>text.trim() === ''</code></div>
+</div>
+
+<div class="card nit">
+  <span class="tag">nit</span>
+  <h3>N-5 — ข้อความ free-text ของ user ส่งเข้า PM โดยไม่มีเพดานความยาว (<code>src/io-util.ts:25</code>)</h3>
+  <div class="row"><b>หลักฐาน</b>
+    ทุก payload อื่นในระบบมี <code>.max()</code> กำกับหมด (<code>src/schemas.ts:37-47,80</code>) และ FileLogger ยังตัดที่ 1000 ตัวอักษร
+    (<code>logger.ts:13-20</code>) แต่ข้อความที่ user paste เข้ามา (เช่น log ก้อนใหญ่) ถูกส่งเข้า session ทั้งดุ้น และค้างอยู่ใน session นั้นตลอดทั้งรัน
+  </div>
+  <div class="row"><b>แนวทางแก้ไข</b> cap ที่ระดับ 4000–8000 ตัวอักษร แล้วบอก user ตรง ๆ ว่าถูกตัด</div>
+</div>
+
+<h2>3. สิ่งที่ไล่แล้วพบว่าถูกต้อง (เพื่อให้เห็นขอบเขตการตรวจ)</h2>
+<div class="checked">
+  <ul>
+    <li><b>EOF / Ctrl+C ไม่ถูกกลืน</b> — <code>io.chooseOrText</code> อยู่<em>นอก</em> try ของ <code>decide()</code> (<code>io-util.ts:20</code> vs <code>:24</code>)
+      error จาก <code>CliIO.ask</code> (<code>cli.ts:65-66</code>) จึงทะลุขึ้นไปถึง <code>index.ts:63</code> ได้ถูกต้อง</li>
+    <li><b>Enter เปล่าไม่เสียเงิน และไม่วนฟรี</b> — <code>io-util.ts:22</code> <code>continue</code> ก่อนเรียก PM; loop ไม่มีทางหมุนเองเพราะทุกรอบต้องรอ <code>ask</code> ที่ block จริง (หรือ throw เมื่อ stdin ปิด)</li>
+    <li><b>persist ก่อนถาม</b> — <code>state.pmSessionId</code> ถูก save ก่อนที่ user จะเห็นเมนูทุกจุด
+      (<code>requirements.ts:20-21</code>, <code>design.ts:53-54</code>, <code>build.ts:211-212</code>, <code>deliver.ts:25-26</code>)
+      และมีเทสยืนยันใน build/design/deliver</li>
+    <li><b>ถามซ้ำหลายรอบไม่ทำให้ state เพี้ยน</b> — <code>decide()</code> แตะแค่ <code>state.pmSessionId</code>; <code>progress</code> ถูก save ไปก่อนเข้าสู่ escalate แล้ว (<code>build.ts:176</code>)</li>
+    <li><b>สภาพปัจจุบันของ repo</b> — รันเองแล้ว: <code>npm run typecheck</code> ผ่าน, <code>npm test</code> ผ่าน 518 tests / 22 files</li>
+  </ul>
+</div>
+
+<h2>4. Verdict</h2>
+<div class="verdict">
+  <span class="badge">fix-then-ship</span>
+  <p>เหตุผลใหญ่ที่สุด: B-1 — PM ตอบคำถามแล้วเสนอ requirements ชุดใหม่ได้ตาม schema แต่โค้ดทิ้งทิ้งเงียบ ๆ
+  แล้วปุ่ม “ยืนยัน” บันทึกของเก่า ทำให้ทั้ง DESIGN/BUILD วิ่งจาก requirements ผิดโดยไม่มีสัญญาณเตือน
+  และสิ่งที่กันอยู่ตอนนี้มีแค่ประโยคใน prompt ไม่ใช่โค้ด</p>
+</div>
+
+<footer>tb-scrutinize · agent-team · 2026-09-25</footer>
+
+</div>
+</body>
+</html>

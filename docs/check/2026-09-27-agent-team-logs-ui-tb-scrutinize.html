@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scrutinize: logs UI</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --fg:#1f2933; --muted:#616e7c; --border:#d9dee5; --code:#eef1f5;
+          --blocker:#c62828; --major:#d97706; --nit:#7b8794; --fts:#b58900; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#12161c; --card:#1b2129; --fg:#e4e8ee; --muted:#9aa5b1; --border:#2e3742; --code:#232b35; } }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.7 -apple-system,"Segoe UI","Noto Sans Thai",sans-serif; }
+  main { max-width:900px; margin:0 auto; padding:24px 16px; }
+  h1 { font-size:22px; margin:0 0 4px; line-height:1.35; } h2 { font-size:17px; margin:28px 0 10px; }
+  .muted { color:var(--muted); }
+  code { background:var(--code); padding:1px 5px; border-radius:4px; font-size:13px; }
+  .card { background:var(--card); border:1px solid var(--border); border-left:6px solid var(--nit); border-radius:8px; padding:12px 16px; margin:12px 0; }
+  .card.major { border-left-color:var(--major); } .card.blocker { border-left-color:var(--blocker); }
+  .card h3 { margin:0 0 6px; font-size:15px; line-height:1.5; }
+  .sev { display:inline-block; font-size:11px; font-weight:bold; color:#fff; padding:1px 8px; border-radius:10px; margin-right:6px; background:var(--nit); }
+  .major .sev { background:var(--major); } .blocker .sev { background:var(--blocker); }
+  dt { font-weight:bold; font-size:13px; color:var(--muted); margin-top:6px; } dd { margin:0; }
+  .verdict { display:inline-block; background:var(--fts); color:#fff; font-weight:bold; padding:6px 14px; border-radius:16px; }
+  ul { padding-left:20px; }
+</style>
+</head>
+<body>
+<main>
+<h1>Scrutinize: หน้า <code>agent-team logs</code> — sort/filter/pagination, สี role, ฟอนต์ฝัง</h1>
+<div class="muted">2026-09-27 · branch feat/agent-team-logs-ui · f5c4d32..c5f35e4 · plan: docs/plan/2026-09-27-agent-team-logs-ui.html</div>
+
+<h2>เจตนา</h2>
+<p>ทำให้หน้า log ใช้งานได้เมื่อรายการยาว (กรอง/เรียง/แบ่งหน้า 10/20/50), แยก agent แต่ละ role ด้วยสีและไอคอน และอ่านภาษาไทยสบายตาด้วยฟอนต์ที่ฝังไว้ในไฟล์ (ใช้ได้ offline)</p>
+<p><strong>มีวิธีที่ง่ายกว่าไหม:</strong> มี ในเชิงโครงสร้าง (ดู finding ข้อ 2)</p>
+<ul>
+  <li>ตอนนี้ UI ทั้งหมดเป็น ES5 ใน <code>String.raw</code> ยาว 542 บรรทัด (<code>page-assets.ts</code>) ไม่ผ่าน typecheck ไม่มี syntax highlight และห้ามใช้ backtick หรือ <code>${</code></li>
+  <li>ย้ายไปเป็นไฟล์ <code>.js</code> จริงที่มี <code>// @ts-check</code> แล้วอ่านตอนสร้างหน้า จะดูแลง่ายกว่ามาก โดยไม่เปลี่ยนพฤติกรรม</li>
+</ul>
+<p>สำหรับรอบนี้ไม่ต้องรื้อ แต่ควรทำก่อนที่ UI จะโตกว่านี้</p>
+
+<h2>ไล่แล้วยืนยัน</h2>
+<ul>
+  <li><strong>เทสต์:</strong> <code>npm test</code> ผ่าน 812 เทสต์ และ typecheck ไม่มี error (รันเองหลัง commit <code>c5f35e4</code>)</li>
+  <li><strong>คืน focus หลังวาดหน้าใหม่:</strong>
+    <ul>
+      <li><code>render()</code> (<code>page-assets.ts:193-231</code>) จำ <code>activeElement.id</code> แล้ว focus กลับหลังสร้างหน้าใหม่ control ทุกตัวมี id คงที่แล้ว เช่น <code>sel-run</code>:244, <code>chip-*</code>:332, <code>calls-*</code>, <code>ev-*</code>, <code>call-N-toggle</code>:371</li>
+      <li>ปุ่มที่กลายเป็น disabled จะส่ง focus ไปปุ่มคู่ของมัน (<code>siblingPagerId</code>:187)</li>
+      <li>คืนตำแหน่งเคอร์เซอร์ (caret) เฉพาะช่องค้นหา</li>
+    </ul></li>
+  <li><strong>IME:</strong> timer ของ debounce ไม่ render ระหว่างที่ IME ยังพิมพ์ไม่จบ (composition) (:428), live poll ก็ข้ามตอนนั้น (:514) และ <code>compositionend</code> สั่ง render เอง (:458)</li>
+  <li><strong>ตัวกรองค้าง:</strong> กรณีตัวกรองทำให้รายการว่าง มีปุ่ม "ล้างตัวกรอง" ทั้งสองส่วน และยังคงจำนวนต่อหน้าเดิมไว้ (:348-359, :465-476)</li>
+  <li><strong>live update:</strong> <code>&lt;details&gt;</code> ที่เปิดอยู่ยังเปิดค้างหลัง live update (<code>state.openEvents</code> :479-504) ส่วนการคำนวณ default run และ reset เมื่อเปลี่ยนรอบรันยังเหมือนเดิม (:520-534)</li>
+  <li><strong>ความปลอดภัยและฟอนต์:</strong> ข้อความจาก log ผ่าน <code>el()</code> ด้วย <code>textContent</code> ทั้งหมด ฟอนต์ฝังจาก <code>assets/fonts</code> โดยไม่มี request ออกภายนอก (ยืนยันแล้วใน <code>logs.html</code> ของ mail-sender)</li>
+</ul>
+
+<h2>Findings</h2>
+
+<div class="card major">
+  <h3><span class="sev">MAJOR</span>โหมด <code>--live</code> หยุดอัปเดตโดยไม่บอก ตราบใดที่ focus ยังอยู่บน select (<code>page-assets.ts:515-516</code>)</h3>
+  <dl>
+    <dt>ทำไมสำคัญ</dt>
+    <dd>ผู้ใช้เปลี่ยนการเรียงหรือตัวกรองสถานะ แล้วนั่งดู agent ทำงาน แต่หน้าเลิกอัปเดตไปเลยจนกว่าจะคลิกที่อื่น ทั้งที่หัวหน้ายังเขียนว่า "live: อัปเดตอัตโนมัติทุก 3 วินาที" ซึ่งขัดกับเป้าหมายของโหมด live ตรง ๆ</dd>
+    <dt>หลักฐาน</dt>
+    <dd>เปลี่ยน select <code>calls-sort</code> → <code>onchange</code> → <code>render()</code> → focus ถูกคืนให้ select ตัวใหม่ (:220-221, ตามที่ตั้งใจทำไว้เพื่อ keyboard) → poll ทุกครั้งหลังจากนั้นเจอ <code>activeTag === 'select'</code> แล้ว <code>return</code> ไปเลย (:516) ไม่ fetch และไม่ render จนกว่า focus จะย้ายไปที่อื่น เทสต์ live ใน <code>page-dom.test.ts:296+</code> ไม่ครอบกรณีนี้</dd>
+    <dt>แนวทางแก้ไข</dt>
+    <dd>เลื่อนการ render เฉพาะตอนที่ dropdown น่าจะเปิดอยู่จริง ไม่ใช่ทุกครั้งที่ select มี focus:
+      <ul>
+        <li>บันทึก <code>lastSelectInteraction = Date.now()</code> ตอน <code>mousedown</code>/<code>keydown</code> บน select แล้วข้ามเฉพาะ poll ที่เกิดภายใน 3 วินาทีหลังจากนั้น</li>
+        <li>หรือยังคง fetch ตามปกติแต่เลื่อนแค่ <code>render()</code> ออกไปไม่เกิน 1 รอบ</li>
+      </ul>
+      เพิ่มเทสต์: focus select → tick → ข้อมูลใหม่ต้องแสดงภายใน 2 tick</dd>
+  </dl>
+</div>
+
+<div class="card major">
+  <h3><span class="sev">MAJOR</span>UI ฝั่งเบราว์เซอร์ 542 บรรทัดอยู่ใน <code>String.raw</code> ที่ TypeScript ตรวจไม่ได้</h3>
+  <dl>
+    <dt>ทำไมสำคัญ</dt>
+    <dd>การแก้แต่ละครั้งพึ่งเทสต์ DOM shim อย่างเดียว:
+      <ul>
+        <li>พิมพ์ชื่อ property ผิด เช่น <code>res.pgae</code> ก็ยังผ่าน typecheck</li>
+        <li>editor ไม่ highlight โค้ดในสตริง</li>
+        <li>ต้องระวังกฎ "ห้าม backtick / <code>${</code> / <code>&lt;/script</code>" ทุกบรรทัด</li>
+      </ul>
+      และโค้ดโตจาก 300 เป็น 542 บรรทัดในสองรอบ</dd>
+    <dt>หลักฐาน</dt>
+    <dd><code>src/logview/page-assets.ts</code> (542 บรรทัด) และ <code>list-assets.ts</code> เป็นสตริงทั้งไฟล์ <code>tsconfig</code> ไม่มี <code>checkJs</code> ส่วนเทสต์ตรวจ syntax ด้วย <code>new Function</code> ได้แค่ว่า parse ผ่าน</dd>
+    <dt>แนวทางแก้ไข</dt>
+    <dd>ทำเป็นงานถัดไป ไม่ต้องบล็อก merge:
+      <ul>
+        <li>ย้ายไปไว้ที่ <code>src/logview/web/page.js</code> และ <code>list.js</code> พร้อม <code>// @ts-check</code> และ JSDoc types</li>
+        <li>ให้ <code>render.ts</code> อ่านไฟล์ด้วย <code>fs.readFileSync</code> (cache ไว้) เหมือนที่ทำกับฟอนต์</li>
+        <li>เทสต์เดิมใช้ต่อได้ แค่เปลี่ยนแหล่งที่อ่านสตริง</li>
+      </ul></dd>
+  </dl>
+</div>
+
+<div class="card">
+  <h3><span class="sev">NIT</span>กด "ล้างตัวกรอง" แล้ว focus หลุดไปต้นหน้า</h3>
+  <dl>
+    <dt>ทำไมสำคัญ</dt><dd>ผู้ใช้คีย์บอร์ดกด Enter ที่ "ล้างตัวกรอง" แล้ว focus ไปอยู่ที่ <code>&lt;body&gt;</code> เพราะปุ่มหายไปหลังรายการกลับมามีข้อมูล</dd>
+    <dt>หลักฐาน</dt><dd><code>calls-clear</code>/<code>ev-clear</code> (:352, :469) มีอยู่เฉพาะตอนรายการว่าง พอ render ใหม่ <code>getElementById(focusId)</code> ได้ <code>null</code> (:214)</dd>
+    <dt>แนวทางแก้ไข</dt><dd>ใน onclick ของปุ่มล้าง ตั้งให้ focus ไปที่ control แรกของ section นั้น (<code>calls-status</code> / <code>ev-search</code>) โดยตั้ง id เป้าหมายก่อนเรียก <code>render()</code></dd>
+  </dl>
+</div>
+
+<div class="card">
+  <h3><span class="sev">NIT</span><code>aria-live</code> อยู่บน element ที่ถูกสร้างใหม่ทุกครั้งที่ render</h3>
+  <dl>
+    <dt>ทำไมสำคัญ</dt><dd>screen reader จะประกาศการเปลี่ยนแปลงของ live region ที่มีอยู่แล้วในหน้า แต่ <code>.pager-info</code> ถูกสร้างใหม่ทั้งก้อนทุกครั้ง จึงมักไม่ถูกประกาศ เช่น NVDA/Chrome ไม่อ่าน region ใหม่ที่ใส่ข้อความมาพร้อมกัน</dd>
+    <dt>หลักฐาน</dt><dd><code>info.setAttribute('aria-live','polite')</code> (:175) อยู่ใน <code>pager()</code> ซึ่งถูกเรียกใหม่ทุกครั้งที่ render และ <code>app.textContent = ''</code> (:211)</dd>
+    <dt>แนวทางแก้ไข</dt><dd>ใช้ live region ตัวเดียวที่อยู่นอก <code>#app</code> (สร้างครั้งเดียว) แล้วเขียนข้อความ "หน้า X/Y" ลงไปหลังเปลี่ยนหน้า</dd>
+  </dl>
+</div>
+
+<div class="card">
+  <h3><span class="sev">NIT</span>ถ้ามีหน้าเดียว ปุ่ม prev/next เป็น disabled ทั้งคู่ และ focus หาย</h3>
+  <dl>
+    <dt>ทำไมสำคัญ</dt><dd>เปลี่ยนจำนวนต่อหน้าเป็น 50 จากปุ่ม next แล้วรายการเหลือหน้าเดียว focus จะไปอยู่บนปุ่มที่ disabled (focus ไม่ติด) แล้วหลุดไปที่ body</dd>
+    <dt>หลักฐาน</dt><dd>:215-221 ถ้าปุ่มคู่ก็ disabled ด้วย จะยังเรียก <code>again.focus()</code> บนปุ่มที่ disabled</dd>
+    <dt>แนวทางแก้ไข</dt><dd>ถ้าทั้งคู่ disabled ให้ย้าย focus ไปที่ select จำนวนต่อหน้า (<code>*-size</code>) ของ section เดียวกัน</dd>
+  </dl>
+</div>
+
+<h2>Verdict</h2>
+<p><span class="verdict">fix-then-ship</span></p>
+<p>เหตุผลหลัก: โหมด <code>--live</code> หยุดอัปเดตเงียบ ๆ ทุกครั้งที่ผู้ใช้เพิ่งใช้ select เพราะ focus ถูกคืนให้ select แล้ว poll ถูกข้ามตลอด แก้ได้ในไม่กี่บรรทัด ส่วนอื่น (ตัวกรอง, pagination, ฟอนต์ที่ฝัง, typography, ความปลอดภัย) ตรวจแล้วใช้ได้ การย้าย UI ออกจาก <code>String.raw</code> ควรทำเป็นงานถัดไป</p>
+</main>
+</body>
+</html>

@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scrutinize: multi-job resume v3</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --ink:#15181d; --muted:#5b6472; --line:#e2e6ec;
+    --blocker:#c62828; --blocker-bg:#fdecec;
+    --major:#e06c00; --major-bg:#fff4e6;
+    --nit:#6b7280; --nit-bg:#f1f3f5;
+    --ok:#2e7d32;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --bg:#14171c; --card:#1c2027; --ink:#e8eaee; --muted:#9aa4b2; --line:#2b313a;
+      --blocker-bg:#3a1c1c; --major-bg:#3a2a12; --nit-bg:#22262d;
+      --blocker:#ff6b6b; --major:#ffab4d; --nit:#9aa4b2; --ok:#6bd28f;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#14171c; --card:#1c2027; --ink:#e8eaee; --muted:#9aa4b2; --line:#2b313a;
+    --blocker-bg:#3a1c1c; --major-bg:#3a2a12; --nit-bg:#22262d;
+    --blocker:#ff6b6b; --major:#ffab4d; --nit:#9aa4b2; --ok:#6bd28f;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.7 "Segoe UI","Noto Sans Thai",system-ui,-apple-system,sans-serif;}
+  .wrap{max-width:900px;margin:0 auto;padding:40px 16px 72px}
+  header{border-bottom:2px solid var(--line);padding-bottom:18px;margin-bottom:28px}
+  h1{font-size:26px;margin:0 0 6px;line-height:1.35}
+  .sub{color:var(--muted);font-size:14px}
+  h2{font-size:19px;margin:36px 0 14px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  .intent{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px}
+  .intent p{margin:0 0 10px}
+  .intent p:last-child{margin:0}
+  .card{background:var(--card);border:1px solid var(--line);border-left-width:6px;
+    border-radius:10px;padding:18px 20px;margin:0 0 16px}
+  .card.blocker{border-left-color:var(--blocker);background:var(--blocker-bg)}
+  .card.major{border-left-color:var(--major);background:var(--major-bg)}
+  .card.nit{border-left-color:var(--nit);background:var(--nit-bg)}
+  .tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.09em;
+    text-transform:uppercase;padding:3px 9px;border-radius:999px;color:#fff;margin-bottom:10px}
+  .blocker .tag{background:var(--blocker)}
+  .major .tag{background:var(--major)}
+  .nit .tag{background:var(--nit)}
+  .card h3{margin:0 0 12px;font-size:16.5px;line-height:1.5}
+  .row{margin:11px 0}
+  .row b{display:block;font-size:12.5px;letter-spacing:.04em;color:var(--muted);
+    text-transform:uppercase;margin-bottom:3px}
+  code{font-family:"Cascadia Code",Consolas,monospace;font-size:13.5px;
+    background:rgba(127,127,127,.16);padding:1px 5px;border-radius:4px;word-break:break-word}
+  pre{font-family:"Cascadia Code",Consolas,monospace;font-size:13px;line-height:1.6;
+    background:rgba(127,127,127,.12);padding:12px 14px;border-radius:8px;overflow-x:auto;margin:8px 0}
+  ul{margin:6px 0;padding-left:22px}
+  li{margin:3px 0}
+  .verdict{display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+    background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px}
+  .badge{font-size:19px;font-weight:800;letter-spacing:.03em;padding:10px 22px;
+    border-radius:999px;color:#1a1a1a;background:#f2c94c;white-space:nowrap}
+  .verdict p{margin:0;flex:1;min-width:260px}
+  .checked{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px}
+  footer{margin-top:40px;color:var(--muted);font-size:13px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>Scrutinize (รอบ 3): Multi-job resume — design spec</h1>
+  <div class="sub">docs/superpowers/specs/2026-09-25-multi-job-resume-design.md @ 00dc06d · รีวิววันที่ 2026-09-25 · รอบก่อน: v1, v2</div>
+</header>
+
+<h2>เจตนา</h2>
+<div class="intent">
+  <p>เป้าหมายเดิม: เก็บได้หลายงานใน <code>jobs/&lt;id&gt;/</code> และมีเมนู r/d/n รอบนี้แก้ lock (<code>unlockSync</code> + SIGHUP, <code>{pid, startedAt}</code>, บอก path ให้ user ลบ lock เอง, unlink แล้วลอง <code>wx</code> ใหม่), ตัด fallback ของ migration ออก, แก้เงื่อนไข <code>lastBuildAt</code> และระบุ <code>runTeam</code> ให้ชัดขึ้น</p>
+  <p><b>มีวิธีง่ายกว่าไหม?</b> ตอนนี้ spec ไม่มีส่วนที่เกินจำเป็นแล้ว ส่วนที่ซับซ้อนสุดคือ lock ซึ่งแต่ละข้อมีเหตุผลรองรับครบ ผมไม่เห็นทางที่เล็กกว่านี้ที่ยังกันการลบงานที่ process อื่นกำลังรันได้</p>
+</div>
+
+<h2>ข้อจาก v2: แก้ครบไหม</h2>
+<div class="checked">
+  <ul>
+    <li><b>v2#1 lock ค้าง</b> ✅ มี <code>unlockSync</code> ด้วย <code>rmSync</code> ใช้ handler เดียวกันทั้ง SIGINT และ SIGHUP, เพิ่ม <code>startedAt</code>, เมนูบอก path ของ lock และมีเทสต์ handler</li>
+    <li><b>v2#2 migration</b> ✅ เริ่มย้ายเฉพาะเมื่อมี <code>state.json</code> ที่ root และถ้าเจอ artifact ค้างให้ WARN โดยไม่ throw</li>
+    <li><b>v2#3 lastBuildAt</b> ✅ เพิ่มเงื่อนไข <code>rounds &gt; 0</code> (แต่ยังมีช่องหนึ่งกรณี ดู nit #2)</li>
+    <li><b>v2#4 title</b> ✅ ตั้ง title เฉพาะเมื่อ <code>!pmSessionId</code> และมีเทสต์แล้ว</li>
+    <li><b>v2#5 เทสต์ saves</b> ✅ เขียนโค้ดตัวอย่างไว้ในหัวข้อ runTeam แล้ว</li>
+    <li><b>v2#6 race</b> ✅ ใช้ mkdir แบบไม่ recursive, ถือว่า EPERM แปลว่า process ยังอยู่ และตอน lock ค้างใช้ unlink แล้วลอง <code>wx</code> ใหม่</li>
+  </ul>
+</div>
+
+<h2>Findings ใหม่</h2>
+
+<div class="card major">
+  <span class="tag">major</span>
+  <h3>1. <code>d&lt;n&gt;</code> และการลบงานเปล่าอัตโนมัติ ตัดสินจาก lock ในข้อมูลที่อ่านมาตอนแสดงเมนู ถ้าอีก process lock งานนั้นหลังจากนั้น ก็ยังถูกลบได้</h3>
+  <div class="row"><b>ทำไมสำคัญ</b>นี่คือกรณีที่ lock ถูกออกแบบมาป้องกันตั้งแต่ #3 และช่วงเวลาที่พลาดได้ไม่สั้น เพราะนับตั้งแต่แสดงเมนูจนถึงตอนที่ user ตอบ y ซึ่งอาจนานเป็นนาที</div>
+  <div class="row"><b>หลักฐาน</b>spec เขียนว่า "<code>d&lt;n&gt;</code> → ถ้างานถูก lock ให้บอก... ถ้าไม่ถูก lock ให้ถามยืนยัน ... แล้ว <code>remove(id)</code>" สถานะ lock มาจาก <code>JobInfo.lock</code> ที่ได้จาก <code>list()</code> ในขั้น 1 ลองไล่ตามลำดับนี้: terminal A เปิดเมนูไว้ → terminal B เลือก <code>r1</code> (<code>lock()</code> สำเร็จ แล้วเริ่มรัน) → A พิมพ์ <code>d1</code> แล้วตอบ <code>y</code> → <code>remove</code> ลบโฟลเดอร์ทั้งโฟลเดอร์ รวม lock ของ B ด้วย → พอ B save ครั้งถัดไป <code>mkdir recursive</code> (<code>state.ts:64</code>) จะสร้างโฟลเดอร์คืน แต่ artifacts หายไปแล้ว การลบงานเปล่าอัตโนมัติก็ใช้ข้อมูลจากตอนแสดงเมนูแบบเดียวกัน (แต่ช่วงเวลาสั้นกว่ามาก)</div>
+  <div class="row"><b>แนวทางแก้ไข</b>ให้ <code>d</code> เรียก <code>lock(id)</code> เองหลังจาก user ตอบ <code>y</code> ถ้า lock ไม่ได้ ให้บอกว่ากำลังรันอยู่แล้วแสดงเมนูใหม่ ถ้าได้ ค่อย <code>remove(id)</code> (lock จะถูกลบไปพร้อมโฟลเดอร์) การลบงานเปล่าให้ทำ "<code>lock()</code> แล้วค่อย <code>remove()</code>" แบบเดียวกัน แล้วเพิ่มเทสต์ "งานถูก lock หลังจากแสดงเมนูแล้ว เมื่อกด d → ถูกปฏิเสธ"</div>
+</div>
+
+<div class="card nit">
+  <span class="tag">nit</span>
+  <h3>2. เงื่อนไข <code>rounds &gt; 0</code> ไม่ได้กันการตั้ง <code>lastBuildAt</code> ตอนเข้า BUILD รอบที่สอง (หลังขอแก้ตอน DELIVER)</h3>
+  <div class="row"><b>ทำไมสำคัญ</b>spec เขียนว่า "เพิ่งเข้า BUILD ยังไม่ตั้ง" แต่ข้อนี้จริงเฉพาะการเข้า BUILD ครั้งแรก เทสต์ที่วางแผนไว้จึงไม่ครอบกรณีนี้</div>
+  <div class="row"><b>หลักฐาน</b><code>initProgress</code> (<code>domain.ts:59-60</code>) เก็บ progress ของ task ที่ <code>done</code> และไม่ได้ <code>changed</code> ไว้เหมือนเดิม รวมถึง <code>rounds</code> ด้วย ดังนั้นตอน DELIVER→change→…→REVIEW confirm ระบบ save ในเฟส BUILD ขณะที่มี <code>rounds &gt; 0</code> อยู่แล้ว <code>lastBuildAt</code> จึงถูกตั้งทันทีก่อนมีการแก้โค้ด</div>
+  <div class="row"><b>แนวทางแก้ไข</b>ถ้าต้องการให้แม่นขึ้น ให้เช็กว่ามี task ที่ <code>!p.done &amp;&amp; p.rounds &gt; 0</code> หรือ task ที่ done ใหม่ในรอบนี้ ถ้ายอมรับได้ ให้เพิ่มกรณีนี้ลงในย่อหน้า "ยอมรับว่ายังนับเกินจริงเล็กน้อย"</div>
+</div>
+
+<div class="card nit">
+  <span class="tag">nit</span>
+  <h3>3. <code>--resume</code> อาจเลือกงานที่ไม่ใช่ล่าสุดโดยไม่บอก user</h3>
+  <div class="row"><b>ทำไมสำคัญ</b>ถ้างานใหม่สุดถูก lock อยู่ ระบบจะข้ามไปทำงานที่เก่ากว่าโดยไม่บอก user อาจคิดว่ากำลังทำงานอีกงานอยู่</div>
+  <div class="row"><b>หลักฐาน</b>ขั้น 3 ของ <code>selectJob</code> ไม่ได้ให้ <code>io.say</code> อะไรเลย ส่วน <code>job.selected</code> บันทึกลง log อย่างเดียว</div>
+  <div class="row"><b>แนวทางแก้ไข</b>ให้ <code>io.say('ทำต่องาน "&lt;ชื่อ&gt;" (&lt;id&gt;)')</code> ทุกครั้งที่ใช้ <code>--resume</code></div>
+</div>
+
+<div class="card nit">
+  <span class="tag">nit</span>
+  <h3>4. เทสต์ signal handler ต้องส่งฟังก์ชัน <code>exit</code> เข้าไปแทนของจริง</h3>
+  <div class="row"><b>ทำไมสำคัญ</b>ถ้า handler เรียก <code>process.exit</code> ตรง ๆ เทสต์ vitest จะตายไปด้วย</div>
+  <div class="row"><b>หลักฐาน</b>handler เดิมจบด้วย <code>process.exit(130)</code> (<code>index.ts:52</code>)</div>
+  <div class="row"><b>แนวทางแก้ไข</b>ระบุ signature เช่น <code>makeInterruptHandler({ repo, getJobId, logger, abort, closeCli, exit })</code></div>
+</div>
+
+<div class="card nit">
+  <span class="tag">nit</span>
+  <h3>5. ถ้า 2 process เริ่มรันพร้อมกันตอนที่ยังมี legacy อยู่ process หนึ่งจะ error ตอน migration</h3>
+  <div class="row"><b>ทำไมสำคัญ</b>มีโอกาสเกิดน้อย แต่ถ้าเกิด ผู้ใช้จะเห็น error "ย้ายไม่สำเร็จ" ทั้งที่อีก process ย้ายไปสำเร็จแล้ว</div>
+  <div class="row"><b>หลักฐาน</b>ทั้ง 2 process เจอ <code>state.json</code> ที่ root พร้อมกัน พอฝั่งหนึ่ง rename ไปก่อน อีกฝั่งจะได้ <code>ENOENT</code> ซึ่งเข้าข้อ "ย้ายไฟล์ legacy ไม่สำเร็จ → throw"</div>
+  <div class="row"><b>แนวทางแก้ไข</b>ถ้า rename ได้ <code>ENOENT</code> ให้ถือว่าอีก process ย้ายไปแล้วและทำต่อได้เลย หรือเขียนไว้ใน "ไม่ทำ" ก็ได้</div>
+</div>
+
+<h2>สิ่งที่ไล่ตรวจแล้ว (ยืนยันว่าถูก)</h2>
+<div class="checked">
+  <ul>
+    <li>การกด Ctrl+C ใน readline (<code>cli.ts</code> <code>rl.on('SIGINT')</code> → <code>process.emit('SIGINT')</code>) ไปถึง handler เดียวกันที่เรียก <code>unlockSync</code> จึงปล่อย lock ทันก่อน exit</li>
+    <li>ถ้ากด Ctrl+C ระหว่าง <code>selectJob</code> หลังจาก <code>create()</code>/<code>lock()</code> แล้วแต่ยังไม่รู้ jobId lock จะค้างพร้อม pid ที่ตายไปแล้ว รอบถัดไปจะรู้ว่าค้างจาก ESRCH จึงยอมรับได้</li>
+    <li>ลำดับ "เขียน lock ก่อน <code>state.json</code>" ทำให้ <code>list()</code> ของอีก process ไม่เห็นงานที่กำลังสร้างอยู่ว่าเป็นงานเปล่าที่ไม่ได้ถูก lock</li>
+    <li>ถ้าย้าย legacy ล้มครึ่งทาง <code>state.json</code> ยังอยู่ที่ root → รอบถัดไปได้ id เดิมจาก mtime → ใช้โฟลเดอร์เดิมต่อ (ขั้น 2) ครบวงจร</li>
+    <li>โค้ดตัวอย่างของ <code>runTeam</code> ทำให้ <code>orchestrator.test.ts:216-224</code> ผ่าน และเทสต์ resume ที่ตั้ง <code>store.state</code> ไว้ก่อนยังผ่านเหมือนเดิม</li>
+  </ul>
+</div>
+
+<h2>Verdict</h2>
+<div class="verdict">
+  <span class="badge">fix-then-ship</span>
+  <p>เกือบพร้อมแล้ว เหลือแก้ #1 คือให้ <code>d</code> และการลบงานเปล่าอัตโนมัติเรียก <code>lock()</code> ก่อน <code>remove()</code> แก้ใน spec แค่ 1-2 บรรทัด แต่ถ้าไม่แก้ lock จะกันการลบงานที่อีก process กำลังรันไม่ได้ ซึ่งเป็นเหตุผลที่ใส่ lock เข้ามาตั้งแต่แรก ส่วน nit ที่เหลือจะแก้ตอน implement ก็ได้</p>
+</div>
+
+<footer>tb-scrutinize · รอบ 3 · 2026-09-25</footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>Level Models + Task Context Implementation Plan</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; line-height: 1.55;
+         max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1f2933;
+         background: #f5f7fa; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  pre { background: #1f2933; color: #e4e7eb; padding: .9rem 1rem;
+        border-radius: 6px; overflow-x: auto; }
+  code { background: #e4e7eb; padding: .1rem .35rem; border-radius: 4px; }
+  pre code { background: none; padding: 0; color: inherit; }
+  .frame { border-left: 6px solid; border-radius: 8px; padding: 1rem 1.25rem;
+           margin: 1.25rem 0; background: #ffffff;
+           box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .frame-header     { border-color: #2563eb; background: #eff6ff; }
+  .frame-constraints{ border-color: #d97706; background: #fffbeb; }
+  .frame-task       { border-color: #059669; background: #ecfdf5; }
+  .frame h1, .frame h2, .frame h3 { margin-top: 0; }
+  .note { border-color: #7c3aed; background: #f5f3ff; }
+  .step { display: flex; gap: .5rem; align-items: baseline;
+          margin: .75rem 0 .25rem; }
+  .step input { transform: scale(1.2); margin-top: .15rem; }
+  .meta { color: #52606d; font-size: .9rem; }
+</style>
+</head>
+<body>
+
+<div class="frame frame-header">
+  <h1>Level Models + Task Context Implementation Plan (โปรเจกต์ย่อย E)</h1>
+  <p><strong>เป้าหมาย:</strong> เลือกโมเดลของแต่ละ role ตามระดับงาน (quick/standard/full) ผ่าน <code>modelByLevel</code> และตัด task อื่นออกจาก prompt ของ worker/QA/Security ให้เหลือแค่ task ของตัวเองกับ task ที่ <code>dependsOn</code></p>
+  <p><strong>สถาปัตยกรรม:</strong> <code>RoleConfig</code> มี <code>modelByLevel</code> (optional) และ <code>resolveModel()</code> เลือกโมเดล (level <code>undefined</code> = full) ผู้เรียก runner ส่ง <code>level</code> มากับ input ของแต่ละเมธอด แล้ว <code>SdkRoleRunner</code> แทน <code>model</code> ก่อนส่งให้ <code>buildQueryOptions</code> ส่วน prompt ใช้ <code>taskScopedDesign()</code> สร้าง design ที่ไม่มี <code>tasks</code> แต่มี <code>relatedTasks</code></p>
+  <p><strong>Tech Stack:</strong> TypeScript + tsx, zod 4, vitest, <code>@anthropic-ai/claude-agent-sdk</code></p>
+</div>
+
+<div class="frame note">
+  <strong>For agentic workers:</strong> REQUIRED SUB-SKILL: Use
+  tb-subagent-driven-development (recommended) or
+  tb-executing-plans to implement this plan task-by-task. Steps keep
+  the <code>- [ ]</code> marker next to each checkbox for tracking.
+</div>
+
+<div class="frame frame-constraints">
+  <h2>Global Constraints</h2>
+  <ul>
+    <li>Repo: <code>C:\work\my\agent-team</code> ทำงานบน branch <code>feat/level-models</code> (แตกจาก <code>main</code> = <code>45ca92a</code>)</li>
+    <li>ห้ามรัน <code>agent-team</code> แบบโต้ตอบหรือกับโปรเจกต์จริง (เรียกโมเดลที่เสียเงิน) ตรวจด้วย <code>npm test</code> และ <code>npm run typecheck</code> เท่านั้น</li>
+    <li>ก่อน commit ทุกครั้ง: <code>npm test</code> ผ่านทั้งหมด และ <code>npm run typecheck</code> ไม่มี error</li>
+    <li>ทุก commit ลงท้ายด้วย trailer <code>Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;</code> ตรงตัว (ห้ามใส่ชื่อโมเดลอื่น)</li>
+    <li>ห้าม commit ไฟล์ untracked เดิม: <code>HANDOFF.md</code>, <code>agent_structure.txt</code>, <code>docs/*.html</code>, <code>docs/check/</code>, <code>docs/plan/</code>, <code>docs/error/</code> — ใช้ <code>git add &lt;ไฟล์ที่แก้&gt;</code> ระบุชื่อเสมอ ห้าม <code>git add -A</code></li>
+    <li>ชื่อโมเดล: <code>claude-sonnet-5</code> (ค่าคงที่ <code>SONNET</code>) และ <code>claude-opus-5</code> (<code>OPUS</code>) ใน <code>src/config.ts</code></li>
+    <li>level <code>undefined</code> (state เก่าก่อนมีระบบระดับ) ต้องถือเป็น <code>full</code> ทุกที่</li>
+    <li>PM ห้ามมี <code>modelByLevel</code> (schema ต้อง reject) เพราะ PM ทำงานก่อนรู้ระดับและ resume session เดียวตลอดงาน</li>
+    <li>คอมเมนต์ในโค้ดเขียนภาษาไทยสั้น ๆ ตามสไตล์ไฟล์เดิม</li>
+  </ul>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 1: Config — <code>modelByLevel</code> + <code>resolveModel</code></h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/config.ts</code> (<code>RoleConfig</code>, <code>DEFAULT_CONFIG.roles.planning</code>, <code>RoleOverrideSchema</code>, <code>ConfigOverrideSchema</code>, <code>mergeConfig</code>)</li>
+    <li>แก้ไข: <code>README.md</code> ส่วน "ตั้งค่า (ไม่บังคับ)"</li>
+    <li>เทสต์: <code>tests/config.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: <code>Level</code> จาก <code>src/schemas.ts</code> (<code>'quick' | 'standard' | 'full'</code>)</li>
+    <li>ส่งต่อ: <code>RoleConfig.modelByLevel?: Partial&lt;Record&lt;Level, string&gt;&gt;</code> และ <code>export function resolveModel(role: RoleConfig, level: Level | undefined): string</code></li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>แก้บรรทัด import บนสุดของ <code>tests/config.test.ts</code> เป็น</p>
+<pre><code>import { DEFAULT_CONFIG, loadConfig, mergeConfig, resolveModel, ROLE_NAMES } from '../src/config';</code></pre>
+  <p>แล้วต่อท้ายไฟล์:</p>
+<pre><code>describe('modelByLevel', () =&gt; {
+  it('default: Planning ใช้ Sonnet ใน standard และ Opus ใน full/undefined, role อื่นไม่มี modelByLevel', () =&gt; {
+    const planning = DEFAULT_CONFIG.roles.planning;
+    expect(planning.model).toBe('claude-opus-5');
+    expect(planning.modelByLevel).toEqual({ standard: 'claude-sonnet-5' });
+    expect(resolveModel(planning, 'standard')).toBe('claude-sonnet-5');
+    expect(resolveModel(planning, 'full')).toBe('claude-opus-5');
+    expect(resolveModel(planning, undefined)).toBe('claude-opus-5');
+    expect(resolveModel(planning, 'quick')).toBe('claude-opus-5');
+    for (const role of ROLE_NAMES.filter((r) =&gt; r !== 'planning')) {
+      expect(DEFAULT_CONFIG.roles[role].modelByLevel).toBeUndefined();
+    }
+  });
+
+  it('resolveModel: level undefined ถือเป็น full', () =&gt; {
+    const role = { ...DEFAULT_CONFIG.roles.qa, modelByLevel: { full: 'm-full', quick: 'm-quick' } };
+    expect(resolveModel(role, undefined)).toBe('m-full');
+    expect(resolveModel(role, 'quick')).toBe('m-quick');
+    expect(resolveModel(role, 'standard')).toBe(role.model);
+  });
+
+  it('mergeConfig merge modelByLevel รายระดับ (default standard ยังอยู่เมื่อ override แค่ full)', () =&gt; {
+    const merged = mergeConfig(DEFAULT_CONFIG, { roles: { planning: { modelByLevel: { full: 'x-full' } } } });
+    expect(merged.roles.planning.modelByLevel).toEqual({ standard: 'claude-sonnet-5', full: 'x-full' });
+    expect(merged.roles.planning.model).toBe('claude-opus-5');
+  });
+
+  it('mergeConfig ใส่ modelByLevel ให้ role ที่ไม่มี default ได้', () =&gt; {
+    const merged = mergeConfig(DEFAULT_CONFIG, { roles: { qa: { modelByLevel: { quick: 'claude-haiku' } } } });
+    expect(merged.roles.qa.modelByLevel).toEqual({ quick: 'claude-haiku' });
+  });
+
+  it('ปฏิเสธ pm.modelByLevel และ level ที่ไม่รู้จัก', () =&gt; {
+    expect(() =&gt; mergeConfig(DEFAULT_CONFIG, { roles: { pm: { modelByLevel: { full: 'x' } } } })).toThrow();
+    expect(() =&gt; mergeConfig(DEFAULT_CONFIG, { roles: { qa: { modelByLevel: { huge: 'x' } } } })).toThrow();
+  });
+
+  it('mergeConfig ไม่แก้ modelByLevel ของ DEFAULT_CONFIG (ไม่ share object)', () =&gt; {
+    mergeConfig(DEFAULT_CONFIG, { roles: { planning: { modelByLevel: { full: 'x-full' } } } });
+    expect(DEFAULT_CONFIG.roles.planning.modelByLevel).toEqual({ standard: 'claude-sonnet-5' });
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/config.test.ts</code><br>
+     คาดหวัง: FAIL (<code>resolveModel</code> ไม่ถูก export / <code>modelByLevel</code> เป็น undefined)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p>ใน <code>src/config.ts</code> เพิ่ม import และแก้ <code>RoleConfig</code>:</p>
+<pre><code>import { type Level, LevelSchema } from './schemas';
+
+export interface RoleConfig {
+  model: string;
+  /** โมเดลต่อระดับงาน ไม่มี key ของระดับนั้น = ใช้ model (level undefined ถือเป็น full) */
+  modelByLevel?: Partial&lt;Record&lt;Level, string&gt;&gt;;
+  maxTurns: number;
+  maxBudgetUsd: number;
+  tools: string[];
+  allowedTools: string[];
+  skills: string[];
+}
+
+/** เลือกโมเดลของ role ตามระดับงาน — state เก่าที่ไม่มี level ถือเป็น full */
+export function resolveModel(role: RoleConfig, level: Level | undefined): string {
+  return role.modelByLevel?.[level ?? 'full'] ?? role.model;
+}</code></pre>
+  <p>แก้ planning ใน <code>DEFAULT_CONFIG.roles</code>:</p>
+<pre><code>    planning: {
+      model: OPUS,
+      modelByLevel: { standard: SONNET },
+      maxTurns: 40,
+      maxBudgetUsd: 5,
+      tools: READ_TOOLS,
+      allowedTools: READ_TOOLS,
+      skills: [],
+    },</code></pre>
+  <p>แทน <code>RoleOverrideSchema</code> เดิมด้วย schema 2 ตัว (PM ไม่มี modelByLevel):</p>
+<pre><code>const roleOverrideShape = {
+  model: z.string().optional(),
+  maxTurns: z.number().int().positive().optional(),
+  maxBudgetUsd: z.number().positive().optional(),
+  skills: z.array(z.string()).optional(),
+};
+
+// PM ทำงานก่อนรู้ระดับงานและ resume session เดียวตลอดงาน จึงไม่รับ modelByLevel
+const PmOverrideSchema = z.object(roleOverrideShape).strict();
+
+const RoleOverrideSchema = z
+  .object({
+    ...roleOverrideShape,
+    modelByLevel: z.partialRecord(LevelSchema, z.string()).optional(),
+  })
+  .strict();</code></pre>
+  <p>ใน <code>ConfigOverrideSchema</code> เปลี่ยน <code>pm: RoleOverrideSchema.optional()</code> เป็น <code>pm: PmOverrideSchema.optional()</code> (role อื่นคงเดิม)</p>
+  <p>ใน <code>mergeConfig</code> แทน loop เดิมด้วย:</p>
+<pre><code>  for (const name of ROLE_NAMES) {
+    const patch = parsed.roles?.[name];
+    if (!patch) continue;
+    const defined = Object.fromEntries(
+      Object.entries(patch).filter(([key, value]) =&gt; value !== undefined &amp;&amp; key !== 'modelByLevel'),
+    );
+    const next: RoleConfig = { ...roles[name], ...defined };
+    // merge รายระดับ: override แค่ full แล้วค่า default ของ standard ยังอยู่
+    const levelPatch = 'modelByLevel' in patch ? patch.modelByLevel : undefined;
+    if (levelPatch) next.modelByLevel = { ...roles[name].modelByLevel, ...levelPatch };
+    roles[name] = next;
+  }</code></pre>
+  <p>หมายเหตุ: ถ้า <code>z.partialRecord</code> ของ zod ที่ติดตั้งไม่มี ให้ใช้ <code>z.object({ quick: z.string().optional(), standard: z.string().optional(), full: z.string().optional() }).strict()</code> แทน (ต้อง reject key <code>huge</code> ตามเทสต์)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: อัปเดต README</strong></span></p>
+  <p>ใน <code>README.md</code> ส่วน "ตั้งค่า (ไม่บังคับ)" ต่อจากบรรทัด <code>ปรับได้: model, maxTurns, ...</code> เพิ่ม:</p>
+<pre><code>`modelByLevel` — เลือกโมเดลต่อระดับงาน (`quick` / `standard` / `full`) ของแต่ละ role ระดับที่ไม่ได้ใส่ใช้ `model` ปกติ
+(งานเก่าที่ไม่มีระดับถือเป็น `full`) ค่าเริ่มต้น: Planning ใช้ Sonnet ในระดับ standard และ Opus ในระดับ full
+`pm` ใส่ `modelByLevel` ไม่ได้ (PM ทำงานก่อนรู้ระดับงาน) ตัวอย่าง:
+
+    { "roles": { "planning": { "modelByLevel": { "standard": "claude-opus-5" } },
+      "qa": { "modelByLevel": { "full": "claude-opus-5" } } } }</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: รัน test ทั้งหมด + typecheck</strong></span></p>
+  <p>รัน: <code>npm test</code> และ <code>npm run typecheck</code><br>
+     คาดหวัง: ผ่านทั้งหมด ไม่มี type error</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: Commit</strong></span></p>
+<pre><code>git add src/config.ts tests/config.test.ts README.md
+git commit -m "feat(config): per-level model override via modelByLevel (planning uses Sonnet on standard)
+
+Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 2: Runner — รับ <code>level</code> แล้วเลือกโมเดลตามระดับ</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/deps.ts</code> (<code>PlanInput</code>, <code>WorkInput</code>, <code>QaInput</code>, <code>SecurityDesignInput</code>)</li>
+    <li>แก้ไข: <code>src/runner.ts</code> (<code>plan</code>, <code>work</code>, <code>qa</code>, <code>securityDesign</code>, <code>security</code>, <code>runValidated</code>, <code>withRecovery</code>, <code>withRetry</code>, <code>once</code>)</li>
+    <li>เทสต์: <code>tests/runner.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: <code>resolveModel(role: RoleConfig, level: Level | undefined): string</code> จาก Task 1</li>
+    <li>ส่งต่อ: field <code>level?: Level</code> ใน <code>PlanInput</code>, <code>WorkInput</code>, <code>QaInput</code>, <code>SecurityDesignInput</code> (Task 3 ส่งค่านี้จาก phases) และ log <code>agent.start</code> มี field <code>level</code></li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>ต่อท้าย <code>tests/runner.test.ts</code> (ใช้ <code>makeRunner</code>, <code>initMsg</code>, <code>okResult</code> ที่มีอยู่แล้วในไฟล์):</p>
+<pre><code>describe('SdkRoleRunner: เลือกโมเดลตามระดับงาน', () =&gt; {
+  const requirements = makeRequirements();
+  const design = makeDesign();
+  const task = makeTask('api');
+  const workerResult = { taskId: 'api', summary: 'เสร็จ', filesChanged: ['src/api.ts'], howToVerify: 'npm test' };
+
+  it('Planning: standard ใช้ Sonnet, full และไม่มี level ใช้ Opus', async () =&gt; {
+    const { runner, calls } = makeRunner([
+      [initMsg(), okResult(design)],
+      [initMsg(), okResult(design)],
+      [initMsg(), okResult(design)],
+    ]);
+    await runner.plan({ requirements, level: 'standard' });
+    await runner.plan({ requirements, level: 'full' });
+    await runner.plan({ requirements });
+    expect(calls.map((c) =&gt; c.options.model)).toEqual(['claude-sonnet-5', 'claude-opus-5', 'claude-opus-5']);
+  });
+
+  it('worker/QA/Security ใช้ modelByLevel ของ role ตัวเอง', async () =&gt; {
+    const calls: Array&lt;{ options: Record&lt;string, any&gt; }&gt; = [];
+    const outputs: unknown[] = [workerResult, passReportFor('api'), { taskId: 'api', verdict: 'PASS', issues: [] }, { securityNotes: [] }];
+    const runner = new SdkRoleRunner({
+      projectDir: 'proj',
+      config: {
+        ...DEFAULT_CONFIG,
+        roles: {
+          ...DEFAULT_CONFIG.roles,
+          backend: { ...DEFAULT_CONFIG.roles.backend, modelByLevel: { quick: 'm-backend-quick' } },
+          qa: { ...DEFAULT_CONFIG.roles.qa, modelByLevel: { quick: 'm-qa-quick' } },
+          security: { ...DEFAULT_CONFIG.roles.security, modelByLevel: { full: 'm-sec-full' } },
+        },
+      },
+      queryFn: ((args: { options: Record&lt;string, any&gt; }) =&gt; {
+        calls.push(args);
+        const output = outputs.shift();
+        return (async function* () {
+          yield initMsg();
+          yield okResult(output);
+        })();
+      }) as never,
+      sleep: async () =&gt; {},
+    });
+    await runner.work({ task, design, requirements, level: 'quick' });
+    await runner.qa({ task, design, requirements, result: workerResult, level: 'quick' });
+    await runner.security({ task, design, requirements, result: workerResult });
+    await runner.securityDesign({ design, requirements, level: 'full' });
+    expect(calls.map((c) =&gt; c.options.model)).toEqual(['m-backend-quick', 'm-qa-quick', 'm-sec-full', 'm-sec-full']);
+  });
+
+  it('log agent.start บันทึกโมเดลที่ resolve แล้วและ level', async () =&gt; {
+    const events: Array&lt;{ event: string; data: Record&lt;string, unknown&gt; }&gt; = [];
+    const runner = new SdkRoleRunner({
+      projectDir: 'proj',
+      config: DEFAULT_CONFIG,
+      queryFn: (() =&gt;
+        (async function* () {
+          yield initMsg();
+          yield okResult(design);
+        })()) as never,
+      sleep: async () =&gt; {},
+      logger: { log: (_level, event, data) =&gt; void events.push({ event, data: data as never }) },
+    });
+    await runner.plan({ requirements, level: 'standard' });
+    const start = events.find((e) =&gt; e.event === 'agent.start')!;
+    expect(start.data).toMatchObject({ role: 'planning', model: 'claude-sonnet-5', level: 'standard' });
+  });
+
+  it('รอบ re-ask เมื่อ output ผิด schema ยังใช้โมเดลตามระดับเดิม', async () =&gt; {
+    const { runner, calls } = makeRunner([
+      [initMsg(), okResult({ nope: true })],
+      [initMsg(), okResult(design)],
+    ]);
+    await runner.plan({ requirements, level: 'standard' });
+    expect(calls.map((c) =&gt; c.options.model)).toEqual(['claude-sonnet-5', 'claude-sonnet-5']);
+  });
+});</code></pre>
+  <p>และแก้ import บรรทัดที่ 4 ของไฟล์ให้มี <code>passReport</code>:</p>
+<pre><code>import { failReport, makeDesign, makeRequirements, makeTask, passReport as passReportFor } from './helpers/builders';</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/runner.test.ts</code><br>
+     คาดหวัง: FAIL — typecheck ของ vitest ไม่บล็อก แต่ model ที่ได้เป็น <code>claude-opus-5</code> สำหรับ standard และ <code>claude-sonnet-5</code> แทน <code>m-*</code></p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เพิ่ม <code>level</code> ใน input (<code>src/deps.ts</code>)</strong></span></p>
+  <p>เพิ่ม field นี้ในทั้ง 4 interface (<code>PlanInput</code>, <code>WorkInput</code>, <code>QaInput</code>, <code>SecurityDesignInput</code>) เป็น field สุดท้าย:</p>
+<pre><code>  /** ระดับงานตอนเรียก — runner ใช้เลือกโมเดล (undefined = full) */
+  level?: Level;</code></pre>
+  <p>(<code>Level</code> ถูก import ใน <code>src/deps.ts</code> อยู่แล้ว)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: ส่ง level ต่อใน <code>src/runner.ts</code></strong></span></p>
+  <p>แก้ import:</p>
+<pre><code>import { resolveModel, type RoleName, SKILLS_PLUGIN_DIR, type TeamConfig } from './config';
+import type { Level } from './schemas';</code></pre>
+  <p>แก้เมธอด public (pmTurn คงเดิม ไม่ส่ง level):</p>
+<pre><code>  async plan(input: PlanInput): Promise&lt;Design&gt; {
+    const label = agentLabel('planning');
+    return (await this.runValidated('planning', label, buildPlanPrompt(input), DesignSchema, undefined, input.level)).data;
+  }
+
+  async work(input: WorkInput): Promise&lt;WorkOutput&gt; {
+    const { owner, id } = input.task;
+    const prompt = input.resumeSessionId ? buildWorkFixPrompt(input) : buildWorkPrompt(input);
+    const out = await this.runValidated(
+      owner,
+      agentLabel(owner, id),
+      prompt,
+      WorkerResultSchema,
+      input.resumeSessionId,
+      input.level,
+    );
+    return { result: out.data, sessionId: out.sessionId };
+  }
+
+  async qa(input: QaInput): Promise&lt;QAReport&gt; {
+    const label = agentLabel('qa', input.task.id);
+    return (await this.runValidated('qa', label, buildQaPrompt(input), QAReportSchema, undefined, input.level)).data;
+  }
+
+  async securityDesign(input: SecurityDesignInput): Promise&lt;string[]&gt; {
+    const out = await this.runValidated(
+      'security',
+      agentLabel('security'),
+      buildSecurityDesignPrompt(input),
+      SecurityDesignReviewSchema,
+      undefined,
+      input.level,
+    );
+    return out.data.securityNotes;
+  }
+
+  async security(input: QaInput): Promise&lt;SecurityReport&gt; {
+    const label = agentLabel('security', input.task.id);
+    const prompt = buildSecurityPrompt(input);
+    return (await this.runValidated('security', label, prompt, SecurityReportSchema, undefined, input.level)).data;
+  }</code></pre>
+  <p>เพิ่มพารามิเตอร์ <code>level?: Level</code> เป็นตัวสุดท้ายของ <code>runValidated</code>, <code>withRecovery</code>, <code>withRetry</code> และ <code>once</code> แล้วส่งต่อทุกจุดที่เรียกกันเอง (ทั้ง 2 จุดใน <code>runValidated</code>, 2 จุดใน <code>withRecovery</code>, 1 จุดใน <code>withRetry</code>) เช่น</p>
+<pre><code>    const first = await this.withRecovery(role, label, prompt, jsonSchema, resume, level);
+    ...
+    const second = await this.withRecovery(role, label, reask, jsonSchema, first.sessionId, level);</code></pre>
+  <p>ใน <code>once</code> สร้าง config ที่ resolve แล้วตอนต้นเมธอด แล้วใช้ทั้งใน log และ <code>buildQueryOptions</code>:</p>
+<pre><code>    const base = this.deps.config.roles[role];
+    const roleConfig = { ...base, model: resolveModel(base, level) };
+    this.logger.log('INFO', 'agent.start', {
+      role,
+      model: roleConfig.model,
+      level,
+      resumed: resume !== undefined,
+      promptChars: prompt.length,
+      sessionId: resume,
+    });
+    ...
+        options: buildQueryOptions({
+          role,
+          config: roleConfig,
+          ...
+        }),</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: รัน test ทั้งหมด + typecheck</strong></span></p>
+  <p>รัน: <code>npm test</code> และ <code>npm run typecheck</code><br>
+     คาดหวัง: ผ่านทั้งหมด (เทสต์เดิมที่ assert log <code>agent.start</code> ใช้ <code>toMatchObject</code> จึงไม่พังเพราะ field <code>level</code> ใหม่)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: Commit</strong></span></p>
+<pre><code>git add src/deps.ts src/runner.ts tests/runner.test.ts
+git commit -m "feat(runner): resolve role model from input level
+
+Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 3: Phases — ส่ง <code>state.level</code> ให้ runner</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/phases/design.ts</code> (<code>reviewDesignSecurity</code>, <code>runDesign</code>, <code>runReview</code>)</li>
+    <li>แก้ไข: <code>src/phases/build.ts</code> (<code>BuildContext</code>, <code>runBuild</code>)</li>
+    <li>เทสต์: <code>tests/phases/design.test.ts</code>, <code>tests/phases/build.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: <code>level?: Level</code> ใน <code>PlanInput</code> / <code>WorkInput</code> / <code>QaInput</code> / <code>SecurityDesignInput</code> (Task 2)</li>
+    <li>ส่งต่อ: ไม่มี (ปลายทาง)</li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>ใน <code>tests/phases/design.test.ts</code> แก้ import บรรทัด 2 เป็น <code>import type { PlanInput, SecurityDesignInput } from '../../src/deps';</code> (มีอยู่แล้ว) แล้วเพิ่มใน <code>describe('runDesign', ...)</code>:</p>
+<pre><code>  it('ส่ง level ของ state ให้ Planning และ Security ตรวจ design', async () =&gt; {
+    const { deps, runner } = makeDeps({ plans: [makeDesign()], securityDesign: [[]] }, []);
+    const state = stateAt('DESIGN');
+    state.level = 'full';
+    await runDesign(deps, state);
+    expect((runner.calls[0]!.input as PlanInput).level).toBe('full');
+    const sec = runner.calls.find((c) =&gt; c.role === 'security')!;
+    expect((sec.input as SecurityDesignInput).level).toBe('full');
+  });
+
+  it('standard: Planning ได้ level standard', async () =&gt; {
+    const { deps, runner } = makeDeps({ plans: [makeDesign()] }, []);
+    const state = stateAt('DESIGN');
+    state.level = 'standard';
+    await runDesign(deps, state);
+    expect((runner.calls[0]!.input as PlanInput).level).toBe('standard');
+  });</code></pre>
+  <p>ในเทสต์เดิม <code>'REVIEW เจอคำเสี่ยง: เตือน เสนอ full ก่อน เลือก full → เรียก Security ตรวจ design, level full, แล้ว confirm'</code> เพิ่ม assertion ต่อจาก <code>expect(runner.calls.filter((c) =&gt; c.role === 'security')).toHaveLength(1);</code>:</p>
+<pre><code>    // ยกเป็น full แล้ว Security ตรวจ design ด้วยโมเดลของระดับ full (state.level ยังเป็น standard ตอนเรียก)
+    const sec = runner.calls.find((c) =&gt; c.role === 'security')!;
+    expect((sec.input as SecurityDesignInput).level).toBe('full');</code></pre>
+  <p>ใน <code>tests/phases/build.test.ts</code> เพิ่มใน <code>describe('runBuild', ...)</code>:</p>
+<pre><code>  it('ส่ง level ของ state ให้ worker, QA และ Security', async () =&gt; {
+    const { deps, runner } = makeDeps({ qa: [passReport('api')] }, []);
+    const state = buildState(single());
+    state.level = 'full';
+    await runBuild(deps, state);
+    expect(roles(runner.calls)).toEqual(['backend', 'qa', 'security']);
+    for (const call of runner.calls) expect((call.input as WorkInput | QaInput).level).toBe('full');
+  });
+
+  it('state เก่าไม่มี level: ส่ง level undefined (runner ถือเป็น full)', async () =&gt; {
+    const { deps, runner } = makeDeps({ qa: [passReport('api')] }, []);
+    await runBuild(deps, buildState(single()));
+    for (const call of runner.calls) expect((call.input as WorkInput | QaInput).level).toBeUndefined();
+  });</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/phases/design.test.ts tests/phases/build.test.ts</code><br>
+     คาดหวัง: FAIL — <code>level</code> เป็น undefined ในเทสต์ใหม่ที่ตั้ง level ไว้</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แก้ <code>src/phases/design.ts</code></strong></span></p>
+  <p><code>reviewDesignSecurity</code> รับ level เพิ่ม:</p>
+<pre><code>async function reviewDesignSecurity(
+  deps: Deps,
+  design: Design,
+  requirements: Requirements,
+  level: Level | undefined,
+): Promise&lt;string[] | undefined&gt; {
+  try {
+    return await deps.runner.securityDesign({ design, requirements, level });
+  } catch (e) {</code></pre>
+  <p>(เพิ่ม <code>import type { Level } from '../schemas';</code> หรือรวมเข้ากับ import type จาก <code>'../schemas'</code> ที่มีอยู่)</p>
+  <p>ใน <code>runDesign</code>:</p>
+<pre><code>    const design = await runner.plan({
+      requirements: state.requirements,
+      previousDesign: state.design,
+      feedback,
+      level: state.level,
+    });
+    ...
+      const securityNotes = await reviewDesignSecurity(deps, design, state.requirements, state.level);</code></pre>
+  <p>ใน <code>runReview</code> (ตอนผู้ใช้เลือก <code>full</code> ซึ่งเรียกก่อนตั้ง <code>state.level = 'full'</code>):</p>
+<pre><code>    const securityNotes = await reviewDesignSecurity(deps, design, requirements, 'full');</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: แก้ <code>src/phases/build.ts</code></strong></span></p>
+<pre><code>interface BuildContext {
+  design: Design;
+  requirements: Requirements;
+  /** ระดับงาน ส่งต่อให้ runner เลือกโมเดล (undefined = full) */
+  level: Level | undefined;
+}</code></pre>
+  <p>ใน <code>runBuild</code>:</p>
+<pre><code>  const ctx: BuildContext = { design, requirements, level: state.level };</code></pre>
+  <p>(เพิ่ม <code>Level</code> เข้า import type จาก <code>'../schemas'</code>) — ทุกจุดที่เรียก <code>runner.work/qa/security</code> spread <code>...ctx</code> อยู่แล้ว จึงได้ level โดยไม่ต้องแก้เพิ่ม ตรวจด้วย <code>grep -n "runner.\(work\|qa\|security\)(" src/phases/build.ts</code> ว่าทุกจุดมี <code>...ctx</code> หรือ <code>...base</code> ที่มาจาก ctx</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: รัน test ทั้งหมด + typecheck</strong></span></p>
+  <p>รัน: <code>npm test</code> และ <code>npm run typecheck</code><br>
+     คาดหวัง: ผ่านทั้งหมด ถ้าเทสต์เดิมที่ใช้ <code>toEqual</code> กับ input ของ runner พังเพราะมี <code>level</code> เพิ่ม ให้เพิ่ม <code>level</code> ที่ถูกต้องใน expected ของเทสต์นั้น (ห้ามลบ assertion)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: Commit</strong></span></p>
+<pre><code>git add src/phases/design.ts src/phases/build.ts tests/phases/design.test.ts tests/phases/build.test.ts
+git commit -m "feat(phases): pass state.level to runner calls (escalation reviews design as full)
+
+Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 4: Prompts — <code>taskScopedDesign</code> ตัด task อื่นออก</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/prompts.ts</code> (<code>buildWorkPrompt</code>, <code>buildQaPrompt</code>, <code>buildSecurityPrompt</code>)</li>
+    <li>เทสต์: <code>tests/prompts.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: <code>Design</code>, <code>Task</code> จาก <code>src/schemas.ts</code></li>
+    <li>ส่งต่อ: <code>export function taskScopedDesign(design: Design, task: Task): TaskScopedDesign</code> และ <code>export type TaskScopedDesign = Omit&lt;Design, 'tasks'&gt; &amp; { relatedTasks: Array&lt;Pick&lt;Task, 'id' | 'title' | 'description'&gt;&gt; }</code></li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>แก้ import ของ <code>tests/prompts.test.ts</code> ให้มี <code>taskScopedDesign</code>:</p>
+<pre><code>import {
+  buildPlanPrompt,
+  buildQaPrompt,
+  buildSecurityDesignPrompt,
+  buildSecurityPrompt,
+  buildWorkFixPrompt,
+  buildWorkPrompt,
+  SYSTEM_PROMPTS,
+  taskScopedDesign,
+} from '../src/prompts';</code></pre>
+  <p>ต่อท้ายไฟล์:</p>
+<pre><code>describe('ตัด context ต่อ task', () =&gt; {
+  const tasks = [
+    makeTask('db'),
+    makeTask('api', 'backend', ['db']),
+    makeTask('ui', 'frontend', ['api']),
+    makeTask('docs-other'),
+  ];
+  const big = { ...makeDesign(tasks), securityNotes: ['hash password'] };
+  const ui = tasks[2]!;
+  const result = { taskId: 'ui', summary: 'เสร็จ', filesChanged: ['src/ui.ts'], howToVerify: 'npm test' };
+
+  it('taskScopedDesign: ไม่มี tasks, มี relatedTasks เฉพาะ dependsOn (id/title/description) และ field อื่นครบ', () =&gt; {
+    const scoped = taskScopedDesign(big, ui);
+    expect(scoped).not.toHaveProperty('tasks');
+    expect(scoped.relatedTasks).toEqual([{ id: 'api', title: 'task api', description: 'ทำ api' }]);
+    expect(scoped).toMatchObject({
+      overview: big.overview,
+      architecture: big.architecture,
+      apiContract: big.apiContract,
+      dataModel: big.dataModel,
+      securityNotes: ['hash password'],
+    });
+  });
+
+  it('taskScopedDesign: dependsOn ที่อ้าง id ไม่มีอยู่จริงถูกข้าม', () =&gt; {
+    const ghost = makeTask('x', 'backend', ['nope', 'db']);
+    expect(taskScopedDesign(big, ghost).relatedTasks.map((t) =&gt; t.id)).toEqual(['db']);
+  });
+
+  it('taskScopedDesign: ไม่มี securityNotes ใน design → ไม่มี key securityNotes', () =&gt; {
+    expect(taskScopedDesign(makeDesign(tasks), ui)).not.toHaveProperty('securityNotes');
+  });
+
+  const others = ['"db"', '"docs-other"', 'ทำ docs-other', 'ทำ db'];
+
+  it('buildWorkPrompt ไม่มี task อื่นที่ไม่เกี่ยว แต่มี relatedTasks และ securityNotes', () =&gt; {
+    const prompt = buildWorkPrompt({ task: ui, design: big, requirements });
+    for (const s of others) expect(prompt).not.toContain(s);
+    expect(prompt).toContain('"relatedTasks"');
+    expect(prompt).toContain('ทำ api');
+    expect(prompt).toContain('hash password');
+    expect(prompt).toContain('todo list');
+  });
+
+  it('buildQaPrompt (รอบแรกและรอบแก้) ไม่มี task อื่นที่ไม่เกี่ยว', () =&gt; {
+    const first = buildQaPrompt({ task: ui, design: big, requirements, result });
+    const fix = buildQaPrompt({
+      task: ui,
+      design: big,
+      requirements,
+      result,
+      previousReport: failReport('ui'),
+      roundDiff: { diff: '+x', files: ['src/ui.ts'], truncated: false },
+    });
+    for (const prompt of [first, fix]) {
+      for (const s of others) expect(prompt).not.toContain(s);
+      expect(prompt).toContain('"relatedTasks"');
+      expect(prompt).toContain('hash password');
+    }
+  });
+
+  it('buildSecurityPrompt ไม่มี task อื่นที่ไม่เกี่ยว', () =&gt; {
+    const prompt = buildSecurityPrompt({ task: ui, design: big, requirements, result });
+    for (const s of others) expect(prompt).not.toContain(s);
+    expect(prompt).toContain('hash password');
+  });
+
+  it('buildSecurityDesignPrompt และ buildPlanPrompt ยังเห็นทุก task', () =&gt; {
+    expect(buildSecurityDesignPrompt({ design: big, requirements })).toContain('ทำ docs-other');
+    expect(buildPlanPrompt({ requirements, previousDesign: big })).toContain('ทำ docs-other');
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/prompts.test.ts</code><br>
+     คาดหวัง: FAIL — <code>taskScopedDesign</code> ไม่ถูก export และ prompt ยังมี <code>"docs-other"</code></p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation ใน <code>src/prompts.ts</code></strong></span></p>
+  <p>เพิ่ม import และ helper (วางต่อจาก <code>untrustedResult</code>):</p>
+<pre><code>import type { Design, Task } from './schemas';
+
+export type TaskScopedDesign = Omit&lt;Design, 'tasks'&gt; &amp; {
+  relatedTasks: Array&lt;Pick&lt;Task, 'id' | 'title' | 'description'&gt;&gt;;
+};
+
+/**
+ * design สำหรับ role ที่ทำ/ตรวจทีละ task: ตัด tasks อื่นออก เหลือแค่ task ที่ dependsOn (ย่อ)
+ * ส่วน overview/architecture/apiContract/dataModel/securityNotes ส่งครบ — dependsOn ที่หาไม่เจอข้ามไป
+ */
+export function taskScopedDesign(design: Design, task: Task): TaskScopedDesign {
+  const { tasks, ...rest } = design;
+  const relatedTasks = task.dependsOn.flatMap((id) =&gt; {
+    const dep = tasks.find((t) =&gt; t.id === id);
+    return dep ? [{ id: dep.id, title: dep.title, description: dep.description }] : [];
+  });
+  return { ...rest, relatedTasks };
+}
+
+const scopedDesignSection = (design: Design, task: Task): string =&gt;
+  `Design (scoped to this task; relatedTasks = the tasks it depends on, other tasks are omitted):\n${json(taskScopedDesign(design, task))}`;</code></pre>
+  <p>แทนบรรทัด <code>`Design:\n${json(input.design)}`</code> ด้วย <code>scopedDesignSection(input.design, input.task)</code> ใน 4 จุด: <code>buildWorkPrompt</code>, <code>buildQaPrompt</code> ทั้ง 2 สาขา (ไม่มี roundDiff และมี roundDiff) และ <code>buildSecurityPrompt</code> — <strong>ห้าม</strong>แก้ <code>buildPlanPrompt</code> และ <code>buildSecurityDesignPrompt</code></p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test ทั้งหมด + typecheck</strong></span></p>
+  <p>รัน: <code>npm test</code> และ <code>npm run typecheck</code><br>
+     คาดหวัง: ผ่านทั้งหมด (เทสต์เดิม <code>buildWorkFixPrompt ... not.toContain('Design:')</code> ยังผ่านเพราะ fix prompt ไม่เปลี่ยน)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/prompts.ts tests/prompts.test.ts
+git commit -m "feat(prompts): scope worker/QA/Security design to the task and its dependencies
+
+Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;"</code></pre>
+</div>
+
+</body>
+</html>
