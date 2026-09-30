@@ -208,6 +208,12 @@ Security ถูกเรียกเฉพาะรอบที่ QA ผ่า�
       "security": { "skills": ["team:security-checklist"] } } }
 
 ปรับได้: model, maxTurns, maxBudgetUsd, skills ต่อ role (เครื่องมือและสิทธิ์แก้ในโค้ด `src/config.ts`)
+`modelByLevel` — เลือกโมเดลต่อระดับงาน (`quick` / `standard` / `full`) ของแต่ละ role ระดับที่ไม่ได้ใส่ใช้ `model` ปกติ
+(งานเก่าที่ไม่มีระดับถือเป็น `full`) ค่าเริ่มต้น: Planning ใช้ Sonnet ในระดับ standard และ Opus ในระดับ full
+`pm` ใส่ `modelByLevel` ไม่ได้ (PM ทำงานก่อนรู้ระดับงาน) ตัวอย่าง:
+
+    { "roles": { "planning": { "modelByLevel": { "standard": "claude-opus-5" } },
+      "qa": { "modelByLevel": { "full": "claude-opus-5" } } } }
 `security` override ได้เหมือน role อื่นทุกประการ (รวม model/maxTurns/maxBudgetUsd/skills)
 Security เพิ่มการเรียก Sonnet 1 ครั้งต่อ design (ตรวจครั้งเดียว) และ 1 ครั้งต่อรอบ build ที่ QA ผ่านแล้ว (ต่อ task)
 `headlessIdleMinutes` — เวลาที่รอการตอบคำถามเป็นนาที ก่อนที่ process headless จะหยุดรอ (สถานะ `idle` งานไม่ถูกยกเลิก ทำต่อได้ด้วย `agent-team run --headless --job <id>`) (ค่าเริ่มต้น 120, ต้องเป็นจำนวนเต็มบวก)

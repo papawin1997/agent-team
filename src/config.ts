@@ -2,17 +2,25 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import { type Level, LevelSchema } from './schemas';
 
 export type RoleName = 'pm' | 'planning' | 'frontend' | 'backend' | 'qa' | 'security';
 export const ROLE_NAMES: readonly RoleName[] = ['pm', 'planning', 'frontend', 'backend', 'qa', 'security'];
 
 export interface RoleConfig {
   model: string;
+  /** โมเดลต่อระดับงาน ไม่มี key ของระดับนั้น = ใช้ model (level undefined ถือเป็น full) */
+  modelByLevel?: Partial<Record<Level, string>>;
   maxTurns: number;
   maxBudgetUsd: number;
   tools: string[];
   allowedTools: string[];
   skills: string[];
+}
+
+/** เลือกโมเดลของ role ตามระดับงาน — state เก่าที่ไม่มี level ถือเป็น full */
+export function resolveModel(role: RoleConfig, level: Level | undefined): string {
+  return role.modelByLevel?.[level ?? 'full'] ?? role.model;
 }
 
 export interface TeamConfig {
@@ -65,7 +73,15 @@ export const DEFAULT_CONFIG: TeamConfig = {
   headlessIdleMinutes: 120,
   roles: {
     pm: { model: SONNET, maxTurns: 20, maxBudgetUsd: 2, tools: READ_TOOLS, allowedTools: READ_TOOLS, skills: [] },
-    planning: { model: OPUS, maxTurns: 40, maxBudgetUsd: 5, tools: READ_TOOLS, allowedTools: READ_TOOLS, skills: [] },
+    planning: {
+      model: OPUS,
+      modelByLevel: { standard: SONNET },
+      maxTurns: 40,
+      maxBudgetUsd: 5,
+      tools: READ_TOOLS,
+      allowedTools: READ_TOOLS,
+      skills: [],
+    },
     frontend: { model: SONNET, maxTurns: 80, maxBudgetUsd: 5, tools: WORK_TOOLS, allowedTools: WORK_ALLOWED, skills: [] },
     backend: { model: SONNET, maxTurns: 80, maxBudgetUsd: 5, tools: WORK_TOOLS, allowedTools: WORK_ALLOWED, skills: [] },
     qa: { model: SONNET, maxTurns: 60, maxBudgetUsd: 4, tools: WORK_TOOLS, allowedTools: WORK_ALLOWED, skills: [] },
@@ -73,12 +89,20 @@ export const DEFAULT_CONFIG: TeamConfig = {
   },
 };
 
+const roleOverrideShape = {
+  model: z.string().optional(),
+  maxTurns: z.number().int().positive().optional(),
+  maxBudgetUsd: z.number().positive().optional(),
+  skills: z.array(z.string()).optional(),
+};
+
+// PM ทำงานก่อนรู้ระดับงานและ resume session เดียวตลอดงาน จึงไม่รับ modelByLevel
+const PmOverrideSchema = z.object(roleOverrideShape).strict();
+
 const RoleOverrideSchema = z
   .object({
-    model: z.string().optional(),
-    maxTurns: z.number().int().positive().optional(),
-    maxBudgetUsd: z.number().positive().optional(),
-    skills: z.array(z.string()).optional(),
+    ...roleOverrideShape,
+    modelByLevel: z.partialRecord(LevelSchema, z.string()).optional(),
   })
   .strict();
 
@@ -90,7 +114,7 @@ const ConfigOverrideSchema = z
     headlessIdleMinutes: z.number().int().positive().optional(),
     roles: z
       .object({
-        pm: RoleOverrideSchema.optional(),
+        pm: PmOverrideSchema.optional(),
         planning: RoleOverrideSchema.optional(),
         frontend: RoleOverrideSchema.optional(),
         backend: RoleOverrideSchema.optional(),
@@ -109,9 +133,13 @@ export function mergeConfig(base: TeamConfig, override: unknown): TeamConfig {
     const patch = parsed.roles?.[name];
     if (!patch) continue;
     const defined = Object.fromEntries(
-      Object.entries(patch).filter(([, value]) => value !== undefined),
+      Object.entries(patch).filter(([key, value]) => value !== undefined && key !== 'modelByLevel'),
     );
-    roles[name] = { ...roles[name], ...defined };
+    const next: RoleConfig = { ...roles[name], ...defined };
+    // merge รายระดับ: override แค่ full แล้วค่า default ของ standard ยังอยู่
+    const levelPatch = 'modelByLevel' in patch ? patch.modelByLevel : undefined;
+    if (levelPatch) next.modelByLevel = { ...roles[name].modelByLevel, ...levelPatch };
+    roles[name] = next;
   }
   return {
     maxQaRounds: parsed.maxQaRounds ?? base.maxQaRounds,

@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_CONFIG, loadConfig, mergeConfig, ROLE_NAMES } from '../src/config';
+import { DEFAULT_CONFIG, loadConfig, mergeConfig, resolveModel, ROLE_NAMES } from '../src/config';
 
 describe('DEFAULT_CONFIG', () => {
   it('limit QA = 5 รอบ และ continue เพิ่ม 5 รอบ', () => {
@@ -143,5 +143,48 @@ describe('headlessIdleMinutes', () => {
     expect(mergeConfig(DEFAULT_CONFIG, { headlessIdleMinutes: 30 }).headlessIdleMinutes).toBe(30);
     expect(mergeConfig(DEFAULT_CONFIG, {}).headlessIdleMinutes).toBe(120);
     expect(() => mergeConfig(DEFAULT_CONFIG, { headlessIdleMinutes: 0 })).toThrow();
+  });
+});
+
+describe('modelByLevel', () => {
+  it('default: Planning ใช้ Sonnet ใน standard และ Opus ใน full/undefined, role อื่นไม่มี modelByLevel', () => {
+    const planning = DEFAULT_CONFIG.roles.planning;
+    expect(planning.model).toBe('claude-opus-5');
+    expect(planning.modelByLevel).toEqual({ standard: 'claude-sonnet-5' });
+    expect(resolveModel(planning, 'standard')).toBe('claude-sonnet-5');
+    expect(resolveModel(planning, 'full')).toBe('claude-opus-5');
+    expect(resolveModel(planning, undefined)).toBe('claude-opus-5');
+    expect(resolveModel(planning, 'quick')).toBe('claude-opus-5');
+    for (const role of ROLE_NAMES.filter((r) => r !== 'planning')) {
+      expect(DEFAULT_CONFIG.roles[role].modelByLevel).toBeUndefined();
+    }
+  });
+
+  it('resolveModel: level undefined ถือเป็น full', () => {
+    const role = { ...DEFAULT_CONFIG.roles.qa, modelByLevel: { full: 'm-full', quick: 'm-quick' } };
+    expect(resolveModel(role, undefined)).toBe('m-full');
+    expect(resolveModel(role, 'quick')).toBe('m-quick');
+    expect(resolveModel(role, 'standard')).toBe(role.model);
+  });
+
+  it('mergeConfig merge modelByLevel รายระดับ (default standard ยังอยู่เมื่อ override แค่ full)', () => {
+    const merged = mergeConfig(DEFAULT_CONFIG, { roles: { planning: { modelByLevel: { full: 'x-full' } } } });
+    expect(merged.roles.planning.modelByLevel).toEqual({ standard: 'claude-sonnet-5', full: 'x-full' });
+    expect(merged.roles.planning.model).toBe('claude-opus-5');
+  });
+
+  it('mergeConfig ใส่ modelByLevel ให้ role ที่ไม่มี default ได้', () => {
+    const merged = mergeConfig(DEFAULT_CONFIG, { roles: { qa: { modelByLevel: { quick: 'claude-haiku' } } } });
+    expect(merged.roles.qa.modelByLevel).toEqual({ quick: 'claude-haiku' });
+  });
+
+  it('ปฏิเสธ pm.modelByLevel และ level ที่ไม่รู้จัก', () => {
+    expect(() => mergeConfig(DEFAULT_CONFIG, { roles: { pm: { modelByLevel: { full: 'x' } } } })).toThrow();
+    expect(() => mergeConfig(DEFAULT_CONFIG, { roles: { qa: { modelByLevel: { huge: 'x' } } } })).toThrow();
+  });
+
+  it('mergeConfig ไม่แก้ modelByLevel ของ DEFAULT_CONFIG (ไม่ share object)', () => {
+    mergeConfig(DEFAULT_CONFIG, { roles: { planning: { modelByLevel: { full: 'x-full' } } } });
+    expect(DEFAULT_CONFIG.roles.planning.modelByLevel).toEqual({ standard: 'claude-sonnet-5' });
   });
 });
