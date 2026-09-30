@@ -7,6 +7,7 @@ import { JobRepository } from './jobs';
 import { FileLogger } from './logger';
 import { SdkRoleRunner } from './runner';
 import { GitSnapshots, type SnapshotProvider } from './snapshot';
+import { ensureTeamDir } from './team-dir';
 
 export interface RunContext {
   config: TeamConfig;
@@ -26,7 +27,7 @@ export function createRunContext(
 ): RunContext {
   const config = loadConfig();
   const abortController = new AbortController();
-  const logFile = path.join(projectDir, '.agent-team', 'agent-team.log');
+  const logFile = path.join(ensureTeamDir(projectDir), 'agent-team.log');
   const logger = new FileLogger(logFile);
   const runner = new SdkRoleRunner({
     projectDir,
