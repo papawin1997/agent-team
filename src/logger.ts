@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { UserIO } from './deps';
+import { plainText, type SayKind } from './style';
 
 export type LogLevel = 'INFO' | 'WARN' | 'ERROR';
 
@@ -49,9 +50,9 @@ export class LoggingIO implements UserIO {
     private readonly logger: Logger,
   ) {}
 
-  say(text: string): void {
-    this.inner.say(text);
-    this.logger.log('INFO', 'say', { text });
+  say(text: string, kind?: SayKind): void {
+    this.inner.say(text, kind);
+    this.logger.log('INFO', 'say', kind ? { text: plainText(text, kind), kind } : { text });
   }
 
   async ask(prompt: string): Promise<string> {

@@ -1,4 +1,5 @@
 import { parseChoice } from '../../src/cli';
+import { plainText, type SayKind } from '../../src/style';
 import { DEFAULT_CONFIG } from '../../src/config';
 import type {
   Deps,
@@ -36,6 +37,8 @@ export class MemoryStore implements StateStore {
 
 export class ScriptedIO implements UserIO {
   said: string[] = [];
+  /** kind ของแต่ละข้อความ (ตำแหน่งตรงกับ said) */
+  kinds: Array<SayKind | undefined> = [];
   asked: string[] = [];
   private answers: string[];
 
@@ -43,8 +46,9 @@ export class ScriptedIO implements UserIO {
     this.answers = [...answers];
   }
 
-  say(text: string): void {
-    this.said.push(text);
+  say(text: string, kind?: SayKind): void {
+    this.said.push(plainText(text, kind));
+    this.kinds.push(kind);
   }
 
   async ask(prompt: string): Promise<string> {

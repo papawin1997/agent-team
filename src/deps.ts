@@ -1,4 +1,5 @@
 import type { TeamConfig } from './config';
+import type { SayKind } from './style';
 import type { Logger } from './logger';
 import type { Design, Level, PmTurn, QAReport, Requirements, SecurityReport, Task, WorkerResult } from './schemas';
 import type { State } from './state';
@@ -64,7 +65,8 @@ export interface RoleRunner {
 }
 
 export interface UserIO {
-  say(text: string): void;
+  /** kind ใช้เลือกสีใน terminal — ไม่ใส่ = ข้อความธรรมดา (headless/log ใช้ plainText) */
+  say(text: string, kind?: SayKind): void;
   ask(prompt: string): Promise<string>;
   choose<T extends string>(prompt: string, options: readonly T[]): Promise<T>;
   chooseOrText<T extends string>(prompt: string, options: readonly T[]): Promise<T | { text: string }>;

@@ -131,3 +131,20 @@ describe('LoggingIO', () => {
     expect(events).toEqual([]);
   });
 });
+
+describe('LoggingIO.say kind', () => {
+  it('ส่ง kind ต่อให้ io ข้างใน และ log ข้อความแบบ plainText พร้อม kind', () => {
+    const inner = new ScriptedIO([]);
+    const events: Array<{ event: string; data: unknown }> = [];
+    const logger: Logger = { log: (_level, event, data) => void events.push({ event, data }) };
+    const io = new LoggingIO(inner, logger);
+    io.say('สวัสดี', 'pm');
+    io.say('ธรรมดา');
+    expect(inner.said).toEqual(['\n[PM] สวัสดี\n', 'ธรรมดา']);
+    expect(inner.kinds).toEqual(['pm', undefined]);
+    expect(events).toEqual([
+      { event: 'say', data: { text: '\n[PM] สวัสดี\n', kind: 'pm' } },
+      { event: 'say', data: { text: 'ธรรมดา' } },
+    ]);
+  });
+});
