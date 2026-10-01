@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { selectJob } from '../src/job-menu';
+import { createAskJob, selectJob } from '../src/job-menu';
 import { JobRepository } from '../src/jobs';
 import { newState, type State } from '../src/state';
 import { buildState } from './helpers/builders';
@@ -358,5 +358,42 @@ describe('selectJob', () => {
 
       expect(io.said.join('\n')).not.toContain('⚠');
     });
+  });
+});
+
+describe('createAskJob (/job จากโหมด ask)', () => {
+  const handoff = { title: 'เรื่อง export', markdown: '## เป้าหมาย' };
+
+  it('ไม่มีงานรันอยู่ -> ไม่ถาม และสร้างงานพร้อม pendingPrompt', async () => {
+    const repo = repoFor(1000);
+    const io = new ScriptedIO([]);
+    const job = await createAskJob(repo, io, 'prompt', handoff.title);
+    expect(job).toBeDefined();
+    expect(io.asked).toEqual([]);
+    expect((await job!.store.load())!.pendingPrompt).toBe('prompt');
+  });
+
+  it('มีงานอื่นรันอยู่ + ตอบ n -> ไม่สร้างงาน และแจ้งว่าไม่ได้ส่ง handoff', async () => {
+    const running = await seed('กำลังรัน', d(25, 9));
+    alive.add(2000);
+    await repoFor(2000).lock(running);
+    const repo = repoFor(1000);
+    const io = new ScriptedIO(['n']);
+
+    expect(await createAskJob(repo, io, 'prompt', handoff.title)).toBeUndefined();
+    expect(io.asked).toHaveLength(1);
+    expect(io.said.join('\n')).toContain('ไม่ได้ส่ง handoff');
+    expect((await repo.list()).map((j) => j.id)).toEqual([running]);
+  });
+
+  it('มีงานอื่นรันอยู่ + ตอบ y -> สร้างงาน', async () => {
+    const running = await seed('กำลังรัน', d(25, 9));
+    alive.add(2000);
+    await repoFor(2000).lock(running);
+    const repo = repoFor(1000);
+
+    const job = await createAskJob(repo, new ScriptedIO(['y']), 'prompt', handoff.title);
+    expect(job).toBeDefined();
+    expect((await repo.list()).map((j) => j.id)).toContain(job!.id);
   });
 });

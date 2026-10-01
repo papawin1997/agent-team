@@ -166,3 +166,9 @@ describe('Spinner', () => {
     expect(hasTimer()).toBe(false);
   });
 });
+
+describe('agentLabel advisor', () => {
+  it('ขึ้นว่า [ADVISOR] กำลังคิด', () => {
+    expect(agentLabel('advisor')).toBe('[ADVISOR] กำลังคิด');
+  });
+});

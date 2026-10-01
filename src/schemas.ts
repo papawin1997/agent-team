@@ -106,3 +106,10 @@ export type PmTurn = z.infer<typeof PmTurnSchema>;
 export function toJsonSchema(schema: z.ZodType): Record<string, unknown> {
   return z.toJSONSchema(schema, { target: 'draft-7' }) as Record<string, unknown>;
 }
+
+/** handoff ของโหมดปรึกษา (agent-team ask): title ใช้ตั้งชื่อไฟล์ markdown คือเนื้อหา */
+export const HandoffSchema = z.object({
+  title: z.string().min(1),
+  markdown: z.string().min(1),
+});
+export type Handoff = z.infer<typeof HandoffSchema>;

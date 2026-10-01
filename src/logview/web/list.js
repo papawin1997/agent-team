@@ -11,7 +11,7 @@ var AgentTeamList = (function () {
   var PAGE_SIZES = [10, 20, 50];
   var DEFAULT_PAGE_SIZE = 20;
   /** @type {Record<string, string>} */
-  var ROLE_ICONS = { pm: '🧭', planning: '📐', frontend: '🎨', backend: '⚙️', qa: '🔍', security: '🛡️' };
+  var ROLE_ICONS = { pm: '🧭', planning: '📐', frontend: '🎨', backend: '⚙️', qa: '🔍', security: '🛡️', advisor: '💬' };
   /**
    * @param {object} obj
    * @param {PropertyKey} key

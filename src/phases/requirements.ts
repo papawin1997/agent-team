@@ -56,6 +56,7 @@ export async function runRequirements(
       io.say(
         `\n[PM] PM ตอบไม่สำเร็จ (${e instanceof Error ? e.message : String(e)}) — ` +
           'กด Enter เพื่อส่งข้อความเดิมอีกครั้ง หรือพิมพ์ข้อความใหม่\n',
+        'error',
       );
       const retry = (await io.ask('> ')).trim();
       if (retry !== '') {
@@ -67,7 +68,7 @@ export async function runRequirements(
     const { turn } = response;
     state.pmSessionId = response.sessionId;
     await store.save(state);
-    io.say(`\n[PM] ${turn.message}\n`);
+    io.say(turn.message, 'pm');
 
     if (turn.status === 'proposal' && turn.requirements) {
       io.say(formatRequirements(turn.requirements));

@@ -2,6 +2,7 @@ import { stdin, stdout } from 'node:process';
 import * as readline from 'node:readline/promises';
 import { Spinner } from './activity';
 import type { UserIO } from './deps';
+import { colorEnabled, plainText, type SayKind, type Styler, styler, styleSay, stylePrompt } from './style';
 
 const LABELS: Record<string, string> = {
   confirm: 'ยืนยัน',
@@ -31,6 +32,8 @@ export interface CliIOOptions {
   terminal?: boolean;
   /** เรียกเมื่อกด Ctrl+C ค่าเริ่มต้นยิง process 'SIGINT' ให้ handler ใน index.ts ทำงาน */
   onInterrupt?: () => void;
+  /** ใส่สีหรือไม่ ค่าเริ่มต้น = colorEnabled(output) (เป็น TTY และไม่มี NO_COLOR) */
+  color?: boolean;
 }
 
 export class CliIO implements UserIO {
@@ -40,10 +43,13 @@ export class CliIO implements UserIO {
   private readonly closed: Promise<never>;
   /** บรรทัดสถานะระหว่าง agent ทำงาน index.ts ส่งให้ SdkRoleRunner ตรง ๆ (ไม่ผ่าน LoggingIO จึงไม่ลง log) */
   readonly status: Spinner;
+  /** undefined = ไม่ใส่สี (ได้ข้อความเหมือนก่อนมีสีทุกตัวอักษร) */
+  private readonly style: Styler | undefined;
 
   constructor(options: CliIOOptions = {}) {
     this.output = options.output ?? stdout;
     const screen = this.output as Partial<NodeJS.WriteStream>;
+    this.style = (options.color ?? colorEnabled(screen)) ? styler(true) : undefined;
     this.status = new Spinner({
       output: this.output,
       tty: options.terminal ?? screen.isTTY === true,
@@ -68,21 +74,24 @@ export class CliIO implements UserIO {
     this.closed.catch(() => {});
   }
 
-  say(text: string): void {
+  say(text: string, kind?: SayKind): void {
     this.status.clear();
-    this.output.write(`${text}\n`);
+    const out = this.style ? styleSay(text, kind, this.style) : plainText(text, kind);
+    this.output.write(`${out}\n`);
     this.status.redraw();
   }
 
   async ask(prompt: string): Promise<string> {
     this.status.stop();
     if (this.isClosed) throw new Error(EOF_MESSAGE);
-    return (await Promise.race([this.rl.question(prompt), this.closed])).trim();
+    const shown = this.style ? stylePrompt(prompt, this.style) : prompt;
+    return (await Promise.race([this.rl.question(shown), this.closed])).trim();
   }
 
   async chooseOrText<T extends string>(prompt: string, options: readonly T[]): Promise<T | { text: string }> {
     const menu = options.map((o, i) => `${i + 1}) ${o}${LABELS[o] ? ` (${LABELS[o]})` : ''}`).join('   ');
-    const answer = await this.ask(`${prompt}\n${menu}\nหรือพิมพ์คำถาม/ความเห็นถึง PM ก่อนตัดสินใจก็ได้\n> `);
+    const text = `${prompt}\n${menu}\nหรือพิมพ์คำถาม/ความเห็นถึง PM ก่อนตัดสินใจก็ได้\n> `;
+    const answer = await this.ask(this.style ? `\n${text}` : text);
     const choice = parseChoice(answer, options);
     return choice ?? { text: answer };
   }
@@ -91,7 +100,7 @@ export class CliIO implements UserIO {
     for (;;) {
       const result = await this.chooseOrText(prompt, options);
       if (typeof result === 'string') return result;
-      this.say('กรุณาพิมพ์หมายเลขหรือชื่อตัวเลือกให้ตรง');
+      this.say('กรุณาพิมพ์หมายเลขหรือชื่อตัวเลือกให้ตรง', 'warn');
     }
   }
 

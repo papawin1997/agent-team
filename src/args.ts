@@ -2,10 +2,10 @@ import * as path from 'node:path';
 import { JOB_ID_RE } from './jobs';
 import type { Level } from './schemas';
 
-export type Command = 'run' | 'logs';
+export type Command = 'run' | 'logs' | 'ask';
 
 export interface CliArgs {
-  /** logs = agent-team logs (ดู log เป็น HTML) */
+  /** logs = agent-team logs (ดู log เป็น HTML), ask = agent-team ask (โหมดปรึกษา) */
   command: Command;
   /** undefined = ให้เลือกจากเมนูโปรเจกต์ (โหมด headless ไม่ระบุ = cwd) */
   projectDir: string | undefined;
@@ -23,10 +23,11 @@ export interface CliArgs {
 }
 
 export function parseArgs(argv: string[]): CliArgs {
-  // logs/run เป็นคำสั่งย่อยเฉพาะตำแหน่งแรก (โฟลเดอร์ชื่อ logs/run ให้พิมพ์ ./logs, ./run)
+  // logs/run/ask เป็นคำสั่งย่อยเฉพาะตำแหน่งแรก (โฟลเดอร์ชื่อ logs/run/ask ให้พิมพ์ ./logs, ./run, ./ask)
   // run เขียนหรือไม่เขียนก็ได้ (agent-team run --headless ... เท่ากับ agent-team --headless ...)
-  const command: Command = argv[0] === 'logs' ? 'logs' : 'run';
-  const rest = argv[0] === 'logs' || argv[0] === 'run' ? argv.slice(1) : argv;
+  const first = argv[0];
+  const command: Command = first === 'logs' ? 'logs' : first === 'ask' ? 'ask' : 'run';
+  const rest = first === 'logs' || first === 'run' || first === 'ask' ? argv.slice(1) : argv;
   let projectDir: string | undefined;
   let resume = false;
   let live = false;
@@ -67,6 +68,7 @@ export function parseArgs(argv: string[]): CliArgs {
   if (resume && command === 'logs') throw new Error('-r/--resume ใช้กับ agent-team logs ไม่ได้');
   if (level && command === 'logs') throw new Error('--quick/--standard/--full ใช้กับ agent-team logs ไม่ได้');
   if (headless && command === 'logs') throw new Error('--headless ใช้กับ agent-team logs ไม่ได้');
+  if (headless && command === 'ask') throw new Error('--headless ใช้กับ agent-team ask ไม่ได้');
   if ((request !== undefined || job !== undefined) && !headless) {
     throw new Error('--request/--job ใช้คู่กับ --headless เท่านั้น');
   }

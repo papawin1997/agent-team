@@ -374,6 +374,79 @@ describe('SdkRoleRunner', () => {
 
     expect(out).toEqual(report);
   });
+
+  it('log บรรทัด retry พร้อม kind warn', async () => {
+    const lines: Array<[string, string | undefined]> = [];
+    const scripts: Array<Msg[] | Error> = [new Error('boom'), [initMsg(), okResult(validTurn)]];
+    const runner = new SdkRoleRunner({
+      projectDir: 'proj',
+      config: DEFAULT_CONFIG,
+      queryFn: (() => {
+        const script = scripts.shift();
+        return (async function* () {
+          if (script instanceof Error) throw script;
+          for (const message of script ?? []) yield message;
+        })();
+      }) as never,
+      sleep: async () => {},
+      log: (line, kind) => void lines.push([line, kind]),
+    });
+    await runner.pmTurn({ prompt: 'hi' });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]![0]).toContain('retry ครั้งที่ 1');
+    expect(lines[0]![1]).toBe('warn');
+  });
+
+  const textResult = (text: string, sid = 's1'): Msg => ({
+    type: 'result',
+    subtype: 'success',
+    session_id: sid,
+    result: text,
+    total_cost_usd: 0.01,
+  });
+
+  it('advise: ไม่ส่ง outputFormat คืนข้อความจาก result และใช้ config ของ advisor', async () => {
+    const { runner, calls } = makeRunner([[initMsg('a1'), textResult('ตอบ', 'a1')]]);
+    const out = await runner.advise({ prompt: 'ถาม' });
+    expect(out).toEqual({ text: 'ตอบ', sessionId: 'a1' });
+    expect(calls[0]!.prompt).toBe('ถาม');
+    expect(calls[0]!.options.outputFormat).toBeUndefined();
+    expect(calls[0]!.options.model).toBe('claude-sonnet-5');
+    expect(calls[0]!.options.tools).toEqual(['Read', 'Glob', 'Grep']);
+    expect(calls[0]!.options.maxTurns).toBe(40);
+    expect(calls[0]!.options.resume).toBeUndefined();
+  });
+
+  it('advise: ส่ง sessionId เดิมเป็น resume', async () => {
+    const { runner, calls } = makeRunner([[initMsg('a1'), textResult('ตอบ', 'a1')]]);
+    await runner.advise({ prompt: 'ถามต่อ', sessionId: 'a1' });
+    expect(calls[0]!.options.resume).toBe('a1');
+  });
+
+  it('advise: success แต่ข้อความว่าง -> retry', async () => {
+    const { runner, calls } = makeRunner([
+      [initMsg(), textResult('  ')],
+      [initMsg(), textResult('ตอบ')],
+    ]);
+    expect((await runner.advise({ prompt: 'ถาม' })).text).toBe('ตอบ');
+    expect(calls).toHaveLength(2);
+  });
+
+  it('advise: error_max_turns ไม่ retry และโยน RoleRunError', async () => {
+    const { runner, calls } = makeRunner([[initMsg(), errResult('error_max_turns')]]);
+    await expect(runner.advise({ prompt: 'ถาม' })).rejects.toBeInstanceOf(RoleRunError);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('handoff: resume session เดิมด้วย HANDOFF_REQUEST และคืน structured output', async () => {
+    const handoff = { title: 'เรื่อง', markdown: '## เป้าหมาย\n-' };
+    const { runner, calls } = makeRunner([[initMsg('a2'), okResult(handoff, 'a2')]]);
+    const out = await runner.handoff('a1');
+    expect(out).toEqual({ handoff, sessionId: 'a2' });
+    expect(calls[0]!.options.resume).toBe('a1');
+    expect(calls[0]!.options.outputFormat.type).toBe('json_schema');
+    expect(calls[0]!.prompt).toContain('handoff');
+  });
 });
 
 describe('SdkRoleRunner: สถานะระหว่าง agent ทำงาน', () => {

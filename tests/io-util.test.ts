@@ -167,3 +167,21 @@ describe('decide', () => {
     expect(io.said.some((s) => s.includes('ถาม PM ไม่สำเร็จ'))).toBe(false);
   });
 });
+
+describe('decide: kind ของข้อความ', () => {
+  it('คำตอบ PM ส่ง kind pm (ข้อความใน said ยังเป็น "\n[PM] ...\n")', async () => {
+    const { deps, io } = makeDeps({ pm: [asking('ตอบคำถาม')] }, ['ถามหน่อย', 'confirm']);
+    const state = newState();
+    expect(await decide(deps, state, 'ยืนยัน?', ['confirm', 'revise'] as const)).toBe('confirm');
+    const i = io.said.indexOf('\n[PM] ตอบคำถาม\n');
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(io.kinds[i]).toBe('pm');
+  });
+
+  it('PM ล้ม: ข้อความ error ส่ง kind error', async () => {
+    const { deps, io } = makeDeps({ pm: [] }, ['ถามหน่อย', 'confirm']);
+    await decide(deps, newState(), 'ยืนยัน?', ['confirm', 'revise'] as const);
+    const i = io.said.findIndex((t) => t.includes('ถาม PM ไม่สำเร็จ'));
+    expect(io.kinds[i]).toBe('error');
+  });
+});

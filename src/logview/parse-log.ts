@@ -162,7 +162,8 @@ function apply(run: Run, ev: LogEvent, open: Map<string, AgentCall>): void {
       break;
     }
     case 'run.end':
-      run.status = str(d.phase) === 'DONE' ? 'done' : 'aborted';
+      // โหมด ask (/exit) ไม่มี phase แต่จบปกติ
+      run.status = str(d.phase) === 'DONE' || (d.phase === undefined && str(d.mode) === 'ask') ? 'done' : 'aborted';
       break;
     case 'run.error':
       run.status = 'error';

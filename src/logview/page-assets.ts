@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 export const PAGE_CSS = String.raw`
 :root{
 --bg:#f6f7f9;--card:#fff;--fg:#1f2933;--muted:#5b6876;--border:#d9dee5;--err:#c62828;--err-bg:#fdecea;--warn:#a15c00;--warn-bg:#fff4e0;--ok:#1b7f3b;--info:#2457c5;--info-bg:#e8effc;--code:#eef1f5;
---r-pm:#7c3aed;--r-planning:#1d4ed8;--r-frontend:#be185d;--r-backend:#0f766e;--r-qa:#c2410c;--r-security:#86198f;--r-other:#64748b;--role-fg:#fff;
+--r-pm:#7c3aed;--r-planning:#1d4ed8;--r-frontend:#be185d;--r-backend:#0f766e;--r-qa:#c2410c;--r-security:#86198f;--r-advisor:#a21caf;--r-other:#64748b;--role-fg:#fff;
 --font-sans:"Inter","Noto Sans Thai","Leelawadee UI","Segoe UI",Tahoma,system-ui,sans-serif;
 --font-mono:"JetBrains Mono","Noto Sans Thai",ui-monospace,"Cascadia Mono",Consolas,monospace;
 --fs-h1:clamp(1.5rem,1.3rem + 1vw,2rem);
@@ -22,7 +22,7 @@ export const PAGE_CSS = String.raw`
 }
 @media (prefers-color-scheme: dark){:root{
 --bg:#12161c;--card:#1b2129;--fg:#e4e8ee;--muted:#a3adb8;--border:#2e3742;--err:#ff8a80;--err-bg:#3a1d1d;--warn:#ffcc80;--warn-bg:#3a2e1a;--ok:#81c995;--info:#8ab4f8;--info-bg:#1d2a40;--code:#232b35;
---r-pm:#c4b5fd;--r-planning:#93c5fd;--r-frontend:#f9a8d4;--r-backend:#5eead4;--r-qa:#fdba74;--r-security:#f0abfc;--r-other:#cbd5e1;--role-fg:#12161c
+--r-pm:#c4b5fd;--r-planning:#93c5fd;--r-frontend:#f9a8d4;--r-backend:#5eead4;--r-qa:#fdba74;--r-security:#f0abfc;--r-advisor:#e879f9;--r-other:#cbd5e1;--role-fg:#12161c
 }}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font-sans);font-size:var(--fs-body);line-height:var(--lh-body);letter-spacing:var(--ls-body);-webkit-font-smoothing:antialiased}
@@ -64,6 +64,7 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:4px 0;background:var(--co
 .role-backend{--role:var(--r-backend)}
 .role-qa{--role:var(--r-qa)}
 .role-security{--role:var(--r-security)}
+.role-advisor{--role:var(--r-advisor)}
 .role-other{--role:var(--r-other)}
 .role-badge{display:inline-block;border:1px solid var(--role);background:var(--role);color:var(--role-fg);border-radius:999px;padding:0 8px;margin:0 6px 0 0;font-size:var(--fs-caption);font-weight:600;line-height:1.7;white-space:nowrap}
 button.role-badge{margin:2px}

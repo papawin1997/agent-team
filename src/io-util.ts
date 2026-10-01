@@ -6,7 +6,7 @@ export async function askNonEmpty(io: UserIO, prompt: string): Promise<string> {
   for (;;) {
     const answer = (await io.ask(prompt)).trim();
     if (answer !== '') return answer;
-    io.say('กรุณาพิมพ์ข้อความ (ห้ามเว้นว่าง)');
+    io.say('กรุณาพิมพ์ข้อความ (ห้ามเว้นว่าง)', 'warn');
   }
 }
 
@@ -15,7 +15,7 @@ export async function confirmYesNo(io: UserIO, question: string): Promise<boolea
     const answer = (await io.ask(question)).trim().toLowerCase();
     if (answer === 'y' || answer === 'yes') return true;
     if (answer === 'n' || answer === 'no') return false;
-    io.say('กรุณาตอบ y หรือ n');
+    io.say('กรุณาตอบ y หรือ n', 'warn');
   }
 }
 
@@ -38,15 +38,15 @@ export async function decide<T extends string>(
       turn = response.turn;
       state.pmSessionId = response.sessionId;
     } catch (e) {
-      io.say(`\n[PM] ถาม PM ไม่สำเร็จ (${e instanceof Error ? e.message : String(e)}) — ลองถามใหม่หรือเลือกตัวเลือกได้เลย\n`);
+      io.say(`\n[PM] ถาม PM ไม่สำเร็จ (${e instanceof Error ? e.message : String(e)}) — ลองถามใหม่หรือเลือกตัวเลือกได้เลย\n`, 'error');
       continue;
     }
-    io.say(`\n[PM] ${turn.message}\n`);
+    io.say(turn.message, 'pm');
     onTurn?.(turn);
     try {
       await store.save(state);
     } catch (e) {
-      io.say(`\n[PM] บันทึกสถานะไม่สำเร็จ (${e instanceof Error ? e.message : String(e)}) — คำตอบข้างบนยังใช้ได้ แต่อาจไม่ถูกบันทึกลงดิสก์\n`);
+      io.say(`\n[PM] บันทึกสถานะไม่สำเร็จ (${e instanceof Error ? e.message : String(e)}) — คำตอบข้างบนยังใช้ได้ แต่อาจไม่ถูกบันทึกลงดิสก์\n`, 'error');
     }
   }
 }

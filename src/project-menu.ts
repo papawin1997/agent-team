@@ -48,14 +48,14 @@ export async function selectProject(deps: ProjectMenuDeps): Promise<string | und
     const projects = await registry.list();
     if (projects.length === 0) {
       if (!allowNew) {
-        io.say('ยังไม่มีโปรเจกต์ในรายชื่อ — รัน agent-team ก่อนเพื่อเพิ่มโปรเจกต์');
+        io.say('ยังไม่มีโปรเจกต์ในรายชื่อ — รัน agent-team ก่อนเพื่อเพิ่มโปรเจกต์', 'system');
         return undefined;
       }
-      io.say('ยังไม่มีโปรเจกต์ในรายชื่อ');
+      io.say('ยังไม่มีโปรเจกต์ในรายชื่อ', 'system');
       return askNewProject(deps);
     }
     const counts = await Promise.all(projects.map((p) => safeCount(deps, p.path)));
-    io.say(renderMenu(projects, counts, allowNew));
+    io.say(renderMenu(projects, counts, allowNew), 'menu');
     const answer = (await io.ask('> ')).trim().toLowerCase();
     if (answer === 'q' || answer === 'quit') return undefined;
     if (allowNew && (answer === 'n' || answer === 'new')) {
@@ -66,20 +66,20 @@ export async function selectProject(deps: ProjectMenuDeps): Promise<string | und
     const match = /^(d?)\s*(\d+)$/.exec(answer);
     const project = match ? projects[Number(match[2]) - 1] : undefined;
     if (!match || !project) {
-      io.say(`เลือกไม่ถูกต้อง — ${allowNew ? MENU_HELP : MENU_HELP_NO_NEW}`);
+      io.say(`เลือกไม่ถูกต้อง — ${allowNew ? MENU_HELP : MENU_HELP_NO_NEW}`, 'warn');
       continue;
     }
     if (match[1] === 'd') {
       try {
         await registry.remove(project.path);
-        io.say(`เอา ${project.path} ออกจากเมนูแล้ว (ไฟล์ในโฟลเดอร์ยังอยู่ครบ)`);
+        io.say(`เอา ${project.path} ออกจากเมนูแล้ว (ไฟล์ในโฟลเดอร์ยังอยู่ครบ)`, 'success');
       } catch (e) {
-        io.say(`เอาออกจากเมนูไม่สำเร็จ: ${e instanceof Error ? e.message : String(e)}`);
+        io.say(`เอาออกจากเมนูไม่สำเร็จ: ${e instanceof Error ? e.message : String(e)}`, 'error');
       }
       continue;
     }
     if (!isDir(project.path)) {
-      io.say(`ไม่พบโฟลเดอร์ ${project.path} — ถ้าย้ายไปแล้วให้กด n ใส่ path ใหม่ หรือ d${match[2]} เพื่อเอาออกจากเมนู`);
+      io.say(`ไม่พบโฟลเดอร์ ${project.path} — ถ้าย้ายไปแล้วให้กด n ใส่ path ใหม่ หรือ d${match[2]} เพื่อเอาออกจากเมนู`, 'warn');
       continue;
     }
     return project.path;
@@ -120,17 +120,17 @@ async function askNewProject(deps: ProjectMenuDeps): Promise<string | undefined>
     const dir = path.resolve(expandHome(raw));
     const rootErr = teamRootError(dir, deps.teamRoot);
     if (rootErr) {
-      io.say(rootErr);
+      io.say(rootErr, 'warn');
       continue;
     }
     if (fs.existsSync(dir)) {
       if (isDir(dir)) return dir;
-      io.say(`${dir} ไม่ใช่โฟลเดอร์`);
+      io.say(`${dir} ไม่ใช่โฟลเดอร์`, 'warn');
       continue;
     }
     if (!(await confirmYesNo(io, `ไม่พบโฟลเดอร์ ${dir} สร้างใหม่ไหม? (y/n)\n> `))) continue;
     await fsp.mkdir(dir, { recursive: true });
-    io.say(`สร้างโฟลเดอร์ ${dir} แล้ว`);
+    io.say(`สร้างโฟลเดอร์ ${dir} แล้ว`, 'success');
     return dir;
   }
 }

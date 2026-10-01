@@ -153,3 +153,18 @@ describe('parseArgs --headless', () => {
     expect(() => parseArgs(argv)).toThrow(message);
   });
 });
+
+describe('parseArgs: ask', () => {
+  it('agent-team ask -> command ask (ให้เลือกโปรเจกต์จากเมนู)', () => {
+    expect(parseArgs(['ask'])).toEqual({ command: 'ask', projectDir: undefined, resume: false, live: false });
+  });
+  it('รับ --project, path แบบ positional, --resume และระดับงาน', () => {
+    expect(parseArgs(['ask', '--project', 'a']).projectDir).toBe(path.resolve('a'));
+    expect(parseArgs(['ask', 'a', '-r']).resume).toBe(true);
+    expect(parseArgs(['ask', '--quick']).level).toBe('quick');
+  });
+  it('ใช้กับ --headless หรือ --live ไม่ได้', () => {
+    expect(() => parseArgs(['ask', '--headless', '--request', 'x'])).toThrow('--headless ใช้กับ agent-team ask ไม่ได้');
+    expect(() => parseArgs(['ask', '--live'])).toThrow('--live');
+  });
+});

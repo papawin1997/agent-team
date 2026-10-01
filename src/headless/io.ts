@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import type { StatusSink } from '../activity';
 import { parseChoice } from '../cli';
 import type { UserIO } from '../deps';
+import { plainText, type SayKind } from '../style';
 import {
   appendEvent,
   headlessPath,
@@ -63,9 +64,9 @@ export class HeadlessIO implements UserIO {
     return this.seq;
   }
 
-  say(text: string): void {
+  say(text: string, kind?: SayKind): void {
     this.seq += 1;
-    appendEvent(this.opts.dir, { seq: this.seq, at: this.now().toISOString(), text });
+    appendEvent(this.opts.dir, { seq: this.seq, at: this.now().toISOString(), text: plainText(text, kind) });
   }
 
   ask(prompt: string): Promise<string> {
@@ -77,7 +78,7 @@ export class HeadlessIO implements UserIO {
       const text = await this.waitAnswer('choice', prompt, options);
       const choice = parseChoice(text, options);
       if (choice) return choice;
-      this.say(`"${text}" ไม่อยู่ในตัวเลือก: ${options.join(', ')}`);
+      this.say(`"${text}" ไม่อยู่ในตัวเลือก: ${options.join(', ')}`, 'warn');
     }
   }
 

@@ -60,7 +60,7 @@ describe('CliIO', () => {
     output.on('data', (chunk: Buffer) => {
       text += chunk.toString('utf8');
     });
-    io = new CliIO({ input, output, ...extra });
+    io = new CliIO({ input, output, color: false, ...extra });
     return { io, input, written: () => text };
   }
 
@@ -196,5 +196,26 @@ describe('CliIO', () => {
       io.close();
       expect(io.status.active).toBe(false);
     });
+  });
+
+  it('ไม่ใส่สี (output ไม่ใช่ TTY): say แบบ pm ได้ "\\n[PM] ...\\n" เหมือนเดิม', async () => {
+    const { io, written } = makeIO();
+    io.say('สวัสดี', 'pm');
+    await vi.waitFor(() => expect(written()).toContain('\n[PM] สวัสดี\n\n'));
+    expect(written()).not.toContain('\x1b[');
+  });
+
+  it('color: true: say ลงสีตาม kind', async () => {
+    const { io, written } = makeIO({ color: true });
+    io.say('ระวัง', 'warn');
+    await vi.waitFor(() => expect(written()).toContain('\x1b[1m\x1b[33mระวัง\x1b[39m\x1b[22m\n'));
+  });
+
+  it('color: true: ask ลงสี "> " เป็นสีเขียว', async () => {
+    const { io, input, written } = makeIO({ color: true });
+    const answer = io.ask('ถาม\n> ');
+    await vi.waitFor(() => expect(written()).toContain('\x1b[1m\x1b[32m> \x1b[39m\x1b[22m'));
+    input.write('ok\n');
+    expect(await answer).toBe('ok');
   });
 });

@@ -2,10 +2,11 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { agentLabel, describeToolUse, nullStatus, type StatusSink } from './activity';
 import { resolveModel, type RoleName, SKILLS_PLUGIN_DIR, type TeamConfig } from './config';
-import type { PlanInput, PmInput, QaInput, RoleRunner, SecurityDesignInput, WorkInput, WorkOutput } from './deps';
+import type { AdviseInput, AdvisorRunner, PlanInput, PmInput, QaInput, RoleRunner, SecurityDesignInput, WorkInput, WorkOutput } from './deps';
 import { RoleOutputError, RoleRunError } from './errors';
 import { type Logger, nullLogger } from './logger';
 import { buildQueryOptions } from './options';
+import type { SayKind } from './style';
 import {
   buildPlanPrompt,
   buildQaPrompt,
@@ -13,11 +14,14 @@ import {
   buildSecurityPrompt,
   buildWorkFixPrompt,
   buildWorkPrompt,
+  HANDOFF_REQUEST,
   SYSTEM_PROMPTS,
 } from './prompts';
 import {
   type Design,
   DesignSchema,
+  type Handoff,
+  HandoffSchema,
   type Level,
   type PmTurn,
   PmTurnSchema,
@@ -41,7 +45,7 @@ export interface SdkRunnerDeps {
   skillsPluginDir?: string;
   queryFn?: QueryFn;
   sleep?: (ms: number) => Promise<void>;
-  log?: (line: string) => void;
+  log?: (line: string, kind?: SayKind) => void;
   debug?: boolean;
   abortController?: AbortController;
   logger?: Logger;
@@ -58,10 +62,10 @@ const STRUCTURED_OUTPUT_RECOVERY =
   'เรียก StructuredOutput ใหม่อีกครั้งด้วย JSON ที่ถูกต้อง ครบทุก field ที่ schema กำหนด ปิด ] และ } ให้ครบ ' +
   'และเขียนแต่ละข้อความให้สั้นกระชับ';
 
-export class SdkRoleRunner implements RoleRunner {
+export class SdkRoleRunner implements RoleRunner, AdvisorRunner {
   private readonly queryFn: QueryFn;
   private readonly sleep: (ms: number) => Promise<void>;
-  private readonly log: (line: string) => void;
+  private readonly log: (line: string, kind?: SayKind) => void;
   private readonly logger: Logger;
   private readonly status: StatusSink;
 
@@ -115,6 +119,17 @@ export class SdkRoleRunner implements RoleRunner {
     return out.data;
   }
 
+  async advise(input: AdviseInput): Promise<{ text: string; sessionId: string }> {
+    // ไม่มี jsonSchema = ตอบเป็นข้อความธรรมดา (once คืน msg.result)
+    const out = await this.withRetry('advisor', agentLabel('advisor'), input.prompt, undefined, input.sessionId);
+    return { text: String(out.output), sessionId: out.sessionId };
+  }
+
+  async handoff(sessionId: string): Promise<{ handoff: Handoff; sessionId: string }> {
+    const out = await this.runValidated('advisor', agentLabel('advisor'), HANDOFF_REQUEST, HandoffSchema, sessionId);
+    return { handoff: out.data, sessionId: out.sessionId };
+  }
+
   private async runValidated<T>(
     role: RoleName,
     label: string,
@@ -151,7 +166,7 @@ export class SdkRoleRunner implements RoleRunner {
     } catch (e) {
       const aborted = this.deps.abortController?.signal.aborted ?? false;
       if (aborted || !(e instanceof RoleRunError) || e.subtype !== STRUCTURED_OUTPUT_EXHAUSTED || !e.sessionId) throw e;
-      this.log(`[${role}] ส่ง JSON ไม่ผ่าน — ขอให้ส่งใหม่อีกครั้ง`);
+      this.log(`[${role}] ส่ง JSON ไม่ผ่าน — ขอให้ส่งใหม่อีกครั้ง`, 'warn');
       return this.withRetry(role, label, STRUCTURED_OUTPUT_RECOVERY, jsonSchema, e.sessionId, level);
     }
   }
@@ -160,7 +175,7 @@ export class SdkRoleRunner implements RoleRunner {
     role: RoleName,
     label: string,
     prompt: string,
-    jsonSchema: Record<string, unknown>,
+    jsonSchema: Record<string, unknown> | undefined,
     resume?: string,
     level?: Level,
   ): Promise<{ output: unknown; sessionId: string }> {
@@ -172,7 +187,7 @@ export class SdkRoleRunner implements RoleRunner {
         const aborted = this.deps.abortController?.signal.aborted ?? false;
         if (aborted || !retryable || attempt >= BACKOFF_MS.length) throw e;
         const reason = e instanceof Error ? e.message : String(e);
-        this.log(`[${role}] ล้มเหลว (${reason}) — retry ครั้งที่ ${attempt + 1}`);
+        this.log(`[${role}] ล้มเหลว (${reason}) — retry ครั้งที่ ${attempt + 1}`, 'warn');
         await this.sleep(BACKOFF_MS[attempt] ?? 3000);
       }
     }
@@ -182,7 +197,7 @@ export class SdkRoleRunner implements RoleRunner {
     role: RoleName,
     label: string,
     prompt: string,
-    jsonSchema: Record<string, unknown>,
+    jsonSchema: Record<string, unknown> | undefined,
     resume?: string,
     level?: Level,
   ): Promise<{ output: unknown; sessionId: string }> {
@@ -236,6 +251,7 @@ export class SdkRoleRunner implements RoleRunner {
           const init = msg as unknown as { skills?: unknown; plugins?: unknown; tools?: unknown };
           this.log(
             `[${role}] init skills=${JSON.stringify(init.skills)} plugins=${JSON.stringify(init.plugins)} tools=${JSON.stringify(init.tools)}`,
+            'system',
           );
         }
         if (msg.type === 'assistant') {
@@ -244,7 +260,12 @@ export class SdkRoleRunner implements RoleRunner {
           }
         }
         if (msg.type === 'result') {
-          const ok = msg.subtype === 'success' && msg.structured_output !== undefined;
+          // มี schema = ใช้ structured_output, ไม่มี = ข้อความธรรมดาจาก result (advisor)
+          const output =
+            msg.subtype !== 'success' ? undefined : jsonSchema ? msg.structured_output : msg.result;
+          const ok =
+            msg.subtype === 'success' &&
+            (jsonSchema ? output !== undefined : typeof output === 'string' && output.trim() !== '');
           this.logger.log(ok ? 'INFO' : 'WARN', 'agent.result', {
             role,
             subtype: msg.subtype,
@@ -253,9 +274,11 @@ export class SdkRoleRunner implements RoleRunner {
             costUsd: msg.total_cost_usd,
             sessionId,
           });
-          if (ok) return { output: msg.structured_output, sessionId };
-          const reason =
-            msg.subtype === 'success' ? 'จบงานโดยไม่ได้ส่ง structured output (ดูสาเหตุด้วย agent-team logs)' : msg.subtype;
+          if (ok) return { output, sessionId };
+          const missing = jsonSchema
+            ? 'จบงานโดยไม่ได้ส่ง structured output (ดูสาเหตุด้วย agent-team logs)'
+            : 'จบงานโดยไม่มีข้อความตอบ';
+          const reason = msg.subtype === 'success' ? missing : msg.subtype;
           throw new RoleRunError(
             `${role}: ${reason}`,
             !msg.subtype.startsWith('error_max_'),

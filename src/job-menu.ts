@@ -71,7 +71,7 @@ async function removeEmptyJobs(repo: JobRepository, all: readonly JobInfo[]): Pr
 async function resumeLatest(repo: JobRepository, io: UserIO, pending: readonly JobInfo[]): Promise<SelectedJob> {
   for (const job of pending) {
     if (job.lock || !(await repo.lock(job.id))) continue;
-    io.say(`ทำต่องาน "${jobTitle(job.state)}" (${job.id})`);
+    io.say(`ทำต่องาน "${jobTitle(job.state)}" (${job.id})`, 'system');
     return { id: job.id, store: repo.store(job.id) };
   }
   throw new Error('งานค้างทั้งหมดกำลังรันอยู่ใน process อื่น');
@@ -97,7 +97,7 @@ async function menu(
   pending: readonly JobInfo[],
   all: readonly JobInfo[],
 ): Promise<SelectedJob | undefined> {
-  io.say(renderMenu(pending, all));
+  io.say(renderMenu(pending, all), 'menu');
   const answer = (await io.ask('> ')).trim().toLowerCase();
   if (answer === 'n' || answer === 'new') {
     return (await confirmConcurrent(io, all)) ? repo.create() : undefined;
@@ -105,31 +105,57 @@ async function menu(
   const match = /^([rd])\s*(\d+)$/.exec(answer);
   const job = match ? pending[Number(match[2]) - 1] : undefined;
   if (!match || !job) {
-    io.say(`เลือกไม่ถูกต้อง — ${MENU_HELP}`);
+    io.say(`เลือกไม่ถูกต้อง — ${MENU_HELP}`, 'warn');
     return undefined;
   }
   if (job.lock) {
-    io.say(lockedMessage(repo, job));
+    io.say(lockedMessage(repo, job), 'warn');
     return undefined;
   }
   if (match[1] === 'r') {
     if (!(await confirmConcurrent(io, all, job.id))) return undefined;
     if (await repo.lock(job.id)) return { id: job.id, store: repo.store(job.id) };
-    io.say(lockedMessage(repo, job));
+    io.say(lockedMessage(repo, job), 'warn');
     return undefined;
   }
   if (!(await confirmYesNo(io, `ลบงาน "${jobTitle(job.state)}" ถาวรใช่ไหม? (y/n)\n> `))) return undefined;
   // lock ก่อนลบ: ระหว่างรอ user ตอบ อีก process อาจเลือกงานนี้ไปแล้ว
   if (!(await repo.lock(job.id))) {
-    io.say(lockedMessage(repo, job));
+    io.say(lockedMessage(repo, job), 'warn');
     return undefined;
   }
   try {
     await repo.remove(job.id);
-    io.say(`ลบงาน "${jobTitle(job.state)}" แล้ว`);
+    io.say(`ลบงาน "${jobTitle(job.state)}" แล้ว`, 'success');
   } catch (e) {
-    io.say(`ลบงานไม่สำเร็จ: ${e instanceof Error ? e.message : String(e)}`);
+    io.say(`ลบงานไม่สำเร็จ: ${e instanceof Error ? e.message : String(e)}`, 'error');
     await repo.unlock(job.id);
   }
   return undefined;
+}
+
+/** สร้างงานใหม่ (lock แล้ว) ที่มีข้อความแรกถึง PM รออยู่ — ใช้กับ /job ของ agent-team ask */
+export async function createJobWithPrompt(repo: JobRepository, prompt: string, title?: string): Promise<SelectedJob> {
+  const job = await repo.create();
+  const state = await job.store.load();
+  if (!state) throw new Error(`สร้างงาน ${job.id} ไม่สำเร็จ`);
+  state.pendingPrompt = prompt;
+  if (title) state.title = Array.from(title).slice(0, 60).join('');
+  await job.store.save(state);
+  return job;
+}
+
+/** /job ของ agent-team ask: เช็กงานที่รันอยู่เหมือนเส้นทางเริ่มงานใหม่อื่น แล้วค่อยสร้างงาน — undefined = ผู้ใช้ไม่ยืนยัน (ไม่สร้างงาน) */
+export async function createAskJob(
+  repo: JobRepository,
+  io: UserIO,
+  prompt: string,
+  title?: string,
+): Promise<SelectedJob | undefined> {
+  await repo.migrateLegacy();
+  if (!(await confirmConcurrent(io, await repo.list()))) {
+    io.say('ไม่ได้ส่ง handoff — มีงานอื่นกำลังรันอยู่ (handoff เก็บไว้ใน .agent-team/ask/ แล้ว ใช้ agent-team ask --resume เปิดดูได้)', 'warn');
+    return undefined;
+  }
+  return createJobWithPrompt(repo, prompt, title);
 }
