@@ -22,6 +22,11 @@ describe('handoffSlug', () => {
     expect(handoffSlug('  ')).toBe('handoff');
     expect(Array.from(handoffSlug('ก'.repeat(80)))).toHaveLength(40);
   });
+
+  it('ตัด control char (รวม DEL) ออกจาก slug', () => {
+    expect(handoffSlug('a\x00b\x1fc\x7fd')).toBe('a-b-c-d');
+    expect(handoffSlug('\x01\x02')).toBe('handoff');
+  });
 });
 
 describe('HandoffStore', () => {
@@ -51,6 +56,21 @@ describe('HandoffStore', () => {
       ['ใหม่', '2026-09-30 15:20'],
       ['เก่า', '2026-09-30 15:10'],
     ]);
+  });
+
+  it('save: title ที่มีขึ้นบรรทัดใหม่/control char ถูกยุบเป็นบรรทัดเดียว', async () => {
+    const store = new HandoffStore(tmp(), at(30));
+    const file = await store.save({ title: ' แก้\nบั๊ก\t\x01 export ', markdown: 'x' });
+    expect(fs.readFileSync(file, 'utf8')).toBe('# แก้ บั๊ก export\n\nx\n');
+    expect((await store.list())[0]!.title).toBe('แก้ บั๊ก export');
+  });
+
+  it('list: ข้ามโฟลเดอร์ชื่อ x.md', async () => {
+    const project = tmp();
+    const store = new HandoffStore(project, at(30));
+    await store.save({ title: 'ปกติ', markdown: 'a' });
+    fs.mkdirSync(path.join(project, '.agent-team', 'ask', 'x.md'));
+    expect((await store.list()).map((h) => h.title)).toEqual(['ปกติ']);
   });
 
   it('list: ยังไม่มีโฟลเดอร์ -> []', async () => {

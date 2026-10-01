@@ -1,3 +1,4 @@
+import type { Dirent } from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import { formatJobId } from '../jobs';
@@ -16,7 +17,7 @@ const errCode = (e: unknown): string | undefined => (e as NodeJS.ErrnoException 
 
 /** ส่วนท้ายชื่อไฟล์จาก title: ตัดอักขระที่ Windows ใช้ในชื่อไฟล์ไม่ได้ ยาวสุด 40 ตัวอักษร */
 export function handoffSlug(title: string): string {
-  const cleaned = title.trim().replace(/[\\/:*?"<>|\s]+/g, '-').replace(/^-+|-+$/g, '');
+  const cleaned = title.trim().replace(/[\\/:*?"<>|\s\x00-\x1f\x7f]+/g, '-').replace(/^-+|-+$/g, '');
   const slug = Array.from(cleaned).slice(0, 40).join('');
   return slug === '' ? 'handoff' : slug;
 }
@@ -35,7 +36,9 @@ export class HandoffStore {
   async save(handoff: Handoff): Promise<string> {
     await fsp.mkdir(this.dir, { recursive: true });
     const base = `${formatJobId(this.now())}-${handoffSlug(handoff.title)}`;
-    const content = `# ${handoff.title.trim()}\n\n${handoff.markdown.trim()}\n`;
+    // title มาจากโมเดล: ยุบ whitespace/control char เป็นเว้นวรรคเดียว ไม่ให้ขึ้นบรรทัดใหม่จน list() อ่านผิด
+    const title = handoff.title.replace(/[\s\x00-\x1f\x7f]+/g, ' ').trim();
+    const content = `# ${title}\n\n${handoff.markdown.trim()}\n`;
     for (let n = 1; ; n++) {
       const file = path.join(this.dir, n === 1 ? `${base}.md` : `${base}-${n}.md`);
       try {
@@ -50,16 +53,17 @@ export class HandoffStore {
 
   /** ใหม่สุดก่อน (ชื่อไฟล์ขึ้นต้นด้วยเวลา) */
   async list(): Promise<SavedHandoff[]> {
-    let names: string[];
+    let entries: Dirent[];
     try {
-      names = await fsp.readdir(this.dir);
+      entries = await fsp.readdir(this.dir, { withFileTypes: true });
     } catch (e) {
       if (errCode(e) === 'ENOENT') return [];
       throw e;
     }
-    const files = names.filter((n) => n.endsWith('.md')).sort().reverse();
-    return Promise.all(
-      files.map(async (name) => {
+    const names = entries.filter((d) => d.isFile() && d.name.endsWith('.md')).map((d) => d.name).sort().reverse();
+    // ไฟล์เดียวเสียต้องไม่ทำให้ทั้งรายการล้ม
+    const settled = await Promise.allSettled(
+      names.map(async (name): Promise<SavedHandoff> => {
         const file = path.join(this.dir, name);
         const firstLine = (await fsp.readFile(file, 'utf8')).split('\n', 1)[0] ?? '';
         const m = STAMP_RE.exec(name);
@@ -70,6 +74,7 @@ export class HandoffStore {
         };
       }),
     );
+    return settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
   }
 
   read(file: string): Promise<string> {
