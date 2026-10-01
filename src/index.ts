@@ -7,7 +7,7 @@ import { isHeadlessCommand, parseHeadlessCommand } from './headless/args';
 import { runHeadlessCommand } from './headless/commands';
 import { runHeadless } from './headless/run';
 import { makeInterruptHandler } from './interrupt';
-import { createJobWithPrompt, selectJob, type SelectedJob } from './job-menu';
+import { createAskJob, selectJob, type SelectedJob } from './job-menu';
 import { LoggingIO } from './logger';
 import { runLogsCommand } from './logview/command';
 import { runTeam } from './orchestrator';
@@ -103,13 +103,18 @@ async function main(): Promise<void> {
         logger.log('INFO', 'run.end', { mode: 'ask' });
         return;
       }
-      job = await createJobWithPrompt(repo, askJobPrompt(outcome.handoff), outcome.handoff.title);
+      const created = await createAskJob(repo, loggingIO, askJobPrompt(outcome.handoff), outcome.handoff.title);
+      if (!created) {
+        logger.log('INFO', 'run.end', { mode: 'ask' });
+        return;
+      }
+      job = created;
       loggingIO.say(`เริ่มงานใหม่ "${outcome.handoff.title}" (${job.id}) — ส่ง handoff ให้ PM แล้ว`, 'success');
     } else {
       job = await selectJob(repo, loggingIO, { resume: args.resume });
     }
     jobId = job.id;
-    logger.log('INFO', 'job.selected', { jobId, resume: args.resume });
+    logger.log('INFO', 'job.selected', { jobId, resume: args.command === 'ask' ? false : args.resume });
     const final = await runTeam({
       runner,
       io: loggingIO,

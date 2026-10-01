@@ -144,3 +144,18 @@ export async function createJobWithPrompt(repo: JobRepository, prompt: string, t
   await job.store.save(state);
   return job;
 }
+
+/** /job ของ agent-team ask: เช็กงานที่รันอยู่เหมือนเส้นทางเริ่มงานใหม่อื่น แล้วค่อยสร้างงาน — undefined = ผู้ใช้ไม่ยืนยัน (ไม่สร้างงาน) */
+export async function createAskJob(
+  repo: JobRepository,
+  io: UserIO,
+  prompt: string,
+  title?: string,
+): Promise<SelectedJob | undefined> {
+  await repo.migrateLegacy();
+  if (!(await confirmConcurrent(io, await repo.list()))) {
+    io.say('ไม่ได้ส่ง handoff — มีงานอื่นกำลังรันอยู่ (handoff เก็บไว้ใน .agent-team/ask/ แล้ว ใช้ agent-team ask --resume เปิดดูได้)', 'warn');
+    return undefined;
+  }
+  return createJobWithPrompt(repo, prompt, title);
+}
