@@ -60,7 +60,7 @@ describe('CliIO', () => {
     output.on('data', (chunk: Buffer) => {
       text += chunk.toString('utf8');
     });
-    io = new CliIO({ input, output, ...extra });
+    io = new CliIO({ input, output, color: false, ...extra });
     return { io, input, written: () => text };
   }
 
