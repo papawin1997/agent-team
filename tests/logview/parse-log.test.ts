@@ -90,6 +90,11 @@ describe('parseLog', () => {
     expect(r.events.map((e) => e.level)).toEqual(['INFO', 'RAW', 'INFO']);
   });
 
+  it('run.end ของ agent-team ask (mode ask ไม่มี phase) = done ไม่ใช่ aborted', () => {
+    expect(parseLog(`${T} INFO  run.start {}
+${T} INFO  run.end {"mode":"ask"}`)[0]!.status).toBe('done');
+  });
+
   it('run.end DONE/ABORTED และ run.interrupted', () => {
     expect(parseLog(`${T} INFO  run.start {}\n${T} INFO  run.end {"phase":"DONE"}`)[0]!.status).toBe('done');
     expect(parseLog(`${T} INFO  run.start {}\n${T} INFO  run.end {"phase":"ABORTED"}`)[0]!.status).toBe('aborted');
