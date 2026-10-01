@@ -1,13 +1,25 @@
 import type { TeamConfig } from './config';
 import type { SayKind } from './style';
 import type { Logger } from './logger';
-import type { Design, Level, PmTurn, QAReport, Requirements, SecurityReport, Task, WorkerResult } from './schemas';
+import type { Design, Handoff, Level, PmTurn, QAReport, Requirements, SecurityReport, Task, WorkerResult } from './schemas';
 import type { State } from './state';
 import type { RoundDiff, SnapshotProvider } from './snapshot';
 
 export interface PmInput {
   prompt: string;
   sessionId?: string;
+}
+
+export interface AdviseInput {
+  prompt: string;
+  /** มีค่า = คุยต่อใน session เดิมของ advisor */
+  sessionId?: string;
+}
+
+/** runner ของโหมดปรึกษา (agent-team ask) แยกจาก RoleRunner เพื่อไม่ให้ phases ต้องรู้จัก */
+export interface AdvisorRunner {
+  advise(input: AdviseInput): Promise<{ text: string; sessionId: string }>;
+  handoff(sessionId: string): Promise<{ handoff: Handoff; sessionId: string }>;
 }
 
 export interface PlanInput {
