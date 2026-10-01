@@ -153,10 +153,10 @@ export async function decideLevel(
   let turn = first;
   const show = (t: PmTurn): void => {
     if (t.quickTask) io.say(formatQuickTask(t.quickTask));
-    if (t.levelReason) io.say(`ระดับที่ PM เสนอ: ${t.level ?? 'full'} — ${t.levelReason}`);
+    if (t.levelReason) io.say(`ระดับที่ PM เสนอ: ${t.level ?? 'full'} — ${t.levelReason}`, 'system');
   };
   const warn = (f: readonly RiskCategory[]): void => {
-    if (f.length) io.say(`⚠ งานนี้แตะเรื่อง ${f.join(', ')} — แนะนำ full (มีขั้นออกแบบและตรวจ Security)`);
+    if (f.length) io.say(`⚠ งานนี้แตะเรื่อง ${f.join(', ')} — แนะนำ full (มีขั้นออกแบบและตรวจ Security)`, 'warn');
   };
   const computeFlags = (t: PmTurn): RiskCategory[] =>
     mergeRiskFlags(riskFlags(riskText(t.requirements!, t.quickTask)), userRisk);
@@ -202,11 +202,11 @@ export async function decideLevel(
     // ห้ามยอมรับ quick แบบเงียบ ๆ
     if (offersStandard(deps, turn)) {
       // PM เปลี่ยนไปเสนอ standard แทน (เช่น --standard บังคับ) — ถามใหม่ด้วยตัวเลือกของ turn นั้นแทนที่จะรับ quick เงียบ ๆ
-      io.say('PM เปลี่ยนข้อเสนอเป็น standard แล้ว');
+      io.say('PM เปลี่ยนข้อเสนอเป็น standard แล้ว', 'system');
       return decideLevel(deps, state, turn, userRisk, true);
     }
     // ไม่เสนอ standard ด้วย (เหลือแค่ full) — บอก user แล้วถามยืนยันแบบ full ตามปกติ
-    io.say('PM เปลี่ยนข้อเสนอเป็น full แล้ว');
+    io.say('PM เปลี่ยนข้อเสนอเป็น full แล้ว', 'system');
     return confirmAsFull(deps, state, turn, flags);
   }
 

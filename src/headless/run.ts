@@ -139,7 +139,7 @@ export async function runHeadless(args: CliArgs): Promise<number> {
 
   const activity = new ActivityStatus();
   let io: UserIO | undefined;
-  const ctx = createRunContext(projectDir, { say: (line) => io?.say(line), status: activity, headless: true });
+  const ctx = createRunContext(projectDir, { say: (line, kind) => io?.say(line, kind), status: activity, headless: true });
   let job: SelectedJob;
   try {
     job = await startHeadlessJob(ctx.repo, { request: args.request, resume: args.resume, job: args.job });

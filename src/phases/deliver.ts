@@ -42,7 +42,7 @@ export async function runDeliver(deps: Deps, state: State): Promise<void> {
   });
   state.pmSessionId = sessionId;
   await store.save(state);
-  io.say(`\n[PM] ${turn.message}\n`);
+  io.say(turn.message, 'pm');
 
   const decision = await decide(deps, state, 'ตรวจรับงานนี้ไหม?', ['accept', 'change'] as const);
   if (decision === 'accept') {

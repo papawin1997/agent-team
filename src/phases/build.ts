@@ -275,7 +275,7 @@ async function runRound(
       categories: security.categories,
     });
     if (!security.run) return { report: qaReport, limitHit: false, securityReviewed: false };
-    if (security.note) io.say(security.note);
+    if (security.note) io.say(security.note, 'system');
 
     step = 'security';
     const securityReport = await runner.security({ task, result, ...ctx });
@@ -289,6 +289,7 @@ async function runRound(
     });
     io.say(
       `[Security] ${task.id}: ${securityPassed ? 'PASS' : 'FAIL'} (${securityReport.issues.length} issues)`,
+      'agent',
     );
     if (securityPassed) return { report: qaReport, limitHit: false, securityReviewed: true };
 
@@ -316,7 +317,7 @@ async function runRound(
         round: progress.rounds + 1,
         reason,
       });
-      io.say(`[Security] ${task.id}: ตรวจไม่สำเร็จ (${reason}) — รอบนี้ผ่านโดยไม่มีผลตรวจความปลอดภัย`);
+      io.say(`[Security] ${task.id}: ตรวจไม่สำเร็จ (${reason}) — รอบนี้ผ่านโดยไม่มีผลตรวจความปลอดภัย`, 'warn');
       return { report: qaReport, limitHit: false, securityReviewed: false };
     }
     if (e instanceof RoleRunError && e.subtype !== undefined && LIMIT_SUBTYPES.includes(e.subtype)) {
@@ -326,7 +327,7 @@ async function runRound(
         delete progress.workerResumes;
       }
       const report = limitReport(task, step, e.subtype);
-      io.say(`[${stepSayName(task, step)}] ${task.id}: ชนขีดจำกัด ${e.subtype} — นับเป็นรอบที่ไม่ผ่าน`);
+      io.say(`[${stepSayName(task, step)}] ${task.id}: ชนขีดจำกัด ${e.subtype} — นับเป็นรอบที่ไม่ผ่าน`, 'warn');
       return { report, limitHit: true, securityReviewed: false };
     }
     throw e;
@@ -371,6 +372,7 @@ async function buildTask(
     while (progress.rounds < progress.maxRounds) {
       io.say(
         `[${task.owner}] ทำ task ${task.id}: ${task.title} (รอบที่ ${progress.rounds + 1}/${progress.maxRounds})`,
+        'agent',
       );
       const { report, limitHit, securityReviewed } = await runRound(deps, ctx, task, progress, state);
       progress.rounds += 1;
@@ -394,7 +396,7 @@ async function buildTask(
         checks: Object.fromEntries(report.checks.map((c) => [c.name, c.status])),
       });
       if (!limitHit) {
-        io.say(`[QA] ${task.id}: ${passed ? 'PASS' : 'FAIL'} (${report.issues.length} issues)`);
+        io.say(`[QA] ${task.id}: ${passed ? 'PASS' : 'FAIL'} (${report.issues.length} issues)`, 'agent');
       }
       if (passed) {
         progress.done = true;
@@ -448,7 +450,7 @@ async function escalate(
   });
   state.pmSessionId = sessionId;
   await deps.store.save(state);
-  io.say(`\n[PM] ${turn.message}\n`);
+  io.say(turn.message, 'pm');
   const extraRounds = quick ? config.quickMaxQaRounds : config.extraRoundsOnContinue;
   const question =
     `task ${task.id} ไม่ผ่านครบ ${progress.rounds} รอบ (continue = ทำต่ออีก ${extraRounds} รอบ, accept = รับตามสภาพ, abort = ยกเลิก` +

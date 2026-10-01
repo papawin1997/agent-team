@@ -6,6 +6,7 @@ import { presentBillingVars } from './env';
 import { JobRepository } from './jobs';
 import { FileLogger } from './logger';
 import { SdkRoleRunner } from './runner';
+import type { SayKind } from './style';
 import { GitSnapshots, type SnapshotProvider } from './snapshot';
 import { ensureTeamDir } from './team-dir';
 
@@ -23,7 +24,7 @@ export interface RunContext {
 /** ของที่ทั้งโหมดโต้ตอบและ headless ต้องใช้ในการรันงาน (config, log, runner, repo) */
 export function createRunContext(
   projectDir: string,
-  opts: { say: (line: string) => void; status: StatusSink; headless?: boolean },
+  opts: { say: (line: string, kind?: SayKind) => void; status: StatusSink; headless?: boolean },
 ): RunContext {
   const config = loadConfig();
   const abortController = new AbortController();
@@ -51,9 +52,9 @@ export function announceRun(ctx: RunContext, io: UserIO, data: Record<string, un
     node: process.version,
     debug: process.env.AGENT_TEAM_DEBUG === '1',
   });
-  io.say(`บันทึก log ที่ ${ctx.logFile}`);
+  io.say(`บันทึก log ที่ ${ctx.logFile}`, 'system');
   const ignored = presentBillingVars();
   if (ignored.length > 0) {
-    io.say(`ไม่ส่ง ${ignored.join(', ')} ให้ agent — ใช้โควตา subscription ที่ login ไว้เท่านั้น`);
+    io.say(`ไม่ส่ง ${ignored.join(', ')} ให้ agent — ใช้โควตา subscription ที่ login ไว้เท่านั้น`, 'system');
   }
 }

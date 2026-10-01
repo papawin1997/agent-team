@@ -36,7 +36,7 @@ async function main(): Promise<void> {
   };
   process.on('SIGINT', quitBeforeStart);
   const isLogs = args.command === 'logs';
-  const registry = new ProjectRegistry(undefined, { warn: (m) => cli.say(m) });
+  const registry = new ProjectRegistry(undefined, { warn: (m) => cli.say(m, 'warn') });
   const projectDir = args.projectDir ?? (await selectProject({ registry, io: cli, allowNew: !isLogs }));
   if (!projectDir) {
     cli.close();
@@ -58,7 +58,7 @@ async function main(): Promise<void> {
     try {
       await registry.touch(projectDir);
     } catch (e) {
-      cli.say(`บันทึกรายชื่อโปรเจกต์ไม่สำเร็จ (${e instanceof Error ? e.message : String(e)}) — ทำงานต่อได้ตามปกติ`);
+      cli.say(`บันทึกรายชื่อโปรเจกต์ไม่สำเร็จ (${e instanceof Error ? e.message : String(e)}) — ทำงานต่อได้ตามปกติ`, 'warn');
     }
   }
   process.off('SIGINT', quitBeforeStart);
@@ -74,7 +74,7 @@ async function main(): Promise<void> {
   }
 
   let io: LoggingIO | undefined;
-  const ctx = createRunContext(projectDir, { say: (line) => io?.say(line), status: cli.status });
+  const ctx = createRunContext(projectDir, { say: (line, kind) => io?.say(line, kind), status: cli.status });
   const loggingIO = new LoggingIO(cli, ctx.logger);
   io = loggingIO;
   announceRun(ctx, loggingIO, { projectDir, resume: args.resume });

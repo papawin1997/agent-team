@@ -22,7 +22,7 @@ async function reviewDesignSecurity(
     return await deps.runner.securityDesign({ design, requirements, level });
   } catch (e) {
     (deps.log ?? nullLogger).log('WARN', 'security.design_failed', { reason: String(e) });
-    deps.io.say(`[Security] ตรวจ design ไม่สำเร็จ (${String(e)}) — ยังไม่มีผลตรวจความปลอดภัยของ design นี้`);
+    deps.io.say(`[Security] ตรวจ design ไม่สำเร็จ (${String(e)}) — ยังไม่มีผลตรวจความปลอดภัยของ design นี้`, 'warn');
     return undefined;
   }
 }
@@ -76,7 +76,7 @@ export async function runReview(deps: Deps, state: State): Promise<void> {
   });
   state.pmSessionId = sessionId;
   await store.save(state);
-  io.say(`\n[PM] ${turn.message}\n`);
+  io.say(turn.message, 'pm');
   io.say(formatDesign(design, { level: state.level }));
 
   let options: readonly ('full' | 'confirm' | 'revise')[] = ['confirm', 'revise'];
@@ -85,7 +85,7 @@ export async function runReview(deps: Deps, state: State): Promise<void> {
       ? mergeRiskFlags(riskFlags(riskText(requirements)), riskFlags(designRiskText(design)))
       : [];
   if (flags.length) {
-    io.say(`⚠ requirements/design แตะเรื่อง ${flags.join(', ')} — แนะนำ full (Security ตรวจ design และทุก task)`);
+    io.say(`⚠ requirements/design แตะเรื่อง ${flags.join(', ')} — แนะนำ full (Security ตรวจ design และทุก task)`, 'warn');
     options = ['full', 'confirm', 'revise'];
   }
   let decision = await decide(deps, state, 'ยืนยันแบบนี้ไหม?', options);

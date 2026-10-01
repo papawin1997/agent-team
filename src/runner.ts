@@ -6,6 +6,7 @@ import type { PlanInput, PmInput, QaInput, RoleRunner, SecurityDesignInput, Work
 import { RoleOutputError, RoleRunError } from './errors';
 import { type Logger, nullLogger } from './logger';
 import { buildQueryOptions } from './options';
+import type { SayKind } from './style';
 import {
   buildPlanPrompt,
   buildQaPrompt,
@@ -41,7 +42,7 @@ export interface SdkRunnerDeps {
   skillsPluginDir?: string;
   queryFn?: QueryFn;
   sleep?: (ms: number) => Promise<void>;
-  log?: (line: string) => void;
+  log?: (line: string, kind?: SayKind) => void;
   debug?: boolean;
   abortController?: AbortController;
   logger?: Logger;
@@ -61,7 +62,7 @@ const STRUCTURED_OUTPUT_RECOVERY =
 export class SdkRoleRunner implements RoleRunner {
   private readonly queryFn: QueryFn;
   private readonly sleep: (ms: number) => Promise<void>;
-  private readonly log: (line: string) => void;
+  private readonly log: (line: string, kind?: SayKind) => void;
   private readonly logger: Logger;
   private readonly status: StatusSink;
 
@@ -151,7 +152,7 @@ export class SdkRoleRunner implements RoleRunner {
     } catch (e) {
       const aborted = this.deps.abortController?.signal.aborted ?? false;
       if (aborted || !(e instanceof RoleRunError) || e.subtype !== STRUCTURED_OUTPUT_EXHAUSTED || !e.sessionId) throw e;
-      this.log(`[${role}] ส่ง JSON ไม่ผ่าน — ขอให้ส่งใหม่อีกครั้ง`);
+      this.log(`[${role}] ส่ง JSON ไม่ผ่าน — ขอให้ส่งใหม่อีกครั้ง`, 'warn');
       return this.withRetry(role, label, STRUCTURED_OUTPUT_RECOVERY, jsonSchema, e.sessionId, level);
     }
   }
@@ -172,7 +173,7 @@ export class SdkRoleRunner implements RoleRunner {
         const aborted = this.deps.abortController?.signal.aborted ?? false;
         if (aborted || !retryable || attempt >= BACKOFF_MS.length) throw e;
         const reason = e instanceof Error ? e.message : String(e);
-        this.log(`[${role}] ล้มเหลว (${reason}) — retry ครั้งที่ ${attempt + 1}`);
+        this.log(`[${role}] ล้มเหลว (${reason}) — retry ครั้งที่ ${attempt + 1}`, 'warn');
         await this.sleep(BACKOFF_MS[attempt] ?? 3000);
       }
     }
@@ -236,6 +237,7 @@ export class SdkRoleRunner implements RoleRunner {
           const init = msg as unknown as { skills?: unknown; plugins?: unknown; tools?: unknown };
           this.log(
             `[${role}] init skills=${JSON.stringify(init.skills)} plugins=${JSON.stringify(init.plugins)} tools=${JSON.stringify(init.tools)}`,
+            'system',
           );
         }
         if (msg.type === 'assistant') {

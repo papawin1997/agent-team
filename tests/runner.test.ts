@@ -374,6 +374,28 @@ describe('SdkRoleRunner', () => {
 
     expect(out).toEqual(report);
   });
+
+  it('log บรรทัด retry พร้อม kind warn', async () => {
+    const lines: Array<[string, string | undefined]> = [];
+    const scripts: Array<Msg[] | Error> = [new Error('boom'), [initMsg(), okResult(validTurn)]];
+    const runner = new SdkRoleRunner({
+      projectDir: 'proj',
+      config: DEFAULT_CONFIG,
+      queryFn: (() => {
+        const script = scripts.shift();
+        return (async function* () {
+          if (script instanceof Error) throw script;
+          for (const message of script ?? []) yield message;
+        })();
+      }) as never,
+      sleep: async () => {},
+      log: (line, kind) => void lines.push([line, kind]),
+    });
+    await runner.pmTurn({ prompt: 'hi' });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]![0]).toContain('retry ครั้งที่ 1');
+    expect(lines[0]![1]).toBe('warn');
+  });
 });
 
 describe('SdkRoleRunner: สถานะระหว่าง agent ทำงาน', () => {
