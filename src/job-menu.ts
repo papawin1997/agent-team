@@ -133,3 +133,14 @@ async function menu(
   }
   return undefined;
 }
+
+/** สร้างงานใหม่ (lock แล้ว) ที่มีข้อความแรกถึง PM รออยู่ — ใช้กับ /job ของ agent-team ask */
+export async function createJobWithPrompt(repo: JobRepository, prompt: string, title?: string): Promise<SelectedJob> {
+  const job = await repo.create();
+  const state = await job.store.load();
+  if (!state) throw new Error(`สร้างงาน ${job.id} ไม่สำเร็จ`);
+  state.pendingPrompt = prompt;
+  if (title) state.title = Array.from(title).slice(0, 60).join('');
+  await job.store.save(state);
+  return job;
+}

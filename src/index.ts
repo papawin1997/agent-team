@@ -1,11 +1,13 @@
 import * as fs from 'node:fs';
 import { parseArgs } from './args';
+import { HandoffStore } from './ask/handoff-store';
+import { askJobPrompt, runAsk } from './ask/session';
 import { CliIO } from './cli';
 import { isHeadlessCommand, parseHeadlessCommand } from './headless/args';
 import { runHeadlessCommand } from './headless/commands';
 import { runHeadless } from './headless/run';
 import { makeInterruptHandler } from './interrupt';
-import { selectJob } from './job-menu';
+import { createJobWithPrompt, selectJob, type SelectedJob } from './job-menu';
 import { LoggingIO } from './logger';
 import { runLogsCommand } from './logview/command';
 import { runTeam } from './orchestrator';
@@ -77,7 +79,7 @@ async function main(): Promise<void> {
   const ctx = createRunContext(projectDir, { say: (line, kind) => io?.say(line, kind), status: cli.status });
   const loggingIO = new LoggingIO(cli, ctx.logger);
   io = loggingIO;
-  announceRun(ctx, loggingIO, { projectDir, resume: args.resume });
+  announceRun(ctx, loggingIO, { projectDir, resume: args.resume, ...(args.command === 'ask' ? { mode: 'ask' } : {}) });
   const { config, logger, runner, repo, abortController } = ctx;
   let jobId: string | undefined;
 
@@ -94,7 +96,18 @@ async function main(): Promise<void> {
   process.on('SIGHUP', () => onSignal('SIGHUP'));
 
   try {
-    const job = await selectJob(repo, loggingIO, { resume: args.resume });
+    let job: SelectedJob;
+    if (args.command === 'ask') {
+      const outcome = await runAsk({ runner, io: loggingIO, store: new HandoffStore(projectDir), resume: args.resume });
+      if (outcome.kind === 'exit') {
+        logger.log('INFO', 'run.end', { mode: 'ask' });
+        return;
+      }
+      job = await createJobWithPrompt(repo, askJobPrompt(outcome.handoff), outcome.handoff.title);
+      loggingIO.say(`เริ่มงานใหม่ "${outcome.handoff.title}" (${job.id}) — ส่ง handoff ให้ PM แล้ว`, 'success');
+    } else {
+      job = await selectJob(repo, loggingIO, { resume: args.resume });
+    }
     jobId = job.id;
     logger.log('INFO', 'job.selected', { jobId, resume: args.resume });
     const final = await runTeam({
