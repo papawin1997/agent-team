@@ -47,6 +47,12 @@ class FakeAdvisor implements AdvisorRunner {
 
 const H: Handoff = { title: 'เรื่อง export', markdown: '## เป้าหมาย\n- เพิ่มปุ่ม' };
 
+class FailingSaveStore extends HandoffStore {
+  override async save(): Promise<string> {
+    throw new Error('disk full');
+  }
+}
+
 describe('runAsk', () => {
   it('คุยต่อใน session เดิม, คำตอบเป็น kind advisor, /exit แล้วตอบ n ไม่เก็บไฟล์', async () => {
     const runner = new FakeAdvisor(['ตอบ 1', 'ตอบ 2']);
@@ -166,5 +172,25 @@ describe('askJobPrompt', () => {
     const p = askJobPrompt(H);
     expect(p).toContain('agent-team ask');
     expect(p).toContain(`# ${H.title}\n\n${H.markdown}`);
+  });
+
+  it('/save: save ล้ม -> แจ้ง error, แสดง markdown ให้ copy, ไม่ crash และยัง unsaved (/exit ถามเก็บอีก)', async () => {
+    const store = new FailingSaveStore(newStore().dir);
+    const io = new ScriptedIO(['ถาม', '/save', '/exit', 'n']);
+    expect(await runAsk({ runner: new FakeAdvisor(['ตอบ'], [H]), io, store, resume: false })).toEqual({ kind: 'exit' });
+    const err = io.said.findIndex((_t, i) => io.kinds[i] === 'error');
+    expect(io.said[err]).toContain('disk full');
+    expect(io.said).toContain(`\n[ADVISOR] # ${H.title}\n\n${H.markdown}\n`);
+    expect(io.asked.at(-1)).toContain('เก็บ handoff ของการคุยนี้ไหม');
+  });
+
+  it('/job: save ล้ม -> ยังคืน handoff ให้เปิดงานได้', async () => {
+    const store = new FailingSaveStore(newStore().dir);
+    const io = new ScriptedIO(['ถาม', '/job', 'y']);
+    expect(await runAsk({ runner: new FakeAdvisor(['ตอบ'], [H]), io, store, resume: false })).toEqual({
+      kind: 'job',
+      handoff: H,
+    });
+    expect(io.kinds).toContain('error');
   });
 });

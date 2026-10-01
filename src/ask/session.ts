@@ -58,17 +58,28 @@ export async function runAsk(deps: AskDeps): Promise<AskOutcome> {
   /** ข้อความที่ advisor ตอบไม่สำเร็จ — กด Enter เพื่อส่งซ้ำ */
   let failed: string | undefined;
 
-  const writeHandoff = async (id: string): Promise<Handoff | undefined> => {
+  const showHandoff = (h: Handoff): void => io.say(`# ${h.title}\n\n${h.markdown}`, 'advisor');
+
+  /** saved=false เมื่อเขียนไฟล์ไม่สำเร็จ แต่ handoff ที่สร้างแล้ว (เสียเงินไปแล้ว) ยังคืนให้ใช้ต่อได้ */
+  const writeHandoff = async (id: string): Promise<{ handoff: Handoff; saved: boolean } | undefined> => {
+    let handoff: Handoff;
     try {
       const out = await runner.handoff(id);
       sessionId = out.sessionId;
-      const file = await store.save(out.handoff);
-      unsaved = false;
-      io.say(`เก็บ handoff ที่ ${file}`, 'success');
-      return out.handoff;
+      handoff = out.handoff;
     } catch (e) {
       io.say(`เขียน handoff ไม่สำเร็จ (${errMessage(e)})`, 'error');
       return undefined;
+    }
+    try {
+      const file = await store.save(handoff);
+      unsaved = false;
+      io.say(`เก็บ handoff ที่ ${file}`, 'success');
+      return { handoff, saved: true };
+    } catch (e) {
+      io.say(`เขียนไฟล์ handoff ไม่สำเร็จ (${errMessage(e)}) — แสดงเนื้อหาด้านล่างให้ copy เก็บเอง`, 'error');
+      showHandoff(handoff);
+      return { handoff, saved: false };
     }
   };
 
@@ -93,9 +104,11 @@ export async function runAsk(deps: AskDeps): Promise<AskOutcome> {
         io.say('ยังไม่ได้คุยกับ advisor — ถามอะไรสักอย่างก่อน', 'warn');
         continue;
       }
-      const handoff = await writeHandoff(sessionId);
-      if (!handoff || command === '/save') continue;
-      io.say(`# ${handoff.title}\n\n${handoff.markdown}`, 'advisor');
+      const written = await writeHandoff(sessionId);
+      if (!written || command === '/save') continue;
+      const { handoff } = written;
+      // ถ้าเขียนไฟล์ล้ม writeHandoff แสดงเนื้อหาไปแล้ว
+      if (written.saved) showHandoff(handoff);
       if (await confirmYesNo(io, 'ส่ง handoff นี้ให้ PM เริ่มงานใหม่ไหม? (y/n)\n> ')) return { kind: 'job', handoff };
       continue;
     }
