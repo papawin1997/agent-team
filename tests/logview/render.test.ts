@@ -177,3 +177,10 @@ describe('renderHtml', () => {
     expect(PAGE_CSS).not.toContain('font-size:11px');
   });
 });
+
+describe('สีของ role advisor ในหน้า log', () => {
+  it('มีตัวแปรสีและ class ของ advisor', () => {
+    expect(PAGE_CSS).toContain('--r-advisor:');
+    expect(PAGE_CSS).toContain('.role-advisor{--role:var(--r-advisor)}');
+  });
+});

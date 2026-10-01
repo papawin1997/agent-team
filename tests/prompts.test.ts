@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { ROLE_NAMES } from '../src/config';
 import {
+  buildAskResumePrompt,
   buildPlanPrompt,
   buildQaPrompt,
   buildSecurityDesignPrompt,
   buildSecurityPrompt,
   buildWorkFixPrompt,
   buildWorkPrompt,
+  HANDOFF_REQUEST,
   SYSTEM_PROMPTS,
   taskScopedDesign,
 } from '../src/prompts';
@@ -324,5 +326,22 @@ describe('ตัด context ต่อ task', () => {
   it('buildSecurityDesignPrompt และ buildPlanPrompt ยังเห็นทุก task', () => {
     expect(buildSecurityDesignPrompt({ design: big, requirements })).toContain('ทำ docs-other');
     expect(buildPlanPrompt({ requirements, previousDesign: big })).toContain('ทำ docs-other');
+  });
+});
+
+describe('advisor prompts', () => {
+  it('system prompt ห้ามแก้โค้ดและแนะนำ /job', () => {
+    expect(SYSTEM_PROMPTS.advisor).toContain('Never write or modify code');
+    expect(SYSTEM_PROMPTS.advisor).toContain('/job');
+  });
+  it('HANDOFF_REQUEST ระบุหัวข้อของ handoff ครบ', () => {
+    for (const h of ['## เป้าหมาย', '## สิ่งที่คุยและข้อสรุป', '## สิ่งที่พบในโค้ด', '## คำถามที่ยังค้าง', '## ขั้นต่อไป']) {
+      expect(HANDOFF_REQUEST).toContain(h);
+    }
+  });
+  it('buildAskResumePrompt ใส่ handoff เป็นบริบทและตามด้วยข้อความใหม่', () => {
+    const p = buildAskResumePrompt('# เก่า\nเนื้อหา', 'ถามต่อ');
+    expect(p).toContain('<handoff>\n# เก่า\nเนื้อหา\n</handoff>');
+    expect(p.endsWith('ถามต่อ')).toBe(true);
   });
 });

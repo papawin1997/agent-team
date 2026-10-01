@@ -76,6 +76,8 @@ export function agentLabel(role: RoleName, taskId?: string): string {
       return `[QA]${task} กำลังตรวจ`;
     case 'security':
       return taskId ? `[Security]${task} กำลังตรวจความปลอดภัย` : '[Security] กำลังตรวจ design';
+    case 'advisor':
+      return '[ADVISOR] กำลังคิด';
     default:
       return `[${role}]${task} กำลังทำงาน`;
   }

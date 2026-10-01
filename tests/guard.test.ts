@@ -284,3 +284,12 @@ describe('createGuardHook: fails closed (finding 10)', () => {
     expect(out.hookSpecificOutput?.permissionDecision).toBe('deny');
   });
 });
+
+describe('advisor อ่านอย่างเดียว', () => {
+  it('อ่านไฟล์ในโปรเจกต์ได้ แต่เขียน/รันคำสั่งไม่ได้', () => {
+    expect(allowed('advisor', 'Read', { file_path: inside('src', 'a.ts') })).toBe(true);
+    expect(allowed('advisor', 'Write', { file_path: inside('src', 'a.ts') })).toBe(false);
+    expect(allowed('advisor', 'Edit', { file_path: inside('src', 'a.ts') })).toBe(false);
+    expect(allowed('advisor', 'Bash', { command: 'npm test' })).toBe(false);
+  });
+});

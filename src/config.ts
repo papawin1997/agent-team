@@ -4,8 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { type Level, LevelSchema } from './schemas';
 
-export type RoleName = 'pm' | 'planning' | 'frontend' | 'backend' | 'qa' | 'security';
-export const ROLE_NAMES: readonly RoleName[] = ['pm', 'planning', 'frontend', 'backend', 'qa', 'security'];
+export type RoleName = 'pm' | 'planning' | 'frontend' | 'backend' | 'qa' | 'security' | 'advisor';
+export const ROLE_NAMES: readonly RoleName[] = ['pm', 'planning', 'frontend', 'backend', 'qa', 'security', 'advisor'];
 
 export interface RoleConfig {
   model: string;
@@ -86,6 +86,8 @@ export const DEFAULT_CONFIG: TeamConfig = {
     backend: { model: SONNET, maxTurns: 80, maxBudgetUsd: 5, tools: WORK_TOOLS, allowedTools: WORK_ALLOWED, skills: [] },
     qa: { model: SONNET, maxTurns: 60, maxBudgetUsd: 4, tools: WORK_TOOLS, allowedTools: WORK_ALLOWED, skills: [] },
     security: { model: SONNET, maxTurns: 60, maxBudgetUsd: 4, tools: READ_TOOLS, allowedTools: READ_TOOLS, skills: [] },
+    // agent-team ask: ปรึกษาเรื่องโค้ด อ่านอย่างเดียว maxTurns นับต่อหนึ่งข้อความที่ถาม
+    advisor: { model: SONNET, maxTurns: 40, maxBudgetUsd: 2, tools: READ_TOOLS, allowedTools: READ_TOOLS, skills: [] },
   },
 };
 
@@ -96,7 +98,7 @@ const roleOverrideShape = {
   skills: z.array(z.string()).optional(),
 };
 
-// PM ทำงานก่อนรู้ระดับงานและ resume session เดียวตลอดงาน จึงไม่รับ modelByLevel
+// PM และ advisor ไม่ผูกกับระดับงาน (PM ทำงานก่อนรู้ระดับ, advisor ไม่มีงาน) จึงไม่รับ modelByLevel
 const PmOverrideSchema = z.object(roleOverrideShape).strict();
 
 const RoleOverrideSchema = z
@@ -120,6 +122,8 @@ const ConfigOverrideSchema = z
         backend: RoleOverrideSchema.optional(),
         qa: RoleOverrideSchema.optional(),
         security: RoleOverrideSchema.optional(),
+        // advisor ไม่มีระดับงาน จึงใช้ schema แบบ pm
+        advisor: PmOverrideSchema.optional(),
       })
       .strict()
       .optional(),

@@ -213,3 +213,21 @@ describe('modelByLevel', () => {
     expect(DEFAULT_CONFIG.roles.planning.modelByLevel).toEqual({ standard: 'claude-sonnet-5' });
   });
 });
+
+describe('role advisor', () => {
+  it('default: Sonnet, 40 turns, $2, อ่านอย่างเดียว, ไม่มี modelByLevel', () => {
+    const advisor = DEFAULT_CONFIG.roles.advisor;
+    expect(advisor.model).toBe('claude-sonnet-5');
+    expect(advisor.maxTurns).toBe(40);
+    expect(advisor.maxBudgetUsd).toBe(2);
+    expect(advisor.tools).toEqual(['Read', 'Glob', 'Grep']);
+    expect(advisor.allowedTools).toEqual(['Read', 'Glob', 'Grep']);
+    expect(advisor.modelByLevel).toBeUndefined();
+  });
+  it('override model/maxTurns ได้ แต่ไม่รับ modelByLevel', () => {
+    const merged = mergeConfig(DEFAULT_CONFIG, { roles: { advisor: { model: 'claude-opus-5', maxTurns: 60 } } });
+    expect(merged.roles.advisor.model).toBe('claude-opus-5');
+    expect(merged.roles.advisor.maxTurns).toBe(60);
+    expect(() => mergeConfig(DEFAULT_CONFIG, { roles: { advisor: { modelByLevel: { full: 'x' } } } })).toThrow();
+  });
+});

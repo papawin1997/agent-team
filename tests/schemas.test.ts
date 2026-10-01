@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   DesignSchema,
+  HandoffSchema,
   PmTurnSchema,
   QAIssueSchema,
   QAReportSchema,
@@ -276,5 +277,13 @@ describe('PmTurnSchema: ระดับงาน', () => {
     expect(() => PmTurnSchema.parse({ ...base, level: 'medium' })).toThrow();
     expect(() => PmTurnSchema.parse({ ...base, level: 'quick', quickTask: { ...quickTask, owner: 'qa' } })).toThrow();
     expect(() => PmTurnSchema.parse({ ...base, level: 'quick', quickTask: { ...quickTask, acceptanceCriteria: [] } })).toThrow();
+  });
+});
+
+describe('HandoffSchema', () => {
+  it('ต้องมี title และ markdown ที่ไม่ว่าง', () => {
+    expect(HandoffSchema.safeParse({ title: 't', markdown: 'm' }).success).toBe(true);
+    expect(HandoffSchema.safeParse({ title: '', markdown: 'm' }).success).toBe(false);
+    expect(HandoffSchema.safeParse({ title: 't' }).success).toBe(false);
   });
 });

@@ -94,7 +94,7 @@ export function checkToolUse(
   toolName: string,
   input: Record<string, unknown>,
 ): Verdict {
-  const readOnlyRole = ctx.role === 'pm' || ctx.role === 'planning' || ctx.role === 'security';
+  const readOnlyRole = ctx.role === 'pm' || ctx.role === 'planning' || ctx.role === 'security' || ctx.role === 'advisor';
   if (readOnlyRole) {
     if (READ_TOOLS.has(toolName)) return checkReadTool(ctx, toolName, input);
     if (READ_ONLY_EXTRA_TOOLS.has(toolName)) return OK;
