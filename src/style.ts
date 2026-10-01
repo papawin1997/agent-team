@@ -25,6 +25,7 @@ export interface Styler {
   green: Paint;
   yellow: Paint;
   blue: Paint;
+  brightBlue: Paint;
   magenta: Paint;
   cyan: Paint;
   /** แถบหัวข้อ: ตัวหนาสีดำบนพื้นสี */
@@ -44,6 +45,7 @@ export function styler(enabled: boolean): Styler {
     green: paint(32, 39),
     yellow: paint(33, 39),
     blue: paint(34, 39),
+    brightBlue: paint(94, 39),
     magenta: paint(35, 39),
     cyan: paint(36, 39),
     badge: (label, bg) => (enabled ? `\x1b[1;30;${BG[bg]}m ${label} \x1b[0m` : ` ${label} `),
@@ -84,10 +86,10 @@ function renderBlock(text: string, label: string, bg: 'cyan' | 'magenta', s: Sty
   return `\n${s.badge(label, bg)}\n${body}\n`;
 }
 
-type TagColor = 'blue' | 'magenta' | 'green' | 'yellow' | 'red' | 'cyan';
+type TagColor = 'brightBlue' | 'magenta' | 'green' | 'yellow' | 'red' | 'cyan';
 const TAG_COLOR: Record<string, TagColor> = {
   pm: 'cyan',
-  planning: 'blue',
+  planning: 'brightBlue',
   frontend: 'magenta',
   backend: 'green',
   qa: 'yellow',

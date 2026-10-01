@@ -79,6 +79,8 @@ describe('styleSay', () => {
     expect(styleSay('[backend] ทำ task t1', 'agent', s)).toBe(`${s.bold(s.green('[backend]'))} ทำ task t1`);
     expect(styleSay('[Security] t1: FAIL', 'agent', s)).toBe(`${s.bold(s.red('[Security]'))} t1: ${s.red('FAIL')}`);
     expect(styleSay('[unknown] x', 'agent', s)).toBe(`${s.bold(s.cyan('[unknown]'))} x`);
+    // planning ใช้ฟ้าสว่าง (94) เพราะน้ำเงินเข้ม (34) อ่านยากบนพื้นมืด
+    expect(styleSay('[planning] x', 'agent', s)).toContain('[94m[planning][39m');
   });
   it('system จาง, warn หนาเหลือง, error หนาแดง, success เขียว, ไม่มี kind = เดิม', () => {
     expect(styleSay('x', 'system', s)).toBe(s.dim('x'));
