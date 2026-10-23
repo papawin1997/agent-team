@@ -28,11 +28,12 @@ export interface Styler {
   brightBlue: Paint;
   magenta: Paint;
   cyan: Paint;
-  /** แถบหัวข้อ: ตัวหนาสีดำบนพื้นสี */
-  badge: (label: string, bg: 'cyan' | 'magenta') => string;
+  /** หัวข้อบล็อก: แถบ ▌ + ชื่อ ตัวหนาสีสว่าง ไม่มีพื้น (อ่านง่ายบนพื้นมืด) */
+  badge: (label: string, color: BadgeColor) => string;
 }
 
-const BG = { cyan: 46, magenta: 45 } as const;
+type BadgeColor = 'cyan' | 'magenta';
+const BADGE_FG = { cyan: 96, magenta: 95 } as const;
 
 /** ชุดฟังก์ชันลงสี ANSI 16 สี — enabled=false คืนข้อความเดิมทุกฟังก์ชัน */
 export function styler(enabled: boolean): Styler {
@@ -48,7 +49,7 @@ export function styler(enabled: boolean): Styler {
     brightBlue: paint(94, 39),
     magenta: paint(35, 39),
     cyan: paint(36, 39),
-    badge: (label, bg) => (enabled ? `\x1b[1;30;${BG[bg]}m ${label} \x1b[0m` : ` ${label} `),
+    badge: (label, color) => (enabled ? `\x1b[1;${BADGE_FG[color]}m▌${label}\x1b[0m` : `▌${label}`),
   };
 }
 
@@ -78,12 +79,12 @@ export function renderMarkdown(text: string, s: Styler): string {
     .join('\n');
 }
 
-function renderBlock(text: string, label: string, bg: 'cyan' | 'magenta', s: Styler): string {
+function renderBlock(text: string, label: string, color: BadgeColor, s: Styler): string {
   const body = renderMarkdown(text.trim(), s)
     .split('\n')
     .map((line) => (line === '' ? '' : `  ${line}`))
     .join('\n');
-  return `\n${s.badge(label, bg)}\n${body}\n`;
+  return `\n${s.badge(label, color)}\n${body}\n`;
 }
 
 type TagColor = 'brightBlue' | 'magenta' | 'green' | 'yellow' | 'red' | 'cyan';

@@ -1,0 +1,1638 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>agent-team ask + สีข้อความ Implementation Plan</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; line-height: 1.55;
+         max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1f2933;
+         background: #f5f7fa; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  pre { background: #1f2933; color: #e4e7eb; padding: .9rem 1rem;
+        border-radius: 6px; overflow-x: auto; }
+  code { background: #e4e7eb; padding: .1rem .35rem; border-radius: 4px; }
+  pre code { background: none; padding: 0; color: inherit; }
+  .frame { border-left: 6px solid; border-radius: 8px; padding: 1rem 1.25rem;
+           margin: 1.25rem 0; background: #ffffff;
+           box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .frame-header     { border-color: #2563eb; background: #eff6ff; }
+  .frame-constraints{ border-color: #d97706; background: #fffbeb; }
+  .frame-task       { border-color: #059669; background: #ecfdf5; }
+  .frame h1, .frame h2, .frame h3 { margin-top: 0; }
+  .note { border-color: #7c3aed; background: #f5f3ff; }
+  .step { display: flex; gap: .5rem; align-items: baseline;
+          margin: .75rem 0 .25rem; }
+  .step input { transform: scale(1.2); margin-top: .15rem; }
+  .meta { color: #52606d; font-size: .9rem; }
+  table { border-collapse: collapse; width: 100%; font-size: .88rem; background: #fff; }
+  th, td { border: 1px solid #cbd2d9; padding: .3rem .5rem; text-align: left; vertical-align: top; }
+</style>
+</head>
+<body>
+
+<div class="frame frame-header">
+  <h1>agent-team ask + สีข้อความใน terminal — Implementation Plan</h1>
+  <p><strong>เป้าหมาย:</strong> ทำให้ข้อความในจออ่านง่ายด้วยสีตามประเภทข้อความ และเพิ่มคำสั่ง <code>agent-team ask</code> สำหรับปรึกษา advisor ที่อ่านโค้ดได้อย่างเดียว เก็บ handoff ได้ และส่งต่อเป็นงานให้ทีมได้</p>
+  <p><strong>สถาปัตยกรรม:</strong> เพิ่ม <code>src/style.ts</code> (ฟังก์ชันล้วน) และให้ <code>UserIO.say(text, kind?)</code> รับประเภทข้อความ — <code>CliIO</code> ลงสีเฉพาะตอนเป็น TTY ส่วน headless/log/test ใช้ <code>plainText</code> ที่ให้ผลเหมือนเดิมทุกตัวอักษร จากนั้นเพิ่ม role <code>advisor</code> (อ่านอย่างเดียว) กับ <code>runner.advise()</code>/<code>runner.handoff()</code> และโมดูล <code>src/ask/</code> (loop คุย + ที่เก็บ handoff) โดย <code>/job</code> สร้างงานใหม่ที่มี handoff เป็น <code>pendingPrompt</code> แล้วเข้า <code>runTeam</code> ใน process เดิม</p>
+  <p><strong>Tech Stack:</strong> TypeScript (tsx), Node ≥ 20.6, Claude Agent SDK, zod, vitest — ไม่เพิ่ม dependency (สีใช้ ANSI escape เอง)</p>
+</div>
+
+<div class="frame note">
+  <strong>For agentic workers:</strong> REQUIRED SUB-SKILL: Use
+  tb-subagent-driven-development (recommended) or
+  tb-executing-plans to implement this plan task-by-task. Steps keep
+  the <code>- [ ]</code> marker next to each checkbox for tracking.
+</div>
+
+<div class="frame frame-constraints">
+  <h2>Global Constraints</h2>
+  <ul>
+    <li>ทำบน branch <code>feat/ask-and-colors</code> (แตกจาก <code>main</code>) — commit ทีละ task, stage เฉพาะ path ที่ระบุ ห้าม <code>git add -A</code> / <code>git add .</code> และห้าม add <code>agent_structure.txt</code>, <code>HANDOFF.md</code>, <code>docs/backlog.md</code>, <code>package-lock.json</code></li>
+    <li>ท้าย commit message ทุกอันใส่ <code>Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;</code></li>
+    <li>ไม่เพิ่ม dependency ใหม่ใน <code>package.json</code> — สีใช้ ANSI SGR (<code>\x1b[...m</code>) 16 สีมาตรฐานเท่านั้น (ผู้ใช้ใช้พื้นหลังมืด แต่ต้องอ่านได้ทั้งสองธีม)</li>
+    <li>output ที่ไม่ใช่ TTY / มี <code>NO_COLOR</code> ต้องเหมือนก่อนแก้ทุกตัวอักษร: ข้อความ <code>kind: 'pm'</code> แสดงเป็น <code>\n[PM] ${text}\n</code> และ <code>kind: 'advisor'</code> เป็น <code>\n[ADVISOR] ${text}\n</code> (ผ่าน <code>plainText</code>) — ไฟล์ events ของ headless และเทสต์เดิมต้องไม่ต้องแก้</li>
+    <li><code>FORCE_COLOR</code> (ค่าไม่ว่างและไม่ใช่ <code>0</code>) บังคับเปิดสี, <code>NO_COLOR</code> (ค่าไม่ว่าง) ปิดสีเสมอและชนะ <code>FORCE_COLOR</code></li>
+    <li>role <code>advisor</code>: default <code>model: 'claude-sonnet-5'</code>, <code>maxTurns: 40</code>, <code>maxBudgetUsd: 2</code>, tools/allowedTools = <code>['Read', 'Glob', 'Grep']</code>, <code>skills: []</code>, ไม่มี <code>modelByLevel</code> (override ใน config รับแบบเดียวกับ pm คือไม่มี modelByLevel) และ guard ถือเป็น role อ่านอย่างเดียว</li>
+    <li>handoff เก็บที่ <code>&lt;project&gt;/.agent-team/ask/&lt;formatJobId(now)&gt;-&lt;slug&gt;.md</code> เนื้อหา <code># &lt;title&gt;\n\n&lt;markdown&gt;\n</code> — <code>.agent-team/</code> มี <code>.gitignore</code> (<code>*</code>) อยู่แล้วจาก <code>ensureTeamDir</code></li>
+    <li>ข้อความถึงผู้ใช้เป็นภาษาไทย, comment ในโค้ดเป็นภาษาไทยสั้น ๆ ตามสไตล์เดิม, prompt ถึง agent เป็นภาษาอังกฤษ (ให้ agent ตอบผู้ใช้เป็นไทย) ตามแบบ <code>PM_PROMPT</code></li>
+    <li>ทุก task จบด้วย <code>npm test</code> ผ่านทั้งหมด และ <code>npm run typecheck</code> ไม่มี error</li>
+  </ul>
+</div>
+
+<div class="frame note">
+  <h2>แผนผังไฟล์</h2>
+  <ul>
+    <li>สร้าง <code>src/style.ts</code> — SayKind, plainText, colorEnabled, styler, renderMarkdown, styleSay, stylePrompt (Task 1)</li>
+    <li>แก้ <code>src/deps.ts</code>, <code>src/cli.ts</code>, <code>src/logger.ts</code>, <code>src/headless/io.ts</code>, <code>tests/helpers/fakes.ts</code> — say รับ kind (Task 2)</li>
+    <li>แก้จุดเรียก say ทั้งหมด + <code>src/runner.ts</code> (log kind), <code>src/run-context.ts</code>, <code>src/index.ts</code>, <code>src/headless/run.ts</code> (Task 3)</li>
+    <li>แก้ <code>src/config.ts</code>, <code>src/guard.ts</code>, <code>src/prompts.ts</code>, <code>src/activity.ts</code>, <code>src/schemas.ts</code>, <code>src/logview/page-assets.ts</code>, <code>src/logview/web/list.js</code> — role advisor (Task 4)</li>
+    <li>แก้ <code>src/runner.ts</code>, <code>src/deps.ts</code> — advise/handoff (Task 5)</li>
+    <li>สร้าง <code>src/ask/handoff-store.ts</code>, <code>src/ask/session.ts</code> (Task 6)</li>
+    <li>แก้ <code>src/args.ts</code>, <code>src/job-menu.ts</code>, <code>src/index.ts</code>, <code>README.md</code> — คำสั่ง ask (Task 7)</li>
+  </ul>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 0: เตรียม branch</h3>
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: แตก branch จาก main</strong></span></p>
+<pre><code>git switch main
+git switch -c feat/ask-and-colors
+npm test</code></pre>
+  <p>คาดหวัง: test ผ่านทั้งหมด (baseline)</p>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 1: โมดูลสี <code>src/style.ts</code></h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/style.ts</code></li>
+    <li>เทสต์: <code>tests/style.test.ts</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ส่งต่อ (Produces): <code>type SayKind = 'pm' | 'advisor' | 'agent' | 'system' | 'warn' | 'error' | 'success' | 'menu'</code>, <code>plainText(text: string, kind?: SayKind): string</code>, <code>colorEnabled(stream: { isTTY?: boolean }, env?: NodeJS.ProcessEnv): boolean</code>, <code>interface Styler</code>, <code>styler(enabled: boolean): Styler</code>, <code>renderMarkdown(text: string, s: Styler): string</code>, <code>styleSay(text: string, kind: SayKind | undefined, s: Styler): string</code>, <code>stylePrompt(prompt: string, s: Styler): string</code></li>
+  </ul>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import { colorEnabled, plainText, renderMarkdown, styler, styleSay, stylePrompt } from '../src/style';
+
+const s = styler(true);
+const off = styler(false);
+
+describe('plainText', () =&gt; {
+  it('pm/advisor คงรูปแบบเดิม "\\n[PM] ...\\n" ส่วน kind อื่นคืนข้อความเดิม', () =&gt; {
+    expect(plainText('สวัสดี', 'pm')).toBe('\n[PM] สวัสดี\n');
+    expect(plainText('ตอบ', 'advisor')).toBe('\n[ADVISOR] ตอบ\n');
+    expect(plainText('x', 'warn')).toBe('x');
+    expect(plainText('x')).toBe('x');
+  });
+});
+
+describe('colorEnabled', () =&gt; {
+  it('ใส่สีเมื่อเป็น TTY', () =&gt; {
+    expect(colorEnabled({ isTTY: true }, {})).toBe(true);
+    expect(colorEnabled({ isTTY: false }, {})).toBe(false);
+    expect(colorEnabled({}, {})).toBe(false);
+  });
+  it('NO_COLOR ปิดสีเสมอ แม้เป็น TTY หรือมี FORCE_COLOR', () =&gt; {
+    expect(colorEnabled({ isTTY: true }, { NO_COLOR: '1' })).toBe(false);
+    expect(colorEnabled({ isTTY: true }, { NO_COLOR: '1', FORCE_COLOR: '1' })).toBe(false);
+    expect(colorEnabled({ isTTY: true }, { NO_COLOR: '' })).toBe(true);
+  });
+  it('FORCE_COLOR บังคับเปิดสีเมื่อไม่ใช่ TTY ยกเว้นค่า 0 หรือว่าง', () =&gt; {
+    expect(colorEnabled({ isTTY: false }, { FORCE_COLOR: '1' })).toBe(true);
+    expect(colorEnabled({ isTTY: false }, { FORCE_COLOR: '0' })).toBe(false);
+    expect(colorEnabled({ isTTY: false }, { FORCE_COLOR: '' })).toBe(false);
+  });
+});
+
+describe('styler', () =&gt; {
+  it('ปิดสี: คืนข้อความเดิม และ badge ไม่มี escape', () =&gt; {
+    expect(off.bold('a')).toBe('a');
+    expect(off.cyan('a')).toBe('a');
+    expect(off.badge('PM', 'cyan')).toBe(' PM ');
+  });
+  it('เปิดสี: ครอบด้วย SGR และปิดด้วยรหัสที่ตรงกัน', () =&gt; {
+    expect(s.bold('a')).toBe('\x1b[1ma\x1b[22m');
+    expect(s.dim('a')).toBe('\x1b[2ma\x1b[22m');
+    expect(s.red('a')).toBe('\x1b[31ma\x1b[39m');
+    expect(s.cyan('a')).toBe('\x1b[36ma\x1b[39m');
+    expect(s.badge('PM', 'cyan')).toBe('\x1b[1;30;46m PM \x1b[0m');
+    expect(s.badge('ADVISOR', 'magenta')).toBe('\x1b[1;30;45m ADVISOR \x1b[0m');
+  });
+});
+
+describe('renderMarkdown', () =&gt; {
+  it('หัวข้อเป็นตัวหนาสีฟ้า bullet เป็น • และ inline code/bold', () =&gt; {
+    const out = renderMarkdown('# สรุป\n- ใช้ `ExportService`\n* **สำคัญ**\nธรรมดา', s);
+    expect(out.split('\n')).toEqual([
+      s.bold(s.cyan('สรุป')),
+      `• ใช้ ${s.yellow('ExportService')}`,
+      `• ${s.bold('สำคัญ')}`,
+      'ธรรมดา',
+    ]);
+  });
+  it('บรรทัดใน code fence เป็นสีเหลืองและไม่แปลง bullet', () =&gt; {
+    const out = renderMarkdown(['```ts', '- x', '```'].join('\n'), s);
+    expect(out.split('\n')).toEqual([s.dim('```ts'), s.yellow('- x'), s.dim('```')]);
+  });
+});
+
+describe('styleSay', () =&gt; {
+  it('pm: แถบ PM สีฟ้า แล้วเนื้อหาเยื้อง 2 ช่อง', () =&gt; {
+    expect(styleSay('# หัว\nเนื้อหา', 'pm', s)).toBe(
+      `\n${s.badge('PM', 'cyan')}\n  ${s.bold(s.cyan('หัว'))}\n  เนื้อหา\n`,
+    );
+  });
+  it('advisor: แถบ ADVISOR สีม่วง บรรทัดว่างไม่เติมช่องว่าง', () =&gt; {
+    expect(styleSay('a\n\nb', 'advisor', s)).toBe(`\n${s.badge('ADVISOR', 'magenta')}\n  a\n\n  b\n`);
+  });
+  it('agent: tag ของ role มีสีประจำ PASS เขียว FAIL แดง', () =&gt; {
+    expect(styleSay('[QA] t1: PASS (0 issues)', 'agent', s)).toBe(
+      `${s.bold(s.yellow('[QA]'))} t1: ${s.green('PASS')} (0 issues)`,
+    );
+    expect(styleSay('[backend] ทำ task t1', 'agent', s)).toBe(`${s.bold(s.green('[backend]'))} ทำ task t1`);
+    expect(styleSay('[Security] t1: FAIL', 'agent', s)).toBe(`${s.bold(s.red('[Security]'))} t1: ${s.red('FAIL')}`);
+    expect(styleSay('[unknown] x', 'agent', s)).toBe(`${s.bold(s.cyan('[unknown]'))} x`);
+  });
+  it('system จาง, warn หนาเหลือง, error หนาแดง, success เขียว, ไม่มี kind = เดิม', () =&gt; {
+    expect(styleSay('x', 'system', s)).toBe(s.dim('x'));
+    expect(styleSay('x', 'warn', s)).toBe(s.bold(s.yellow('x')));
+    expect(styleSay('x', 'error', s)).toBe(s.bold(s.red('x')));
+    expect(styleSay('x', 'success', s)).toBe(s.green('x'));
+    expect(styleSay('x', undefined, s)).toBe('x');
+  });
+  it('menu: เลข N) เป็นสีฟ้าตัวหนา', () =&gt; {
+    expect(styleSay('โปรเจกต์:\n  1) a\n  2) b', 'menu', s)).toBe(
+      `โปรเจกต์:\n  ${s.bold(s.cyan('1)'))} a\n  ${s.bold(s.cyan('2)'))} b`,
+    );
+  });
+});
+
+describe('stylePrompt', () =&gt; {
+  it('บรรทัดแรกตัวหนา เมนูเลขฟ้า วงเล็บจาง และ &gt; เขียว', () =&gt; {
+    const out = stylePrompt('ยืนยันไหม?\n1) confirm (ยืนยัน)   2) revise (ขอแก้)\nหรือพิมพ์คำถาม\n&gt; ', s);
+    expect(out).toBe(
+      [
+        s.bold('ยืนยันไหม?'),
+        `${s.bold(s.cyan('1)'))} confirm ${s.dim('(ยืนยัน)')}   ${s.bold(s.cyan('2)'))} revise ${s.dim('(ขอแก้)')}`,
+        'หรือพิมพ์คำถาม',
+        s.bold(s.green('&gt; ')),
+      ].join('\n'),
+    );
+  });
+  it('prompt ที่มีแค่ "&gt; " หรือไม่มี &gt; ท้าย', () =&gt; {
+    expect(stylePrompt('&gt; ', s)).toBe(s.bold(s.green('&gt; ')));
+    expect(stylePrompt('q&gt; ', s)).toBe(`${s.bold('q')}${s.bold(s.green('&gt; '))}`);
+    expect(stylePrompt('ไม่มีลูกศร', s)).toBe(s.bold('ไม่มีลูกศร'));
+  });
+  it('ปิดสีแล้วได้ข้อความเดิม', () =&gt; {
+    const p = 'ยืนยันไหม?\n1) confirm (ยืนยัน)\n&gt; ';
+    expect(stylePrompt(p, off)).toBe(p);
+  });
+});</code></pre>
+  <p>บันทึกเป็น <code>tests/style.test.ts</code></p>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/style.test.ts</code><br>คาดหวัง: FAIL เพราะหา module <code>../src/style</code> ไม่เจอ</p>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation <code>src/style.ts</code></strong></span></p>
+<pre><code>/** ประเภทข้อความที่ส่งให้ UserIO.say — CliIO ใช้เลือกสี ส่วน headless/log/test ใช้ plainText */
+export type SayKind = 'pm' | 'advisor' | 'agent' | 'system' | 'warn' | 'error' | 'success' | 'menu';
+
+const BLOCK_LABEL: Partial&lt;Record&lt;SayKind, string&gt;&gt; = { pm: 'PM', advisor: 'ADVISOR' };
+
+/** ข้อความแบบไม่มีสี (headless, log, test, output ที่ไม่ใช่ TTY) — pm/advisor คงรูปแบบเดิม "\n[PM] ...\n" */
+export function plainText(text: string, kind?: SayKind): string {
+  const label = kind === undefined ? undefined : BLOCK_LABEL[kind];
+  return label ? `\n[${label}] ${text}\n` : text;
+}
+
+/** ใส่สีเมื่อเป็น TTY — NO_COLOR ปิดเสมอ, FORCE_COLOR (ไม่ใช่ 0) บังคับเปิด */
+export function colorEnabled(stream: { isTTY?: boolean }, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.NO_COLOR !== undefined &amp;&amp; env.NO_COLOR !== '') return false;
+  if (env.FORCE_COLOR !== undefined &amp;&amp; env.FORCE_COLOR !== '' &amp;&amp; env.FORCE_COLOR !== '0') return true;
+  return stream.isTTY === true;
+}
+
+type Paint = (text: string) =&gt; string;
+
+export interface Styler {
+  bold: Paint;
+  dim: Paint;
+  red: Paint;
+  green: Paint;
+  yellow: Paint;
+  blue: Paint;
+  magenta: Paint;
+  cyan: Paint;
+  /** แถบหัวข้อ: ตัวหนาสีดำบนพื้นสี */
+  badge: (label: string, bg: 'cyan' | 'magenta') =&gt; string;
+}
+
+const BG = { cyan: 46, magenta: 45 } as const;
+
+/** ชุดฟังก์ชันลงสี ANSI 16 สี — enabled=false คืนข้อความเดิมทุกฟังก์ชัน */
+export function styler(enabled: boolean): Styler {
+  const paint = (open: number, close: number): Paint =&gt;
+    enabled ? (text) =&gt; `\x1b[${open}m${text}\x1b[${close}m` : (text) =&gt; text;
+  return {
+    bold: paint(1, 22),
+    dim: paint(2, 22),
+    red: paint(31, 39),
+    green: paint(32, 39),
+    yellow: paint(33, 39),
+    blue: paint(34, 39),
+    magenta: paint(35, 39),
+    cyan: paint(36, 39),
+    badge: (label, bg) =&gt; (enabled ? `\x1b[1;30;${BG[bg]}m ${label} \x1b[0m` : ` ${label} `),
+  };
+}
+
+function renderInline(line: string, s: Styler): string {
+  return line
+    .replace(/`([^`]+)`/g, (_m, code: string) =&gt; s.yellow(code))
+    .replace(/\*\*([^*]+)\*\*/g, (_m, text: string) =&gt; s.bold(text));
+}
+
+/** markdown อย่างง่ายของ PM/advisor: หัวข้อ, bullet, **bold**, `code`, code fence */
+export function renderMarkdown(text: string, s: Styler): string {
+  let inFence = false;
+  return text
+    .split('\n')
+    .map((line) =&gt; {
+      if (/^\s*```/.test(line)) {
+        inFence = !inFence;
+        return s.dim(line);
+      }
+      if (inFence) return s.yellow(line);
+      const heading = /^#{1,6}\s+(.*)$/.exec(line);
+      if (heading) return s.bold(s.cyan(heading[1] ?? ''));
+      const bullet = /^(\s*)[-*]\s+(.*)$/.exec(line);
+      if (bullet) return `${bullet[1] ?? ''}• ${renderInline(bullet[2] ?? '', s)}`;
+      return renderInline(line, s);
+    })
+    .join('\n');
+}
+
+function renderBlock(text: string, label: string, bg: 'cyan' | 'magenta', s: Styler): string {
+  const body = renderMarkdown(text.trim(), s)
+    .split('\n')
+    .map((line) =&gt; (line === '' ? '' : `  ${line}`))
+    .join('\n');
+  return `\n${s.badge(label, bg)}\n${body}\n`;
+}
+
+type TagColor = 'blue' | 'magenta' | 'green' | 'yellow' | 'red' | 'cyan';
+const TAG_COLOR: Record&lt;string, TagColor&gt; = {
+  pm: 'cyan',
+  planning: 'blue',
+  frontend: 'magenta',
+  backend: 'green',
+  qa: 'yellow',
+  security: 'red',
+  advisor: 'magenta',
+};
+
+function styleAgent(text: string, s: Styler): string {
+  return text
+    .replace(/^(\s*)\[([^\]]+)\]/, (_m, space: string, tag: string) =&gt; {
+      const color = TAG_COLOR[tag.toLowerCase()] ?? 'cyan';
+      return `${space}${s.bold(s[color](`[${tag}]`))}`;
+    })
+    .replace(/\bPASS\b/g, s.green('PASS'))
+    .replace(/\bFAIL\b/g, s.red('FAIL'));
+}
+
+const MENU_ITEM = /(^|\s)(\d+\))/gm;
+const MENU_LINE = /(^|\s)\d+\)\s/;
+
+const styleMenuNumbers = (text: string, s: Styler): string =&gt;
+  text.replace(MENU_ITEM, (_m, space: string, n: string) =&gt; `${space}${s.bold(s.cyan(n))}`);
+
+/** ลงสีข้อความของ say ตามประเภท */
+export function styleSay(text: string, kind: SayKind | undefined, s: Styler): string {
+  switch (kind) {
+    case 'pm':
+      return renderBlock(text, 'PM', 'cyan', s);
+    case 'advisor':
+      return renderBlock(text, 'ADVISOR', 'magenta', s);
+    case 'agent':
+      return styleAgent(text, s);
+    case 'system':
+      return s.dim(text);
+    case 'warn':
+      return s.bold(s.yellow(text));
+    case 'error':
+      return s.bold(s.red(text));
+    case 'success':
+      return s.green(text);
+    case 'menu':
+      return styleMenuNumbers(text, s);
+    default:
+      return text;
+  }
+}
+
+/** ลงสีคำถามของ ask: บรรทัดแรกตัวหนา, บรรทัดเมนูเลขฟ้า + วงเล็บจาง, "&gt; " ท้ายสุดเขียว */
+export function stylePrompt(prompt: string, s: Styler): string {
+  const match = /^([\s\S]*?)(&gt; ?)$/.exec(prompt);
+  const body = match ? (match[1] ?? '') : prompt;
+  const tail = match ? (match[2] ?? '') : '';
+  let first = true;
+  const lines = body.split('\n').map((line) =&gt; {
+    if (MENU_LINE.test(line)) return styleMenuNumbers(line, s).replace(/\([^)]*\)/g, (x) =&gt; s.dim(x));
+    if (first &amp;&amp; line.trim() !== '') {
+      first = false;
+      return s.bold(line);
+    }
+    return line;
+  });
+  return lines.join('\n') + (tail ? s.bold(s.green(tail)) : '');
+}</code></pre>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/style.test.ts</code> แล้ว <code>npm run typecheck</code><br>คาดหวัง: PASS ทั้งหมด, typecheck ไม่มี error</p>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: Commit</strong></span></p>
+<pre><code>git add src/style.ts tests/style.test.ts
+git commit -m "feat(style): ANSI styling helpers for terminal output
+
+Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 2: <code>UserIO.say(text, kind?)</code> และการลงสีใน <code>CliIO</code></h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/deps.ts</code> (interface <code>UserIO</code>), <code>src/cli.ts</code>, <code>src/logger.ts</code> (<code>LoggingIO.say</code>), <code>src/headless/io.ts</code> (<code>HeadlessIO.say</code> และ <code>choose</code>), <code>tests/helpers/fakes.ts</code> (<code>ScriptedIO</code>)</li>
+    <li>เทสต์: <code>tests/cli.test.ts</code>, <code>tests/logger.test.ts</code>, <code>tests/headless/io-kind.test.ts</code> (ใหม่)</li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>SayKind</code>, <code>plainText</code>, <code>colorEnabled</code>, <code>styler</code>, <code>styleSay</code>, <code>stylePrompt</code>, <code>type Styler</code> จาก <code>src/style.ts</code></li>
+    <li>ส่งต่อ (Produces): <code>UserIO.say(text: string, kind?: SayKind): void</code>; <code>CliIOOptions.color?: boolean</code>; <code>ScriptedIO.kinds: Array&lt;SayKind | undefined&gt;</code> (ขนานกับ <code>said</code> ซึ่งเก็บ <code>plainText(text, kind)</code>)</li>
+  </ul>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail — ต่อท้าย <code>describe('CliIO', ...)</code> ใน <code>tests/cli.test.ts</code></strong></span></p>
+<pre><code>  it('ไม่ใส่สี (output ไม่ใช่ TTY): say แบบ pm ได้ "\\n[PM] ...\\n" เหมือนเดิม', async () =&gt; {
+    const { io, written } = makeIO();
+    io.say('สวัสดี', 'pm');
+    await vi.waitFor(() =&gt; expect(written()).toContain('\n[PM] สวัสดี\n\n'));
+    expect(written()).not.toContain('\x1b[');
+  });
+
+  it('color: true: say ลงสีตาม kind', async () =&gt; {
+    const { io, written } = makeIO({ color: true });
+    io.say('ระวัง', 'warn');
+    await vi.waitFor(() =&gt; expect(written()).toContain('\x1b[1m\x1b[33mระวัง\x1b[39m\x1b[22m\n'));
+  });
+
+  it('color: true: ask ลงสี "&gt; " เป็นสีเขียว', async () =&gt; {
+    const { io, input, written } = makeIO({ color: true });
+    const answer = io.ask('ถาม\n&gt; ');
+    await vi.waitFor(() =&gt; expect(written()).toContain('\x1b[1m\x1b[32m&gt; \x1b[39m\x1b[22m'));
+    input.write('ok\n');
+    expect(await answer).toBe('ok');
+  });</code></pre>
+  <p>ต่อท้าย <code>tests/logger.test.ts</code> (ใช้ import ที่มีอยู่แล้ว: <code>LoggingIO</code>, <code>ScriptedIO</code>, <code>Logger</code>):</p>
+<pre><code>describe('LoggingIO.say kind', () =&gt; {
+  it('ส่ง kind ต่อให้ io ข้างใน และ log ข้อความแบบ plainText พร้อม kind', () =&gt; {
+    const inner = new ScriptedIO([]);
+    const events: Array&lt;{ event: string; data: unknown }&gt; = [];
+    const logger: Logger = { log: (_level, event, data) =&gt; void events.push({ event, data }) };
+    const io = new LoggingIO(inner, logger);
+    io.say('สวัสดี', 'pm');
+    io.say('ธรรมดา');
+    expect(inner.said).toEqual(['\n[PM] สวัสดี\n', 'ธรรมดา']);
+    expect(inner.kinds).toEqual(['pm', undefined]);
+    expect(events).toEqual([
+      { event: 'say', data: { text: '\n[PM] สวัสดี\n', kind: 'pm' } },
+      { event: 'say', data: { text: 'ธรรมดา' } },
+    ]);
+  });
+});</code></pre>
+  <p>สร้าง <code>tests/headless/io-kind.test.ts</code>:</p>
+<pre><code>import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { readEvents } from '../../src/headless/files';
+import { HeadlessIO } from '../../src/headless/io';
+
+const dirs: string[] = [];
+afterEach(() =&gt; {
+  for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+});
+
+describe('HeadlessIO.say kind', () =&gt; {
+  it('เขียน event เป็น plainText (pm มี [PM] เหมือนเดิม ไม่มีสี)', () =&gt; {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-team-hio-'));
+    dirs.push(dir);
+    const io = new HeadlessIO({ dir, idleTimeoutMs: 1000 });
+    io.say('สวัสดี', 'pm');
+    io.say('ระวัง', 'warn');
+    expect(readEvents(dir).map((e) =&gt; e.text)).toEqual(['\n[PM] สวัสดี\n', 'ระวัง']);
+  });
+});</code></pre>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/cli.test.ts tests/logger.test.ts tests/headless/io-kind.test.ts</code><br>คาดหวัง: FAIL (typecheck ของ vitest ไม่ติด แต่ผลไม่ตรง: <code>CliIO</code> ยังไม่รับ <code>color</code>, <code>ScriptedIO</code> ยังไม่มี <code>kinds</code>, pm ยังไม่ถูกแปลงเป็น <code>[PM]</code>)</p>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แก้ interface ใน <code>src/deps.ts</code></strong></span></p>
+<pre><code>// เพิ่ม import ด้านบนไฟล์
+import type { SayKind } from './style';
+
+export interface UserIO {
+  /** kind ใช้เลือกสีใน terminal — ไม่ใส่ = ข้อความธรรมดา (headless/log ใช้ plainText) */
+  say(text: string, kind?: SayKind): void;
+  ask(prompt: string): Promise&lt;string&gt;;
+  choose&lt;T extends string&gt;(prompt: string, options: readonly T[]): Promise&lt;T&gt;;
+  chooseOrText&lt;T extends string&gt;(prompt: string, options: readonly T[]): Promise&lt;T | { text: string }&gt;;
+}</code></pre>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: แก้ <code>src/cli.ts</code></strong></span></p>
+<pre><code>// เพิ่ม import
+import { colorEnabled, plainText, type SayKind, type Styler, styler, styleSay, stylePrompt } from './style';
+
+// ใน CliIOOptions เพิ่ม field
+  /** ใส่สีหรือไม่ ค่าเริ่มต้น = colorEnabled(output) (เป็น TTY และไม่มี NO_COLOR) */
+  color?: boolean;
+
+// ใน class CliIO เพิ่ม field (ใต้ readonly status)
+  /** undefined = ไม่ใส่สี (ได้ข้อความเหมือนก่อนมีสีทุกตัวอักษร) */
+  private readonly style: Styler | undefined;
+
+// ใน constructor ต่อจาก const screen = ...
+    this.style = (options.color ?? colorEnabled(screen)) ? styler(true) : undefined;
+
+// แทน say เดิม
+  say(text: string, kind?: SayKind): void {
+    this.status.clear();
+    const out = this.style ? styleSay(text, kind, this.style) : plainText(text, kind);
+    this.output.write(`${out}\n`);
+    this.status.redraw();
+  }
+
+// ใน ask: เปลี่ยนบรรทัด return
+    const shown = this.style ? stylePrompt(prompt, this.style) : prompt;
+    return (await Promise.race([this.rl.question(shown), this.closed])).trim();
+
+// แทน chooseOrText เดิม (เว้นบรรทัดก่อนเมนูเฉพาะตอนมีสี)
+  async chooseOrText&lt;T extends string&gt;(prompt: string, options: readonly T[]): Promise&lt;T | { text: string }&gt; {
+    const menu = options.map((o, i) =&gt; `${i + 1}) ${o}${LABELS[o] ? ` (${LABELS[o]})` : ''}`).join('   ');
+    const text = `${prompt}\n${menu}\nหรือพิมพ์คำถาม/ความเห็นถึง PM ก่อนตัดสินใจก็ได้\n&gt; `;
+    const answer = await this.ask(this.style ? `\n${text}` : text);
+    const choice = parseChoice(answer, options);
+    return choice ?? { text: answer };
+  }
+
+// ใน choose เปลี่ยนเป็น
+      this.say('กรุณาพิมพ์หมายเลขหรือชื่อตัวเลือกให้ตรง', 'warn');</code></pre>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: แก้ <code>LoggingIO.say</code> ใน <code>src/logger.ts</code></strong></span></p>
+<pre><code>// เพิ่ม import
+import { plainText, type SayKind } from './style';
+
+  say(text: string, kind?: SayKind): void {
+    this.inner.say(text, kind);
+    this.logger.log('INFO', 'say', kind ? { text: plainText(text, kind), kind } : { text });
+  }</code></pre>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: แก้ <code>HeadlessIO</code> ใน <code>src/headless/io.ts</code></strong></span></p>
+<pre><code>// เพิ่ม import
+import { plainText, type SayKind } from '../style';
+
+  say(text: string, kind?: SayKind): void {
+    this.seq += 1;
+    appendEvent(this.opts.dir, { seq: this.seq, at: this.now().toISOString(), text: plainText(text, kind) });
+  }
+
+// ใน choose เปลี่ยนบรรทัด say เป็น
+      this.say(`"${text}" ไม่อยู่ในตัวเลือก: ${options.join(', ')}`, 'warn');</code></pre>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: แก้ <code>ScriptedIO</code> ใน <code>tests/helpers/fakes.ts</code></strong></span></p>
+<pre><code>// เพิ่ม import
+import { plainText, type SayKind } from '../../src/style';
+
+// ใน class ScriptedIO: เพิ่ม field ใต้ said
+  /** kind ของแต่ละข้อความ (ตำแหน่งตรงกับ said) */
+  kinds: Array&lt;SayKind | undefined&gt; = [];
+
+  say(text: string, kind?: SayKind): void {
+    this.said.push(plainText(text, kind));
+    this.kinds.push(kind);
+  }</code></pre>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 8: รัน test ทั้งหมด</strong></span></p>
+  <p>รัน: <code>npm test</code> แล้ว <code>npm run typecheck</code><br>คาดหวัง: PASS ทั้งหมด (เทสต์เดิมไม่ต้องแก้เพราะไม่มีจุดไหนส่ง kind ยกเว้น <code>'warn'</code> ที่ได้ข้อความเดิม)</p>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 9: Commit</strong></span></p>
+<pre><code>git add src/deps.ts src/cli.ts src/logger.ts src/headless/io.ts tests/helpers/fakes.ts tests/cli.test.ts tests/logger.test.ts tests/headless/io-kind.test.ts
+git commit -m "feat(io): say() takes a message kind; CliIO colors output on a TTY
+
+Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 3: ใส่ kind ทุกจุดที่เรียก say และบรรทัดของ runner</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/io-util.ts</code>, <code>src/job-menu.ts</code>, <code>src/level.ts</code>, <code>src/phases/build.ts</code>, <code>src/phases/deliver.ts</code>, <code>src/phases/design.ts</code>, <code>src/phases/requirements.ts</code>, <code>src/project-menu.ts</code>, <code>src/run-context.ts</code>, <code>src/runner.ts</code>, <code>src/index.ts</code>, <code>src/headless/run.ts</code></li>
+    <li>เทสต์: <code>tests/io-util.test.ts</code>, <code>tests/runner.test.ts</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>UserIO.say(text, kind?)</code>, <code>ScriptedIO.kinds</code>, <code>type SayKind</code></li>
+    <li>ส่งต่อ (Produces): <code>SdkRunnerDeps.log?: (line: string, kind?: SayKind) =&gt; void</code>; <code>createRunContext(projectDir, { say: (line: string, kind?: SayKind) =&gt; void, ... })</code></li>
+  </ul>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>ต่อท้าย <code>tests/io-util.test.ts</code>:</p>
+<pre><code>describe('decide: kind ของข้อความ', () =&gt; {
+  it('คำตอบ PM ส่ง kind pm (ข้อความใน said ยังเป็น "\\n[PM] ...\\n")', async () =&gt; {
+    const { deps, io } = makeDeps({ pm: [asking('ตอบคำถาม')] }, ['ถามหน่อย', 'confirm']);
+    const state = newState();
+    expect(await decide(deps, state, 'ยืนยัน?', ['confirm', 'revise'] as const)).toBe('confirm');
+    const i = io.said.indexOf('\n[PM] ตอบคำถาม\n');
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(io.kinds[i]).toBe('pm');
+  });
+
+  it('PM ล้ม: ข้อความ error ส่ง kind error', async () =&gt; {
+    const { deps, io } = makeDeps({ pm: [] }, ['ถามหน่อย', 'confirm']);
+    await decide(deps, newState(), 'ยืนยัน?', ['confirm', 'revise'] as const);
+    const i = io.said.findIndex((t) =&gt; t.includes('ถาม PM ไม่สำเร็จ'));
+    expect(io.kinds[i]).toBe('error');
+  });
+});</code></pre>
+  <p>ต่อท้าย <code>describe('SdkRoleRunner', ...)</code> ใน <code>tests/runner.test.ts</code>:</p>
+<pre><code>  it('log บรรทัด retry พร้อม kind warn', async () =&gt; {
+    const lines: Array&lt;[string, string | undefined]&gt; = [];
+    const scripts: Array&lt;Msg[] | Error&gt; = [new Error('boom'), [initMsg(), okResult(validTurn)]];
+    const runner = new SdkRoleRunner({
+      projectDir: 'proj',
+      config: DEFAULT_CONFIG,
+      queryFn: (() =&gt; {
+        const script = scripts.shift();
+        return (async function* () {
+          if (script instanceof Error) throw script;
+          for (const message of script ?? []) yield message;
+        })();
+      }) as never,
+      sleep: async () =&gt; {},
+      log: (line, kind) =&gt; void lines.push([line, kind]),
+    });
+    await runner.pmTurn({ prompt: 'hi' });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]![0]).toContain('retry ครั้งที่ 1');
+    expect(lines[0]![1]).toBe('warn');
+  });</code></pre>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/io-util.test.ts tests/runner.test.ts</code><br>คาดหวัง: FAIL — <code>io.kinds[i]</code> เป็น <code>undefined</code> และ <code>lines[0][1]</code> เป็น <code>undefined</code></p>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แก้ runner ให้ส่ง kind (<code>src/runner.ts</code>)</strong></span></p>
+<pre><code>// เพิ่ม import
+import type { SayKind } from './style';
+
+// ใน SdkRunnerDeps
+  log?: (line: string, kind?: SayKind) =&gt; void;
+
+// ใน class: field
+  private readonly log: (line: string, kind?: SayKind) =&gt; void;
+
+// withRecovery
+      this.log(`[${role}] ส่ง JSON ไม่ผ่าน — ขอให้ส่งใหม่อีกครั้ง`, 'warn');
+// withRetry
+        this.log(`[${role}] ล้มเหลว (${reason}) — retry ครั้งที่ ${attempt + 1}`, 'warn');
+// once (debug init)
+          this.log(
+            `[${role}] init skills=${JSON.stringify(init.skills)} plugins=${JSON.stringify(init.plugins)} tools=${JSON.stringify(init.tools)}`,
+            'system',
+          );</code></pre>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: ส่ง kind ผ่าน run-context, index และ headless</strong></span></p>
+<pre><code>// src/run-context.ts — import type { SayKind } from './style'; แล้วเปลี่ยน signature
+  opts: { say: (line: string, kind?: SayKind) =&gt; void; status: StatusSink; headless?: boolean },
+// announceRun
+  io.say(`บันทึก log ที่ ${ctx.logFile}`, 'system');
+  ...
+    io.say(`ไม่ส่ง ${ignored.join(', ')} ให้ agent — ใช้โควตา subscription ที่ login ไว้เท่านั้น`, 'system');
+
+// src/index.ts
+  const registry = new ProjectRegistry(undefined, { warn: (m) =&gt; cli.say(m, 'warn') });
+  ...
+      cli.say(`บันทึกรายชื่อโปรเจกต์ไม่สำเร็จ (${e instanceof Error ? e.message : String(e)}) — ทำงานต่อได้ตามปกติ`, 'warn');
+  ...
+  const ctx = createRunContext(projectDir, { say: (line, kind) =&gt; io?.say(line, kind), status: cli.status });
+
+// src/headless/run.ts
+  const ctx = createRunContext(projectDir, { say: (line, kind) =&gt; io?.say(line, kind), status: activity, headless: true });</code></pre>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: ใส่ kind ที่จุดเรียก say ที่เหลือตามตารางนี้</strong></span></p>
+  <p>ข้อความ PM ที่เคยต่อ <code>\n[PM] </code> เองให้ส่งแค่ <code>turn.message</code> กับ kind <code>'pm'</code> (plainText จะเติมกลับให้เหมือนเดิม) ส่วนข้อความ error ที่มี <code>[PM]</code> อยู่ในตัวให้คงข้อความเดิมทั้งหมดแล้วเติม kind</p>
+<table>
+<tr><th>ไฟล์:บรรทัด (ก่อนแก้)</th><th>เปลี่ยนเป็น</th></tr>
+<tr><td><code>src/io-util.ts:9</code></td><td><code>io.say('กรุณาพิมพ์ข้อความ (ห้ามเว้นว่าง)', 'warn');</code></td></tr>
+<tr><td><code>src/io-util.ts:18</code></td><td><code>io.say('กรุณาตอบ y หรือ n', 'warn');</code></td></tr>
+<tr><td><code>src/io-util.ts:41</code></td><td>ข้อความเดิม + <code>, 'error'</code></td></tr>
+<tr><td><code>src/io-util.ts:44</code></td><td><code>io.say(turn.message, 'pm');</code></td></tr>
+<tr><td><code>src/io-util.ts:49</code></td><td>ข้อความเดิม + <code>, 'error'</code></td></tr>
+<tr><td><code>src/job-menu.ts:74</code></td><td>ข้อความเดิม + <code>, 'system'</code></td></tr>
+<tr><td><code>src/job-menu.ts:100</code></td><td><code>io.say(renderMenu(pending, all), 'menu');</code></td></tr>
+<tr><td><code>src/job-menu.ts:108</code>, <code>:112</code>, <code>:118</code>, <code>:124</code></td><td>ข้อความเดิม + <code>, 'warn'</code></td></tr>
+<tr><td><code>src/job-menu.ts:129</code></td><td>ข้อความเดิม + <code>, 'success'</code></td></tr>
+<tr><td><code>src/job-menu.ts:131</code></td><td>ข้อความเดิม + <code>, 'error'</code></td></tr>
+<tr><td><code>src/level.ts:156</code>, <code>:205</code>, <code>:209</code></td><td>ข้อความเดิม + <code>, 'system'</code></td></tr>
+<tr><td><code>src/level.ts:159</code></td><td>ข้อความเดิม (<code>⚠ งานนี้แตะเรื่อง ...</code>) + <code>, 'warn'</code></td></tr>
+<tr><td><code>src/level.ts:108</code>, <code>:155</code>, <code>:175</code></td><td>ไม่แก้ (formatRequirements/formatQuickTask เป็นข้อความธรรมดา)</td></tr>
+<tr><td><code>src/phases/build.ts:278</code></td><td><code>if (security.note) io.say(security.note, 'system');</code></td></tr>
+<tr><td><code>src/phases/build.ts:290</code>, <code>:372</code>, <code>:397</code></td><td>ข้อความเดิม (<code>[Security]</code>/<code>[${task.owner}]</code>/<code>[QA]</code>) + <code>, 'agent'</code></td></tr>
+<tr><td><code>src/phases/build.ts:319</code>, <code>:329</code></td><td>ข้อความเดิม + <code>, 'warn'</code></td></tr>
+<tr><td><code>src/phases/build.ts:451</code></td><td><code>io.say(turn.message, 'pm');</code></td></tr>
+<tr><td><code>src/phases/deliver.ts:45</code></td><td><code>io.say(turn.message, 'pm');</code></td></tr>
+<tr><td><code>src/phases/design.ts:25</code></td><td>ข้อความเดิม + <code>, 'warn'</code></td></tr>
+<tr><td><code>src/phases/design.ts:79</code></td><td><code>io.say(turn.message, 'pm');</code></td></tr>
+<tr><td><code>src/phases/design.ts:88</code></td><td>ข้อความเดิม (<code>⚠ requirements/design ...</code>) + <code>, 'warn'</code></td></tr>
+<tr><td><code>src/phases/design.ts:80</code>, <code>:99</code></td><td>ไม่แก้ (formatDesign)</td></tr>
+<tr><td><code>src/phases/requirements.ts:56-59</code></td><td>ข้อความเดิม + <code>, 'error'</code></td></tr>
+<tr><td><code>src/phases/requirements.ts:70</code></td><td><code>io.say(turn.message, 'pm');</code></td></tr>
+<tr><td><code>src/phases/requirements.ts:73</code></td><td>ไม่แก้</td></tr>
+<tr><td><code>src/project-menu.ts:51</code>, <code>:54</code></td><td>ข้อความเดิม + <code>, 'system'</code></td></tr>
+<tr><td><code>src/project-menu.ts:58</code></td><td><code>io.say(renderMenu(projects, counts, allowNew), 'menu');</code></td></tr>
+<tr><td><code>src/project-menu.ts:69</code>, <code>:82</code>, <code>:123</code>, <code>:128</code></td><td>ข้อความเดิม + <code>, 'warn'</code></td></tr>
+<tr><td><code>src/project-menu.ts:75</code>, <code>:133</code></td><td>ข้อความเดิม + <code>, 'success'</code></td></tr>
+<tr><td><code>src/project-menu.ts:77</code></td><td>ข้อความเดิม + <code>, 'error'</code></td></tr>
+</table>
+  <p>ตัวอย่างจุด PM (ทั้ง 5 จุดเป็นแบบเดียวกัน):</p>
+<pre><code>// ก่อน
+    io.say(`\n[PM] ${turn.message}\n`);
+// หลัง
+    io.say(turn.message, 'pm');</code></pre>
+  <p>ตรวจว่าไม่มี <code>[PM] ${turn.message}</code> หลงเหลือ: <code>grep -rn "\[PM\] \${turn.message}" src</code> ต้องไม่มีผล</p>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: รัน test ทั้งหมด</strong></span></p>
+  <p>รัน: <code>npm test</code> แล้ว <code>npm run typecheck</code><br>คาดหวัง: PASS ทั้งหมด — เทสต์เดิมที่ตรวจ <code>'\n[PM] ...\n'</code> ใน <code>io.said</code> ยังผ่านเพราะ ScriptedIO ใช้ plainText</p>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: ลองดูสีจริงด้วยตา (ไม่เรียก agent)</strong></span></p>
+  <p>รัน: <code>npx tsx -e "import('./src/cli.ts').then(({CliIO})=&gt;{const io=new CliIO({color:true});io.say('# สรุป\n- ใช้ \</code>X\<code>','pm');io.say('[QA] t1: PASS (0 issues)','agent');io.say('⚠ เสี่ยง','warn');io.say('ล้ม','error');io.say('log ที่ x','system');io.close();})"</code><br>คาดหวัง: เห็นแถบ PM พื้นฟ้า, [QA] สีเหลือง PASS เขียว, คำเตือนเหลือง, error แดง, system จาง</p>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 8: Commit</strong></span></p>
+<pre><code>git add src/io-util.ts src/job-menu.ts src/level.ts src/phases/build.ts src/phases/deliver.ts src/phases/design.ts src/phases/requirements.ts src/project-menu.ts src/run-context.ts src/runner.ts src/index.ts src/headless/run.ts tests/io-util.test.ts tests/runner.test.ts
+git commit -m "feat(io): tag every terminal message with a kind so the CLI can color it
+
+Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 4: role <code>advisor</code> (config, guard, prompt, label, schema, หน้า log)</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/config.ts</code>, <code>src/guard.ts:97</code>, <code>src/prompts.ts</code>, <code>src/activity.ts</code> (<code>agentLabel</code>), <code>src/schemas.ts</code>, <code>src/logview/page-assets.ts</code>, <code>src/logview/web/list.js:14</code></li>
+    <li>เทสต์: <code>tests/config.test.ts</code>, <code>tests/guard.test.ts</code>, <code>tests/prompts.test.ts</code>, <code>tests/activity.test.ts</code>, <code>tests/schemas.test.ts</code>, <code>tests/logview/render.test.ts</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ส่งต่อ (Produces): <code>RoleName</code> มี <code>'advisor'</code>; <code>DEFAULT_CONFIG.roles.advisor</code>; <code>SYSTEM_PROMPTS.advisor</code>; <code>HANDOFF_REQUEST: string</code>; <code>buildAskResumePrompt(handoff: string, message: string): string</code>; <code>HandoffSchema</code> และ <code>type Handoff = { title: string; markdown: string }</code>; <code>agentLabel('advisor') === '[ADVISOR] กำลังคิด'</code></li>
+  </ul>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p><code>tests/config.test.ts</code> — ต่อท้ายไฟล์:</p>
+<pre><code>describe('role advisor', () =&gt; {
+  it('default: Sonnet, 40 turns, $2, อ่านอย่างเดียว, ไม่มี modelByLevel', () =&gt; {
+    const advisor = DEFAULT_CONFIG.roles.advisor;
+    expect(advisor.model).toBe('claude-sonnet-5');
+    expect(advisor.maxTurns).toBe(40);
+    expect(advisor.maxBudgetUsd).toBe(2);
+    expect(advisor.tools).toEqual(['Read', 'Glob', 'Grep']);
+    expect(advisor.allowedTools).toEqual(['Read', 'Glob', 'Grep']);
+    expect(advisor.modelByLevel).toBeUndefined();
+  });
+  it('override model/maxTurns ได้ แต่ไม่รับ modelByLevel', () =&gt; {
+    const merged = mergeConfig(DEFAULT_CONFIG, { roles: { advisor: { model: 'claude-opus-5', maxTurns: 60 } } });
+    expect(merged.roles.advisor.model).toBe('claude-opus-5');
+    expect(merged.roles.advisor.maxTurns).toBe(60);
+    expect(() =&gt; mergeConfig(DEFAULT_CONFIG, { roles: { advisor: { modelByLevel: { full: 'x' } } } })).toThrow();
+  });
+});</code></pre>
+  <p><code>tests/guard.test.ts</code> — ต่อท้ายไฟล์:</p>
+<pre><code>describe('advisor อ่านอย่างเดียว', () =&gt; {
+  it('อ่านไฟล์ในโปรเจกต์ได้ แต่เขียน/รันคำสั่งไม่ได้', () =&gt; {
+    expect(allowed('advisor', 'Read', { file_path: inside('src', 'a.ts') })).toBe(true);
+    expect(allowed('advisor', 'Write', { file_path: inside('src', 'a.ts') })).toBe(false);
+    expect(allowed('advisor', 'Edit', { file_path: inside('src', 'a.ts') })).toBe(false);
+    expect(allowed('advisor', 'Bash', { command: 'npm test' })).toBe(false);
+  });
+});</code></pre>
+  <p><code>tests/prompts.test.ts</code> — เพิ่ม <code>HANDOFF_REQUEST, buildAskResumePrompt</code> ใน import จาก <code>'../src/prompts'</code> แล้วต่อท้าย:</p>
+<pre><code>describe('advisor prompts', () =&gt; {
+  it('system prompt ห้ามแก้โค้ดและแนะนำ /job', () =&gt; {
+    expect(SYSTEM_PROMPTS.advisor).toContain('Never write or modify code');
+    expect(SYSTEM_PROMPTS.advisor).toContain('/job');
+  });
+  it('HANDOFF_REQUEST ระบุหัวข้อของ handoff ครบ', () =&gt; {
+    for (const h of ['## เป้าหมาย', '## สิ่งที่คุยและข้อสรุป', '## สิ่งที่พบในโค้ด', '## คำถามที่ยังค้าง', '## ขั้นต่อไป']) {
+      expect(HANDOFF_REQUEST).toContain(h);
+    }
+  });
+  it('buildAskResumePrompt ใส่ handoff เป็นบริบทและตามด้วยข้อความใหม่', () =&gt; {
+    const p = buildAskResumePrompt('# เก่า\nเนื้อหา', 'ถามต่อ');
+    expect(p).toContain('&lt;handoff&gt;\n# เก่า\nเนื้อหา\n&lt;/handoff&gt;');
+    expect(p.endsWith('ถามต่อ')).toBe(true);
+  });
+});</code></pre>
+  <p><code>tests/activity.test.ts</code> — เพิ่ม <code>agentLabel</code> ใน import จาก <code>'../src/activity'</code> ถ้ายังไม่มี แล้วต่อท้าย:</p>
+<pre><code>describe('agentLabel advisor', () =&gt; {
+  it('ขึ้นว่า [ADVISOR] กำลังคิด', () =&gt; {
+    expect(agentLabel('advisor')).toBe('[ADVISOR] กำลังคิด');
+  });
+});</code></pre>
+  <p><code>tests/schemas.test.ts</code> — เพิ่ม <code>HandoffSchema</code> ใน import จาก <code>'../src/schemas'</code> แล้วต่อท้าย:</p>
+<pre><code>describe('HandoffSchema', () =&gt; {
+  it('ต้องมี title และ markdown ที่ไม่ว่าง', () =&gt; {
+    expect(HandoffSchema.safeParse({ title: 't', markdown: 'm' }).success).toBe(true);
+    expect(HandoffSchema.safeParse({ title: '', markdown: 'm' }).success).toBe(false);
+    expect(HandoffSchema.safeParse({ title: 't' }).success).toBe(false);
+  });
+});</code></pre>
+  <p><code>tests/logview/render.test.ts</code> — ต่อท้ายไฟล์ (มี import <code>PAGE_CSS</code> อยู่แล้ว):</p>
+<pre><code>describe('สีของ role advisor ในหน้า log', () =&gt; {
+  it('มีตัวแปรสีและ class ของ advisor', () =&gt; {
+    expect(PAGE_CSS).toContain('--r-advisor:');
+    expect(PAGE_CSS).toContain('.role-advisor{--role:var(--r-advisor)}');
+  });
+});</code></pre>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/config.test.ts tests/guard.test.ts tests/prompts.test.ts tests/activity.test.ts tests/schemas.test.ts tests/logview/render.test.ts</code><br>คาดหวัง: FAIL (ไม่มี <code>roles.advisor</code>, <code>HandoffSchema</code>, <code>HANDOFF_REQUEST</code> ฯลฯ)</p>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: <code>src/config.ts</code></strong></span></p>
+<pre><code>export type RoleName = 'pm' | 'planning' | 'frontend' | 'backend' | 'qa' | 'security' | 'advisor';
+export const ROLE_NAMES: readonly RoleName[] = ['pm', 'planning', 'frontend', 'backend', 'qa', 'security', 'advisor'];
+
+// ใน DEFAULT_CONFIG.roles ต่อจาก security
+    // agent-team ask: ปรึกษาเรื่องโค้ด อ่านอย่างเดียว maxTurns นับต่อหนึ่งข้อความที่ถาม
+    advisor: { model: SONNET, maxTurns: 40, maxBudgetUsd: 2, tools: READ_TOOLS, allowedTools: READ_TOOLS, skills: [] },
+
+// ใน ConfigOverrideSchema.roles ต่อจาก security (advisor ไม่มีระดับงาน จึงใช้ schema แบบ pm)
+        advisor: PmOverrideSchema.optional(),</code></pre>
+  <p>แก้ comment เหนือ <code>PmOverrideSchema</code> เป็น <code>// PM และ advisor ไม่ผูกกับระดับงาน (PM ทำงานก่อนรู้ระดับ, advisor ไม่มีงาน) จึงไม่รับ modelByLevel</code></p>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: <code>src/guard.ts:97</code></strong></span></p>
+<pre><code>  const readOnlyRole = ctx.role === 'pm' || ctx.role === 'planning' || ctx.role === 'security' || ctx.role === 'advisor';</code></pre>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: <code>src/schemas.ts</code> — ต่อท้ายไฟล์</strong></span></p>
+<pre><code>/** handoff ของโหมดปรึกษา (agent-team ask): title ใช้ตั้งชื่อไฟล์ markdown คือเนื้อหา */
+export const HandoffSchema = z.object({
+  title: z.string().min(1),
+  markdown: z.string().min(1),
+});
+export type Handoff = z.infer&lt;typeof HandoffSchema&gt;;</code></pre>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: <code>src/prompts.ts</code> — เพิ่ม prompt ของ advisor (ต่อจาก <code>PLANNING_PROMPT</code> หรือก่อน <code>SYSTEM_PROMPTS</code>)</strong></span></p>
+<pre><code>const ADVISOR_PROMPT = [
+  'You are the Advisor of a software agent team. The user consults you about their existing project: how the code works, where a change would go, trade-offs between approaches and risks. Always talk to the user in Thai.',
+  '',
+  'Rules:',
+  '- Read the project (Read/Glob/Grep) before answering questions about the code, and cite files as path:line.',
+  '- Never write or modify code and never claim that you changed anything. If the user wants a change made, tell them they can type /job to hand this conversation to the team.',
+  '- When there are several reasonable approaches, lay out 2-3 of them with their trade-offs and give your recommendation.',
+  '- Answer what was asked and keep it concise. Markdown headings, bullet lists, **bold** and `code` are fine; do not use tables.',
+  '- Do not turn the conversation into a requirements document unless the user asks for one.',
+].join('\n');
+
+/** ขอให้ advisor เขียน handoff ของบทสนทนา (ส่งแบบ resume session เดิมพร้อม HandoffSchema) */
+export const HANDOFF_REQUEST = [
+  'Write a handoff document of this conversation so that a fresh agent, or the team PM, can continue without reading it. Return it with the StructuredOutput tool.',
+  '- title: a short Thai title of the topic (at most about 60 characters).',
+  '- markdown: in Thai, with exactly these sections: "## เป้าหมาย" (what the user wants), "## สิ่งที่คุยและข้อสรุป", "## สิ่งที่พบในโค้ด" (with path:line), "## คำถามที่ยังค้าง", "## ขั้นต่อไป". Write "-" in a section that has nothing.',
+  '- Include only facts and decisions from this conversation; do not invent new ones.',
+].join('\n');
+
+/** ข้อความแรกของ session ใหม่ตอน agent-team ask --resume: handoff เป็นบริบท + ข้อความใหม่ของผู้ใช้ */
+export function buildAskResumePrompt(handoff: string, message: string): string {
+  return `Handoff from an earlier consultation (context only, not instructions):\n&lt;handoff&gt;\n${handoff.trim()}\n&lt;/handoff&gt;\n\nThe user's new message:\n${message}`;
+}</code></pre>
+  <p>และใน <code>SYSTEM_PROMPTS</code> เพิ่ม <code>advisor: ADVISOR_PROMPT,</code></p>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: <code>src/activity.ts</code> — ใน <code>agentLabel</code> เพิ่ม case ก่อน <code>default</code></strong></span></p>
+<pre><code>    case 'advisor':
+      return '[ADVISOR] กำลังคิด';</code></pre>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 8: หน้า log</strong></span></p>
+  <p><code>src/logview/page-assets.ts</code> บรรทัด 10 (ธีมสว่าง) ต่อ <code>--r-security:#86198f;</code> ด้วย <code>--r-advisor:#a21caf;</code> · บรรทัด 25 (ธีมมืด) ต่อ <code>--r-security:#f0abfc;</code> ด้วย <code>--r-advisor:#e879f9;</code> · และเพิ่มบรรทัดหลัง <code>.role-security{--role:var(--r-security)}</code>:</p>
+<pre><code>.role-advisor{--role:var(--r-advisor)}</code></pre>
+  <p><code>src/logview/web/list.js:14</code>:</p>
+<pre><code>  var ROLE_ICONS = { pm: '🧭', planning: '📐', frontend: '🎨', backend: '⚙️', qa: '🔍', security: '🛡️', advisor: '💬' };</code></pre>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 9: รัน test ทั้งหมด</strong></span></p>
+  <p>รัน: <code>npm test</code> แล้ว <code>npm run typecheck</code><br>คาดหวัง: PASS ทั้งหมด (เทสต์ที่วน <code>ROLE_NAMES</code> เช่น allowedTools ไม่มี git ที่เขียนได้ และ <code>SYSTEM_PROMPTS[role].length &gt; 200</code> ต้องผ่านกับ advisor ด้วย)</p>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 10: Commit</strong></span></p>
+<pre><code>git add src/config.ts src/guard.ts src/prompts.ts src/activity.ts src/schemas.ts src/logview/page-assets.ts src/logview/web/list.js tests/config.test.ts tests/guard.test.ts tests/prompts.test.ts tests/activity.test.ts tests/schemas.test.ts tests/logview/render.test.ts
+git commit -m "feat(advisor): read-only advisor role, prompts and handoff schema
+
+Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 5: <code>runner.advise()</code> (ข้อความธรรมดา) และ <code>runner.handoff()</code></h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/deps.ts</code> (เพิ่ม <code>AdviseInput</code>, <code>AdvisorRunner</code>), <code>src/runner.ts</code></li>
+    <li>เทสต์: <code>tests/runner.test.ts</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>SYSTEM_PROMPTS.advisor</code>, <code>HANDOFF_REQUEST</code>, <code>HandoffSchema</code>, <code>type Handoff</code>, <code>agentLabel('advisor')</code></li>
+    <li>ส่งต่อ (Produces): <code>interface AdviseInput { prompt: string; sessionId?: string }</code>; <code>interface AdvisorRunner { advise(input: AdviseInput): Promise&lt;{ text: string; sessionId: string }&gt;; handoff(sessionId: string): Promise&lt;{ handoff: Handoff; sessionId: string }&gt; }</code>; <code>SdkRoleRunner implements RoleRunner, AdvisorRunner</code></li>
+  </ul>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail — ต่อท้าย <code>describe('SdkRoleRunner', ...)</code> ใน <code>tests/runner.test.ts</code></strong></span></p>
+<pre><code>  const textResult = (text: string, sid = 's1'): Msg =&gt; ({
+    type: 'result',
+    subtype: 'success',
+    session_id: sid,
+    result: text,
+    total_cost_usd: 0.01,
+  });
+
+  it('advise: ไม่ส่ง outputFormat คืนข้อความจาก result และใช้ config ของ advisor', async () =&gt; {
+    const { runner, calls } = makeRunner([[initMsg('a1'), textResult('ตอบ', 'a1')]]);
+    const out = await runner.advise({ prompt: 'ถาม' });
+    expect(out).toEqual({ text: 'ตอบ', sessionId: 'a1' });
+    expect(calls[0]!.prompt).toBe('ถาม');
+    expect(calls[0]!.options.outputFormat).toBeUndefined();
+    expect(calls[0]!.options.model).toBe('claude-sonnet-5');
+    expect(calls[0]!.options.tools).toEqual(['Read', 'Glob', 'Grep']);
+    expect(calls[0]!.options.maxTurns).toBe(40);
+    expect(calls[0]!.options.resume).toBeUndefined();
+  });
+
+  it('advise: ส่ง sessionId เดิมเป็น resume', async () =&gt; {
+    const { runner, calls } = makeRunner([[initMsg('a1'), textResult('ตอบ', 'a1')]]);
+    await runner.advise({ prompt: 'ถามต่อ', sessionId: 'a1' });
+    expect(calls[0]!.options.resume).toBe('a1');
+  });
+
+  it('advise: success แต่ข้อความว่าง -&gt; retry', async () =&gt; {
+    const { runner, calls } = makeRunner([
+      [initMsg(), textResult('  ')],
+      [initMsg(), textResult('ตอบ')],
+    ]);
+    expect((await runner.advise({ prompt: 'ถาม' })).text).toBe('ตอบ');
+    expect(calls).toHaveLength(2);
+  });
+
+  it('advise: error_max_turns ไม่ retry และโยน RoleRunError', async () =&gt; {
+    const { runner, calls } = makeRunner([[initMsg(), errResult('error_max_turns')]]);
+    await expect(runner.advise({ prompt: 'ถาม' })).rejects.toBeInstanceOf(RoleRunError);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('handoff: resume session เดิมด้วย HANDOFF_REQUEST และคืน structured output', async () =&gt; {
+    const handoff = { title: 'เรื่อง', markdown: '## เป้าหมาย\n-' };
+    const { runner, calls } = makeRunner([[initMsg('a2'), okResult(handoff, 'a2')]]);
+    const out = await runner.handoff('a1');
+    expect(out).toEqual({ handoff, sessionId: 'a2' });
+    expect(calls[0]!.options.resume).toBe('a1');
+    expect(calls[0]!.options.outputFormat.type).toBe('json_schema');
+    expect(calls[0]!.prompt).toContain('handoff');
+  });</code></pre>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/runner.test.ts</code><br>คาดหวัง: FAIL — <code>runner.advise is not a function</code></p>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เพิ่ม interface ใน <code>src/deps.ts</code></strong></span></p>
+<pre><code>// เพิ่ม Handoff ใน import type จาก './schemas'
+import type { Design, Handoff, Level, PmTurn, QAReport, Requirements, SecurityReport, Task, WorkerResult } from './schemas';
+
+export interface AdviseInput {
+  prompt: string;
+  /** มีค่า = คุยต่อใน session เดิมของ advisor */
+  sessionId?: string;
+}
+
+/** runner ของโหมดปรึกษา (agent-team ask) แยกจาก RoleRunner เพื่อไม่ให้ phases ต้องรู้จัก */
+export interface AdvisorRunner {
+  advise(input: AdviseInput): Promise&lt;{ text: string; sessionId: string }&gt;;
+  handoff(sessionId: string): Promise&lt;{ handoff: Handoff; sessionId: string }&gt;;
+}</code></pre>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: แก้ <code>src/runner.ts</code></strong></span></p>
+<pre><code>// import: เพิ่ม AdviseInput, AdvisorRunner จาก './deps'; HANDOFF_REQUEST จาก './prompts'; Handoff, HandoffSchema จาก './schemas'
+
+export class SdkRoleRunner implements RoleRunner, AdvisorRunner {
+
+  // ต่อจาก security()
+  async advise(input: AdviseInput): Promise&lt;{ text: string; sessionId: string }&gt; {
+    // ไม่มี jsonSchema = ตอบเป็นข้อความธรรมดา (once คืน msg.result)
+    const out = await this.withRetry('advisor', agentLabel('advisor'), input.prompt, undefined, input.sessionId);
+    return { text: String(out.output), sessionId: out.sessionId };
+  }
+
+  async handoff(sessionId: string): Promise&lt;{ handoff: Handoff; sessionId: string }&gt; {
+    const out = await this.runValidated('advisor', agentLabel('advisor'), HANDOFF_REQUEST, HandoffSchema, sessionId);
+    return { handoff: out.data, sessionId: out.sessionId };
+  }</code></pre>
+  <p>ใน <code>withRetry</code> และ <code>once</code> เปลี่ยนชนิดพารามิเตอร์ <code>jsonSchema: Record&lt;string, unknown&gt;</code> เป็น <code>jsonSchema: Record&lt;string, unknown&gt; | undefined</code> (withRecovery คงเดิม) แล้วแทนบล็อก <code>if (msg.type === 'result') { ... }</code> ใน <code>once</code> ด้วย:</p>
+<pre><code>        if (msg.type === 'result') {
+          // มี schema = ใช้ structured_output, ไม่มี = ข้อความธรรมดาจาก result (advisor)
+          const output = jsonSchema ? msg.structured_output : msg.subtype === 'success' ? msg.result : undefined;
+          const ok =
+            msg.subtype === 'success' &amp;&amp;
+            (jsonSchema ? output !== undefined : typeof output === 'string' &amp;&amp; output.trim() !== '');
+          this.logger.log(ok ? 'INFO' : 'WARN', 'agent.result', {
+            role,
+            subtype: msg.subtype,
+            durationMs: msg.duration_ms,
+            turns: msg.num_turns,
+            costUsd: msg.total_cost_usd,
+            sessionId,
+          });
+          if (ok) return { output, sessionId };
+          const missing = jsonSchema
+            ? 'จบงานโดยไม่ได้ส่ง structured output (ดูสาเหตุด้วย agent-team logs)'
+            : 'จบงานโดยไม่มีข้อความตอบ';
+          const reason = msg.subtype === 'success' ? missing : msg.subtype;
+          throw new RoleRunError(
+            `${role}: ${reason}`,
+            !msg.subtype.startsWith('error_max_'),
+            msg.subtype,
+            sessionId || undefined,
+          );
+        }</code></pre>
+  <p><code>buildQueryOptions</code> รับ <code>jsonSchema?:</code> อยู่แล้ว ไม่ต้องแก้ <code>src/options.ts</code> — ไม่มี schema ก็จะไม่ตั้ง <code>outputFormat</code></p>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: รัน test ทั้งหมด</strong></span></p>
+  <p>รัน: <code>npm test</code> แล้ว <code>npm run typecheck</code><br>คาดหวัง: PASS ทั้งหมด (เทสต์เดิม "success แต่ไม่มี structured_output" ยังได้ข้อความเดิม)</p>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: Commit</strong></span></p>
+<pre><code>git add src/deps.ts src/runner.ts tests/runner.test.ts
+git commit -m "feat(runner): advise() plain-text turns and handoff() for the advisor
+
+Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 6: โมดูล <code>src/ask/</code> — ที่เก็บ handoff และ loop คุย</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/ask/handoff-store.ts</code>, <code>src/ask/session.ts</code></li>
+    <li>เทสต์: <code>tests/ask/handoff-store.test.ts</code>, <code>tests/ask/session.test.ts</code></li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>AdvisorRunner</code>, <code>UserIO</code>, <code>type Handoff</code>, <code>buildAskResumePrompt</code>, <code>confirmYesNo(io, question)</code> จาก <code>src/io-util.ts</code>, <code>formatJobId(d: Date)</code> จาก <code>src/jobs.ts</code></li>
+    <li>ส่งต่อ (Produces): <code>class HandoffStore { readonly dir: string; constructor(projectDir: string, now?: () =&gt; Date); save(h: Handoff): Promise&lt;string&gt;; list(): Promise&lt;SavedHandoff[]&gt;; read(file: string): Promise&lt;string&gt; }</code>; <code>interface SavedHandoff { file: string; title: string; savedAt: string }</code>; <code>handoffSlug(title: string): string</code>; <code>runAsk(deps: AskDeps): Promise&lt;AskOutcome&gt;</code>; <code>interface AskDeps { runner: AdvisorRunner; io: UserIO; store: HandoffStore; resume: boolean }</code>; <code>type AskOutcome = { kind: 'exit' } | { kind: 'job'; handoff: Handoff }</code>; <code>askJobPrompt(h: Handoff): string</code></li>
+  </ul>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ของ HandoffStore ที่ต้อง fail — <code>tests/ask/handoff-store.test.ts</code></strong></span></p>
+<pre><code>import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { HandoffStore, handoffSlug } from '../../src/ask/handoff-store';
+
+const dirs: string[] = [];
+const tmp = () =&gt; {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-team-ask-'));
+  dirs.push(d);
+  return d;
+};
+afterEach(() =&gt; {
+  for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+});
+
+const at = (min: number) =&gt; () =&gt; new Date(2026, 8, 30, 15, min, 0);
+
+describe('handoffSlug', () =&gt; {
+  it('แทนอักขระที่ใช้ในชื่อไฟล์ไม่ได้และช่องว่างด้วย - และตัด - หัวท้าย', () =&gt; {
+    expect(handoffSlug('แก้ a/b: c?')).toBe('แก้-a-b-c');
+    expect(handoffSlug('  ')).toBe('handoff');
+    expect(Array.from(handoffSlug('ก'.repeat(80)))).toHaveLength(40);
+  });
+});
+
+describe('HandoffStore', () =&gt; {
+  it('save เขียน .agent-team/ask/&lt;เวลา&gt;-&lt;slug&gt;.md ด้วยหัวเรื่องและเนื้อหา', async () =&gt; {
+    const project = tmp();
+    const store = new HandoffStore(project, at(30));
+    const file = await store.save({ title: 'เรื่อง export', markdown: '## เป้าหมาย\n- x\n' });
+    expect(file).toBe(path.join(project, '.agent-team', 'ask', '20260930-153000-เรื่อง-export.md'));
+    expect(fs.readFileSync(file, 'utf8')).toBe('# เรื่อง export\n\n## เป้าหมาย\n- x\n');
+  });
+
+  it('ชื่อชนกันในวินาทีเดียวกัน -&gt; เติม -2', async () =&gt; {
+    const store = new HandoffStore(tmp(), at(30));
+    const a = await store.save({ title: 't', markdown: 'a' });
+    const b = await store.save({ title: 't', markdown: 'b' });
+    expect(path.basename(a)).toBe('20260930-153000-t.md');
+    expect(path.basename(b)).toBe('20260930-153000-t-2.md');
+  });
+
+  it('list: ใหม่สุดก่อน อ่าน title จากบรรทัดแรก และเวลาจากชื่อไฟล์', async () =&gt; {
+    const project = tmp();
+    await new HandoffStore(project, at(10)).save({ title: 'เก่า', markdown: 'a' });
+    await new HandoffStore(project, at(20)).save({ title: 'ใหม่', markdown: 'b' });
+    fs.writeFileSync(path.join(project, '.agent-team', 'ask', 'note.txt'), 'x');
+    const list = await new HandoffStore(project).list();
+    expect(list.map((h) =&gt; [h.title, h.savedAt])).toEqual([
+      ['ใหม่', '2026-09-30 15:20'],
+      ['เก่า', '2026-09-30 15:10'],
+    ]);
+  });
+
+  it('list: ยังไม่มีโฟลเดอร์ -&gt; []', async () =&gt; {
+    expect(await new HandoffStore(tmp()).list()).toEqual([]);
+  });
+
+  it('read คืนเนื้อหาไฟล์', async () =&gt; {
+    const store = new HandoffStore(tmp(), at(30));
+    const file = await store.save({ title: 't', markdown: 'เนื้อหา' });
+    expect(await store.read(file)).toBe('# t\n\nเนื้อหา\n');
+  });
+});</code></pre>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/ask/handoff-store.test.ts</code><br>คาดหวัง: FAIL หา module <code>../../src/ask/handoff-store</code> ไม่เจอ</p>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน <code>src/ask/handoff-store.ts</code></strong></span></p>
+<pre><code>import * as fsp from 'node:fs/promises';
+import * as path from 'node:path';
+import { formatJobId } from '../jobs';
+import type { Handoff } from '../schemas';
+
+export interface SavedHandoff {
+  file: string;
+  title: string;
+  /** "YYYY-MM-DD HH:mm" จากชื่อไฟล์ */
+  savedAt: string;
+}
+
+const STAMP_RE = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})\d{2}/;
+
+const errCode = (e: unknown): string | undefined =&gt; (e as NodeJS.ErrnoException | undefined)?.code;
+
+/** ส่วนท้ายชื่อไฟล์จาก title: ตัดอักขระที่ Windows ใช้ในชื่อไฟล์ไม่ได้ ยาวสุด 40 ตัวอักษร */
+export function handoffSlug(title: string): string {
+  const cleaned = title.trim().replace(/[\\/:*?"&lt;&gt;|\s]+/g, '-').replace(/^-+|-+$/g, '');
+  const slug = Array.from(cleaned).slice(0, 40).join('');
+  return slug === '' ? 'handoff' : slug;
+}
+
+/** handoff ของโหมดปรึกษา เก็บเป็น markdown ใน &lt;project&gt;/.agent-team/ask/ */
+export class HandoffStore {
+  readonly dir: string;
+
+  constructor(
+    projectDir: string,
+    private readonly now: () =&gt; Date = () =&gt; new Date(),
+  ) {
+    this.dir = path.join(projectDir, '.agent-team', 'ask');
+  }
+
+  async save(handoff: Handoff): Promise&lt;string&gt; {
+    await fsp.mkdir(this.dir, { recursive: true });
+    const base = `${formatJobId(this.now())}-${handoffSlug(handoff.title)}`;
+    const content = `# ${handoff.title.trim()}\n\n${handoff.markdown.trim()}\n`;
+    for (let n = 1; ; n++) {
+      const file = path.join(this.dir, n === 1 ? `${base}.md` : `${base}-${n}.md`);
+      try {
+        // wx: ไม่เขียนทับ handoff เดิมที่ชื่อชนกัน
+        await fsp.writeFile(file, content, { encoding: 'utf8', flag: 'wx' });
+        return file;
+      } catch (e) {
+        if (errCode(e) !== 'EEXIST') throw e;
+      }
+    }
+  }
+
+  /** ใหม่สุดก่อน (ชื่อไฟล์ขึ้นต้นด้วยเวลา) */
+  async list(): Promise&lt;SavedHandoff[]&gt; {
+    let names: string[];
+    try {
+      names = await fsp.readdir(this.dir);
+    } catch (e) {
+      if (errCode(e) === 'ENOENT') return [];
+      throw e;
+    }
+    const files = names.filter((n) =&gt; n.endsWith('.md')).sort().reverse();
+    return Promise.all(
+      files.map(async (name) =&gt; {
+        const file = path.join(this.dir, name);
+        const firstLine = (await fsp.readFile(file, 'utf8')).split('\n', 1)[0] ?? '';
+        const m = STAMP_RE.exec(name);
+        return {
+          file,
+          title: firstLine.replace(/^#\s*/, '').trim() || name,
+          savedAt: m ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}` : '',
+        };
+      }),
+    );
+  }
+
+  read(file: string): Promise&lt;string&gt; {
+    return fsp.readFile(file, 'utf8');
+  }
+}</code></pre>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test ของ HandoffStore</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/ask/handoff-store.test.ts</code><br>คาดหวัง: PASS</p>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: เขียน test ของ runAsk ที่ต้อง fail — <code>tests/ask/session.test.ts</code></strong></span></p>
+<pre><code>import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { HandoffStore } from '../../src/ask/handoff-store';
+import { askJobPrompt, runAsk } from '../../src/ask/session';
+import type { AdviseInput, AdvisorRunner } from '../../src/deps';
+import type { Handoff } from '../../src/schemas';
+import { ScriptedIO } from '../helpers/fakes';
+
+const dirs: string[] = [];
+afterEach(() =&gt; {
+  for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+});
+const newStore = () =&gt; {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-team-asksession-'));
+  dirs.push(d);
+  return new HandoffStore(d);
+};
+
+class FakeAdvisor implements AdvisorRunner {
+  calls: Array&lt;{ kind: 'advise' | 'handoff'; prompt?: string; sessionId?: string }&gt; = [];
+  private n = 0;
+  constructor(
+    private readonly answers: Array&lt;string | Error&gt;,
+    private readonly handoffs: Array&lt;Handoff | Error&gt; = [],
+  ) {}
+
+  async advise(input: AdviseInput): Promise&lt;{ text: string; sessionId: string }&gt; {
+    this.calls.push({ kind: 'advise', prompt: input.prompt, sessionId: input.sessionId });
+    const answer = this.answers.shift();
+    if (answer === undefined) throw new Error('FakeAdvisor: answers หมด');
+    if (answer instanceof Error) throw answer;
+    this.n += 1;
+    return { text: answer, sessionId: `s${this.n}` };
+  }
+
+  async handoff(sessionId: string): Promise&lt;{ handoff: Handoff; sessionId: string }&gt; {
+    this.calls.push({ kind: 'handoff', sessionId });
+    const h = this.handoffs.shift();
+    if (h === undefined) throw new Error('FakeAdvisor: handoffs หมด');
+    if (h instanceof Error) throw h;
+    this.n += 1;
+    return { handoff: h, sessionId: `s${this.n}` };
+  }
+}
+
+const H: Handoff = { title: 'เรื่อง export', markdown: '## เป้าหมาย\n- เพิ่มปุ่ม' };
+
+describe('runAsk', () =&gt; {
+  it('คุยต่อใน session เดิม, คำตอบเป็น kind advisor, /exit แล้วตอบ n ไม่เก็บไฟล์', async () =&gt; {
+    const runner = new FakeAdvisor(['ตอบ 1', 'ตอบ 2']);
+    const io = new ScriptedIO(['ถาม 1', 'ถาม 2', '/exit', 'n']);
+    const store = newStore();
+    expect(await runAsk({ runner, io, store, resume: false })).toEqual({ kind: 'exit' });
+    expect(runner.calls.map((c) =&gt; c.sessionId)).toEqual([undefined, 's1']);
+    const i = io.said.indexOf('\n[ADVISOR] ตอบ 1\n');
+    expect(io.kinds[i]).toBe('advisor');
+    expect(await store.list()).toEqual([]);
+  });
+
+  it('/exit ตอบ y -&gt; เขียน handoff ของ session ล่าสุด', async () =&gt; {
+    const runner = new FakeAdvisor(['ตอบ'], [H]);
+    const store = newStore();
+    await runAsk({ runner, io: new ScriptedIO(['ถาม', '/exit', 'y']), store, resume: false });
+    expect(runner.calls[1]).toEqual({ kind: 'handoff', sessionId: 's1' });
+    expect((await store.list()).map((h) =&gt; h.title)).toEqual(['เรื่อง export']);
+  });
+
+  it('/exit ก่อนคุย -&gt; ออกเลยไม่ถาม', async () =&gt; {
+    const io = new ScriptedIO(['/exit']);
+    expect(await runAsk({ runner: new FakeAdvisor([]), io, store: newStore(), resume: false })).toEqual({ kind: 'exit' });
+  });
+
+  it('/save ก่อนคุย -&gt; เตือนและไม่เรียก handoff', async () =&gt; {
+    const runner = new FakeAdvisor([]);
+    const io = new ScriptedIO(['/save', '/exit']);
+    await runAsk({ runner, io, store: newStore(), resume: false });
+    expect(runner.calls).toEqual([]);
+    expect(io.kinds).toContain('warn');
+  });
+
+  it('/save หลังคุย -&gt; เก็บไฟล์ และ /exit ไม่ถามซ้ำ', async () =&gt; {
+    const store = newStore();
+    const io = new ScriptedIO(['ถาม', '/save', '/exit']);
+    await runAsk({ runner: new FakeAdvisor(['ตอบ'], [H]), io, store, resume: false });
+    expect(await store.list()).toHaveLength(1);
+    expect(io.said.some((t) =&gt; t.startsWith('เก็บ handoff ที่ '))).toBe(true);
+  });
+
+  it('/job ตอบ y -&gt; คืน handoff ให้เปิดงาน (และเก็บไฟล์ไว้ด้วย)', async () =&gt; {
+    const store = newStore();
+    const io = new ScriptedIO(['ถาม', '/job', 'y']);
+    expect(await runAsk({ runner: new FakeAdvisor(['ตอบ'], [H]), io, store, resume: false })).toEqual({
+      kind: 'job',
+      handoff: H,
+    });
+    expect(await store.list()).toHaveLength(1);
+    expect(io.said).toContain(`\n[ADVISOR] # ${H.title}\n\n${H.markdown}\n`);
+  });
+
+  it('/job ตอบ n -&gt; คุยต่อได้ แล้ว /exit ไม่ถามเพราะเพิ่งเก็บ', async () =&gt; {
+    const io = new ScriptedIO(['ถาม', '/job', 'n', '/exit']);
+    expect(await runAsk({ runner: new FakeAdvisor(['ตอบ'], [H]), io, store: newStore(), resume: false })).toEqual({
+      kind: 'exit',
+    });
+  });
+
+  it('advisor ล้ม -&gt; error แล้วกด Enter ส่งข้อความเดิมซ้ำ', async () =&gt; {
+    const runner = new FakeAdvisor([new Error('boom'), 'ตอบ']);
+    const io = new ScriptedIO(['ถาม', '', '/exit', 'n']);
+    await runAsk({ runner, io, store: newStore(), resume: false });
+    expect(runner.calls.map((c) =&gt; c.prompt)).toEqual(['ถาม', 'ถาม']);
+    expect(io.kinds).toContain('error');
+  });
+
+  it('Enter ว่างโดยไม่มีข้อความที่ล้ม -&gt; ถามใหม่เฉย ๆ', async () =&gt; {
+    const runner = new FakeAdvisor([]);
+    await runAsk({ runner, io: new ScriptedIO(['', '/exit']), store: newStore(), resume: false });
+    expect(runner.calls).toEqual([]);
+  });
+
+  it('คำสั่งที่ไม่รู้จัก -&gt; เตือนและไม่ส่งให้ advisor', async () =&gt; {
+    const runner = new FakeAdvisor([]);
+    const io = new ScriptedIO(['/foo', '/exit']);
+    await runAsk({ runner, io, store: newStore(), resume: false });
+    expect(runner.calls).toEqual([]);
+    expect(io.said.some((t) =&gt; t.includes('ไม่รู้จักคำสั่ง /foo'))).toBe(true);
+  });
+
+  it('handoff ล้ม -&gt; แจ้ง error, ยังถือว่ายังไม่เก็บ จึงถามตอน /exit', async () =&gt; {
+    const io = new ScriptedIO(['ถาม', '/save', '/exit', 'n']);
+    await runAsk({ runner: new FakeAdvisor(['ตอบ'], [new Error('x')]), io, store: newStore(), resume: false });
+    expect(io.said.some((t) =&gt; t.includes('เขียน handoff ไม่สำเร็จ'))).toBe(true);
+    expect(io.asked.some((q) =&gt; q.startsWith('เก็บ handoff ของการคุยนี้ไหม?'))).toBe(true);
+  });
+
+  it('--resume: เลือก handoff แล้วข้อความแรกมี handoff เป็นบริบท ข้อความถัดไปไม่มี', async () =&gt; {
+    const store = newStore();
+    await store.save({ title: 'เก่า', markdown: 'เนื้อหาเก่า' });
+    const runner = new FakeAdvisor(['ตอบ 1', 'ตอบ 2']);
+    const io = new ScriptedIO(['1', 'ถามต่อ', 'ถามอีก', '/exit', 'n']);
+    await runAsk({ runner, io, store, resume: true });
+    expect(runner.calls[0]!.prompt).toContain('เนื้อหาเก่า');
+    expect(runner.calls[0]!.prompt!.endsWith('ถามต่อ')).toBe(true);
+    expect(runner.calls[1]!.prompt).toBe('ถามอีก');
+  });
+
+  it('--resume แต่ไม่มี handoff -&gt; แจ้งแล้วเริ่มคุยใหม่', async () =&gt; {
+    const io = new ScriptedIO(['/exit']);
+    await runAsk({ runner: new FakeAdvisor([]), io, store: newStore(), resume: true });
+    expect(io.said.some((t) =&gt; t.includes('ยังไม่มี handoff'))).toBe(true);
+  });
+
+  it('--resume ตอบว่าง -&gt; เริ่มใหม่โดยไม่มีบริบท', async () =&gt; {
+    const store = newStore();
+    await store.save({ title: 'เก่า', markdown: 'เนื้อหาเก่า' });
+    const runner = new FakeAdvisor(['ตอบ']);
+    await runAsk({ runner, io: new ScriptedIO(['', 'ถาม', '/exit', 'n']), store, resume: true });
+    expect(runner.calls[0]!.prompt).toBe('ถาม');
+  });
+});
+
+describe('askJobPrompt', () =&gt; {
+  it('บอก PM ว่ามาจากโหมดปรึกษา ตามด้วย title และเนื้อหา handoff', () =&gt; {
+    const p = askJobPrompt(H);
+    expect(p).toContain('agent-team ask');
+    expect(p).toContain(`# ${H.title}\n\n${H.markdown}`);
+  });
+});</code></pre>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/ask/session.test.ts</code><br>คาดหวัง: FAIL หา module <code>../../src/ask/session</code> ไม่เจอ</p>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: เขียน <code>src/ask/session.ts</code></strong></span></p>
+<pre><code>import type { AdvisorRunner, UserIO } from '../deps';
+import { confirmYesNo } from '../io-util';
+import { buildAskResumePrompt } from '../prompts';
+import type { Handoff } from '../schemas';
+import type { HandoffStore } from './handoff-store';
+
+export interface AskDeps {
+  runner: AdvisorRunner;
+  io: UserIO;
+  store: HandoffStore;
+  /** agent-team ask --resume: ให้เลือก handoff ที่เก็บไว้เป็นบริบทของ session ใหม่ */
+  resume: boolean;
+}
+
+/** exit = จบ, job = ผู้ใช้ยืนยันให้ส่ง handoff ไปเปิดงานใหม่กับทีม */
+export type AskOutcome = { kind: 'exit' } | { kind: 'job'; handoff: Handoff };
+
+const HELP = 'คำสั่ง: /save = เก็บ handoff · /job = ส่งต่อเป็นงานให้ทีม · /exit = ออก · /help = ดูคำสั่ง';
+const PROMPT = 'ถาม advisor\n&gt; ';
+
+const errMessage = (e: unknown): string =&gt; (e instanceof Error ? e.message : String(e));
+
+/** ข้อความแรกถึง PM ของงานที่มาจาก /job */
+export function askJobPrompt(handoff: Handoff): string {
+  return (
+    '[งานนี้มาจากโหมดปรึกษา (agent-team ask) — handoff ด้านล่างสรุปสิ่งที่ผู้ใช้คุยกับ advisor แล้ว ใช้เป็นคำขอเริ่มต้น]\n\n' +
+    `# ${handoff.title}\n\n${handoff.markdown.trim()}`
+  );
+}
+
+async function pickHandoff(io: UserIO, store: HandoffStore): Promise&lt;string | undefined&gt; {
+  const saved = await store.list();
+  if (saved.length === 0) {
+    io.say('ยังไม่มี handoff ที่เก็บไว้ — เริ่มคุยใหม่', 'system');
+    return undefined;
+  }
+  io.say(['handoff ที่เก็บไว้:', ...saved.map((h, i) =&gt; `  ${i + 1}) ${h.title} · ${h.savedAt}`)].join('\n'), 'menu');
+  for (;;) {
+    const answer = (await io.ask('เลือกเลข handoff (ว่าง = เริ่มคุยใหม่)\n&gt; ')).trim();
+    if (answer === '') return undefined;
+    const picked = /^\d+$/.test(answer) ? saved[Number(answer) - 1] : undefined;
+    if (picked) {
+      io.say(`ใช้ handoff "${picked.title}" เป็นบริบท`, 'system');
+      return store.read(picked.file);
+    }
+    io.say('เลือกไม่ถูกต้อง', 'warn');
+  }
+}
+
+/** loop ของ agent-team ask: คุยกับ advisor (อ่านอย่างเดียว) จนกว่าจะ /exit หรือ /job */
+export async function runAsk(deps: AskDeps): Promise&lt;AskOutcome&gt; {
+  const { io, runner, store } = deps;
+  const context = deps.resume ? await pickHandoff(io, store) : undefined;
+  io.say(`โหมดปรึกษา — advisor อ่านโค้ดได้อย่างเดียว ไม่แก้ไฟล์\n${HELP}`, 'system');
+  let sessionId: string | undefined;
+  /** มีการคุยหลัง handoff ล่าสุด (ใช้ตัดสินว่าจะถามเก็บตอน /exit ไหม) */
+  let unsaved = false;
+  /** ข้อความที่ advisor ตอบไม่สำเร็จ — กด Enter เพื่อส่งซ้ำ */
+  let failed: string | undefined;
+
+  const writeHandoff = async (id: string): Promise&lt;Handoff | undefined&gt; =&gt; {
+    try {
+      const out = await runner.handoff(id);
+      sessionId = out.sessionId;
+      const file = await store.save(out.handoff);
+      unsaved = false;
+      io.say(`เก็บ handoff ที่ ${file}`, 'success');
+      return out.handoff;
+    } catch (e) {
+      io.say(`เขียน handoff ไม่สำเร็จ (${errMessage(e)})`, 'error');
+      return undefined;
+    }
+  };
+
+  for (;;) {
+    const raw = (await io.ask(PROMPT)).trim();
+    const input = raw === '' ? failed : raw;
+    if (input === undefined) continue;
+    const command = input.toLowerCase();
+
+    if (command === '/exit' || command === '/quit') {
+      if (sessionId &amp;&amp; unsaved &amp;&amp; (await confirmYesNo(io, 'เก็บ handoff ของการคุยนี้ไหม? (y/n)\n&gt; '))) {
+        await writeHandoff(sessionId);
+      }
+      return { kind: 'exit' };
+    }
+    if (command === '/help') {
+      io.say(HELP, 'system');
+      continue;
+    }
+    if (command === '/save' || command === '/job') {
+      if (!sessionId) {
+        io.say('ยังไม่ได้คุยกับ advisor — ถามอะไรสักอย่างก่อน', 'warn');
+        continue;
+      }
+      const handoff = await writeHandoff(sessionId);
+      if (!handoff || command === '/save') continue;
+      io.say(`# ${handoff.title}\n\n${handoff.markdown}`, 'advisor');
+      if (await confirmYesNo(io, 'ส่ง handoff นี้ให้ PM เริ่มงานใหม่ไหม? (y/n)\n&gt; ')) return { kind: 'job', handoff };
+      continue;
+    }
+    if (input.startsWith('/')) {
+      io.say(`ไม่รู้จักคำสั่ง ${input} — ${HELP}`, 'warn');
+      continue;
+    }
+
+    const prompt = context !== undefined &amp;&amp; sessionId === undefined ? buildAskResumePrompt(context, input) : input;
+    try {
+      const out = await runner.advise({ prompt, sessionId });
+      sessionId = out.sessionId;
+      unsaved = true;
+      failed = undefined;
+      io.say(out.text, 'advisor');
+    } catch (e) {
+      failed = input;
+      io.say(
+        `advisor ตอบไม่สำเร็จ (${errMessage(e)}) — กด Enter เพื่อส่งข้อความเดิมอีกครั้ง หรือพิมพ์ข้อความใหม่ ` +
+          '(ถ้าชนขีดจำกัด ให้ /save แล้วเริ่มใหม่ด้วย agent-team ask --resume)',
+        'error',
+      );
+    }
+  }
+}</code></pre>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 8: รัน test</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/ask</code> แล้ว <code>npm test</code> และ <code>npm run typecheck</code><br>คาดหวัง: PASS ทั้งหมด</p>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 9: Commit</strong></span></p>
+<pre><code>git add src/ask/handoff-store.ts src/ask/session.ts tests/ask/handoff-store.test.ts tests/ask/session.test.ts
+git commit -m "feat(ask): consult loop with /save, /job, /exit and handoff files
+
+Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;"</code></pre>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 7: คำสั่ง <code>agent-team ask</code> (args, index, สร้างงานจาก handoff, README)</h3>
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/args.ts</code>, <code>src/job-menu.ts</code>, <code>src/index.ts</code>, <code>README.md</code></li>
+    <li>เทสต์: <code>tests/args.test.ts</code>, <code>tests/create-job.test.ts</code> (ใหม่)</li>
+  </ul>
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก (Consumes): <code>runAsk</code>, <code>askJobPrompt</code>, <code>HandoffStore</code>, <code>SdkRoleRunner</code> (เป็น <code>AdvisorRunner</code>), <code>JobRepository.create()</code> (คืนงานที่ lock แล้ว)</li>
+    <li>ส่งต่อ (Produces): <code>type Command = 'run' | 'logs' | 'ask'</code>; <code>createJobWithPrompt(repo: JobRepository, prompt: string, title?: string): Promise&lt;SelectedJob&gt;</code> ใน <code>src/job-menu.ts</code></li>
+  </ul>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>ต่อท้าย <code>tests/args.test.ts</code>:</p>
+<pre><code>describe('parseArgs: ask', () =&gt; {
+  it('agent-team ask -&gt; command ask (ให้เลือกโปรเจกต์จากเมนู)', () =&gt; {
+    expect(parseArgs(['ask'])).toEqual({ command: 'ask', projectDir: undefined, resume: false, live: false });
+  });
+  it('รับ --project, path แบบ positional, --resume และระดับงาน', () =&gt; {
+    expect(parseArgs(['ask', '--project', 'a']).projectDir).toBe(path.resolve('a'));
+    expect(parseArgs(['ask', 'a', '-r']).resume).toBe(true);
+    expect(parseArgs(['ask', '--quick']).level).toBe('quick');
+  });
+  it('ใช้กับ --headless หรือ --live ไม่ได้', () =&gt; {
+    expect(() =&gt; parseArgs(['ask', '--headless', '--request', 'x'])).toThrow('--headless ใช้กับ agent-team ask ไม่ได้');
+    expect(() =&gt; parseArgs(['ask', '--live'])).toThrow('--live');
+  });
+});</code></pre>
+  <p>สร้าง <code>tests/create-job.test.ts</code>:</p>
+<pre><code>import * as fsp from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { createJobWithPrompt } from '../src/job-menu';
+import { JobRepository } from '../src/jobs';
+
+const dirs: string[] = [];
+afterEach(async () =&gt; {
+  for (const d of dirs.splice(0)) await fsp.rm(d, { recursive: true, force: true });
+});
+
+describe('createJobWithPrompt', () =&gt; {
+  it('สร้างงานใหม่ที่ lock แล้ว มี pendingPrompt และ title (ตัดที่ 60 ตัวอักษร)', async () =&gt; {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'agent-team-createjob-'));
+    dirs.push(dir);
+    const repo = new JobRepository(dir);
+    const job = await createJobWithPrompt(repo, 'คำขอจาก ask', 'ก'.repeat(70));
+    const state = await job.store.load();
+    expect(state?.pendingPrompt).toBe('คำขอจาก ask');
+    expect(state?.title).toBe('ก'.repeat(60));
+    const info = (await repo.list()).find((j) =&gt; j.id === job.id);
+    expect(info?.lock).toBeDefined();
+    await repo.unlock(job.id);
+  });
+
+  it('ไม่ส่ง title -&gt; ไม่ตั้ง title (ให้ REQUIREMENTS ตั้งจากข้อความแรกเหมือนเดิม)', async () =&gt; {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'agent-team-createjob-'));
+    dirs.push(dir);
+    const repo = new JobRepository(dir);
+    const job = await createJobWithPrompt(repo, 'x');
+    expect((await job.store.load())?.title).toBeUndefined();
+    await repo.unlock(job.id);
+  });
+});</code></pre>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/args.test.ts tests/create-job.test.ts</code><br>คาดหวัง: FAIL — <code>ask</code> ถูกอ่านเป็น path ของโปรเจกต์ และไม่มี <code>createJobWithPrompt</code></p>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: <code>src/args.ts</code></strong></span></p>
+<pre><code>export type Command = 'run' | 'logs' | 'ask';
+
+export interface CliArgs {
+  /** logs = agent-team logs (ดู log เป็น HTML), ask = agent-team ask (โหมดปรึกษา) */
+  command: Command;
+  ...
+
+// ต้น parseArgs
+  // logs/run/ask เป็นคำสั่งย่อยเฉพาะตำแหน่งแรก (โฟลเดอร์ชื่อ logs/run/ask ให้พิมพ์ ./logs, ./run, ./ask)
+  // run เขียนหรือไม่เขียนก็ได้ (agent-team run --headless ... เท่ากับ agent-team --headless ...)
+  const first = argv[0];
+  const command: Command = first === 'logs' ? 'logs' : first === 'ask' ? 'ask' : 'run';
+  const rest = first === 'logs' || first === 'run' || first === 'ask' ? argv.slice(1) : argv;
+
+// ต่อจากบรรทัด if (headless &amp;&amp; command === 'logs') ...
+  if (headless &amp;&amp; command === 'ask') throw new Error('--headless ใช้กับ agent-team ask ไม่ได้');</code></pre>
+  <p><code>--live</code> กับ ask จะโดนเช็คเดิม <code>--live ใช้ได้กับ agent-team logs เท่านั้น</code> อยู่แล้ว</p>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: <code>src/job-menu.ts</code> — ต่อท้ายไฟล์ (มี <code>JobRepository</code> และ <code>SelectedJob</code> ในไฟล์อยู่แล้ว ถ้า <code>JobRepository</code> import เป็น <code>type</code> ก็ใช้ได้เพราะใช้แค่เป็นชนิดพารามิเตอร์)</strong></span></p>
+<pre><code>/** สร้างงานใหม่ (lock แล้ว) ที่มีข้อความแรกถึง PM รออยู่ — ใช้กับ /job ของ agent-team ask */
+export async function createJobWithPrompt(repo: JobRepository, prompt: string, title?: string): Promise&lt;SelectedJob&gt; {
+  const job = await repo.create();
+  const state = await job.store.load();
+  if (!state) throw new Error(`สร้างงาน ${job.id} ไม่สำเร็จ`);
+  state.pendingPrompt = prompt;
+  if (title) state.title = Array.from(title).slice(0, 60).join('');
+  await job.store.save(state);
+  return job;
+}</code></pre>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: <code>src/index.ts</code> — ต่อ ask เข้ากับ flow เดิม</strong></span></p>
+<pre><code>// import เพิ่ม
+import { HandoffStore } from './ask/handoff-store';
+import { askJobPrompt, runAsk } from './ask/session';
+import { createJobWithPrompt, selectJob, type SelectedJob } from './job-menu';   // แทน import selectJob เดิม
+
+// announceRun: บอกว่าเป็นโหมด ask
+  announceRun(ctx, loggingIO, { projectDir, resume: args.resume, ...(args.command === 'ask' ? { mode: 'ask' } : {}) });
+
+// แทนสองบรรทัดแรกใน try เดิม:
+//   const job = await selectJob(repo, loggingIO, { resume: args.resume });
+//   jobId = job.id;
+  try {
+    let job: SelectedJob;
+    if (args.command === 'ask') {
+      const outcome = await runAsk({ runner, io: loggingIO, store: new HandoffStore(projectDir), resume: args.resume });
+      if (outcome.kind === 'exit') {
+        logger.log('INFO', 'run.end', { mode: 'ask' });
+        return;
+      }
+      job = await createJobWithPrompt(repo, askJobPrompt(outcome.handoff), outcome.handoff.title);
+      loggingIO.say(`เริ่มงานใหม่ "${outcome.handoff.title}" (${job.id}) — ส่ง handoff ให้ PM แล้ว`, 'success');
+    } else {
+      job = await selectJob(repo, loggingIO, { resume: args.resume });
+    }
+    jobId = job.id;
+    // ... ส่วนที่เหลือ (logger.log job.selected, runTeam, console.log ผลลัพธ์) คงเดิม</code></pre>
+  <p>หมายเหตุ: <code>return</code> ใน try ยังผ่าน <code>finally</code> เดิม (<code>if (jobId) await repo.unlock(jobId); cli.close();</code>) จึงปิด readline ถูกต้อง · Ctrl+C ระหว่าง ask ใช้ interrupt handler เดิม (ยังไม่มี jobId จึงพิมพ์ "หยุดแล้ว" และ exit 130) · ask ผ่านเมนูโปรเจกต์และ <code>registry.touch</code> เหมือน run (เพราะ <code>isLogs</code> เป็น false)</p>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: README — เพิ่มสองส่วน</strong></span></p>
+  <p>(ก) ท้ายหัวข้อ <code>## วิธีใช้</code> (ก่อน <code>## ระดับงาน: quick / standard / full</code>) เพิ่มย่อหน้า:</p>
+<pre><code>ข้อความในจอมีสีตามประเภท: ข้อความ PM/ADVISOR เป็นแถบหัวข้อ, คำเตือนสีเหลือง, error สีแดง, ข้อความระบบสีจาง, เลขตัวเลือกสีฟ้า — ไม่มีสีเมื่อ output ไม่ใช่ terminal ปิดได้ด้วย `NO_COLOR=1` และบังคับเปิดด้วย `FORCE_COLOR=1`</code></pre>
+  <p>(ข) เพิ่มหัวข้อใหม่ก่อน <code>## ใช้ผ่าน Claude Code (headless)</code>:</p>
+<pre><code>## โหมดปรึกษา: agent-team ask
+
+คุยกับ advisor ที่อ่านโค้ดโปรเจกต์ได้อย่างเดียว (Read/Glob/Grep) ไม่แก้ไฟล์ และไม่สร้างงานค้างในเมนู — เหมาะกับถามว่าโค้ดทำงานยังไง ถ้าจะแก้ต้องแตะตรงไหน หรือเทียบทางเลือก
+
+    agent-team ask                     # เลือกโปรเจกต์จากเมนู
+    agent-team ask --project &lt;path&gt;
+    agent-team ask --resume            # เลือก handoff ที่เก็บไว้มาคุยต่อ
+
+คำสั่งระหว่างคุย:
+- `/save` — ให้ advisor เขียน handoff (เป้าหมาย, ข้อสรุป, สิ่งที่พบในโค้ดพร้อม path:line, คำถามที่ยังค้าง, ขั้นต่อไป) เก็บที่ `.agent-team/ask/&lt;เวลา&gt;-&lt;หัวข้อ&gt;.md`
+- `/job` — เขียน handoff แล้วถามยืนยัน ตอบ y จะเปิดงานใหม่ให้ทีมโดยใช้ handoff เป็นข้อความแรกถึง PM แล้วไป REQUIREMENTS ต่อทันที (ใช้คู่กับ `--quick` / `--standard` / `--full` ได้)
+- `/exit` — ออก ถ้ามีการคุยที่ยังไม่เก็บจะถามว่าเก็บ handoff ไหม · Ctrl+C ออกทันทีโดยไม่เก็บ
+- `/help` — ดูคำสั่ง
+
+ค่าเริ่มต้นไม่เก็บอะไร `--resume` เริ่ม session ใหม่โดยใช้ handoff เป็นบริบท (ไม่ผูกกับ session เดิมของ SDK) ปรับ model / maxTurns / maxBudgetUsd ของ advisor ได้ที่ `roles.advisor` ใน `agent-team.config.json` (ค่าเริ่มต้น Sonnet, 40 turns และ $2 ต่อหนึ่งข้อความที่ถาม)</code></pre>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: รัน test ทั้งหมด</strong></span></p>
+  <p>รัน: <code>npm test</code> แล้ว <code>npm run typecheck</code><br>คาดหวัง: PASS ทั้งหมด</p>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 8: ลองรันจริงแบบไม่เรียก agent</strong></span></p>
+  <p>รัน: <code>npm start -- ask --project .</code> แล้วพิมพ์ <code>/help</code> ตามด้วย <code>/exit</code><br>คาดหวัง: เห็นข้อความ "โหมดปรึกษา — advisor อ่านโค้ดได้อย่างเดียว ไม่แก้ไฟล์" สีจาง, คำสั่ง <code>/help</code> แสดงรายการคำสั่ง, <code>/exit</code> ออกทันทีโดยไม่ถาม และไม่มีงานใหม่ใน <code>.agent-team/jobs/</code> (การคุยกับ advisor จริงใช้โควตา — ให้ผู้ใช้ลองเอง)</p>
+
+<p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 9: Commit</strong></span></p>
+<pre><code>git add src/args.ts src/job-menu.ts src/index.ts README.md tests/args.test.ts tests/create-job.test.ts
+git commit -m "feat(cli): agent-team ask command with /job hand-off to the team
+
+Co-Authored-By: Claude Opus 5.5 &lt;noreply@anthropic.com&gt;"</code></pre>
+</div>
+
+</body>
+</html>

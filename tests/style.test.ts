@@ -35,15 +35,15 @@ describe('styler', () => {
   it('ปิดสี: คืนข้อความเดิม และ badge ไม่มี escape', () => {
     expect(off.bold('a')).toBe('a');
     expect(off.cyan('a')).toBe('a');
-    expect(off.badge('PM', 'cyan')).toBe(' PM ');
+    expect(off.badge('PM', 'cyan')).toBe('▌PM');
   });
   it('เปิดสี: ครอบด้วย SGR และปิดด้วยรหัสที่ตรงกัน', () => {
     expect(s.bold('a')).toBe('\x1b[1ma\x1b[22m');
     expect(s.dim('a')).toBe('\x1b[2ma\x1b[22m');
     expect(s.red('a')).toBe('\x1b[31ma\x1b[39m');
     expect(s.cyan('a')).toBe('\x1b[36ma\x1b[39m');
-    expect(s.badge('PM', 'cyan')).toBe('\x1b[1;30;46m PM \x1b[0m');
-    expect(s.badge('ADVISOR', 'magenta')).toBe('\x1b[1;30;45m ADVISOR \x1b[0m');
+    expect(s.badge('PM', 'cyan')).toBe('\x1b[1;96m▌PM\x1b[0m');
+    expect(s.badge('ADVISOR', 'magenta')).toBe('\x1b[1;95m▌ADVISOR\x1b[0m');
   });
 });
 
