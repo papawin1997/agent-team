@@ -57,18 +57,43 @@ describe('usingOverage', () => {
     [{ overageInUse: true }, true],
     [{ isUsingOverage: true }, true],
     [{ rateLimitType: 'overage' }, true],
-    [{ overageStatus: 'allowed_warning' as const }, true],
-    [{ overageStatus: 'rejected' as const }, true],
+    // overageStatus บอกแค่ว่า "ถ้าจะใช้" extra usage ได้หรือไม่ — ไม่ได้แปลว่ากำลังใช้
+    [{ overageStatus: 'allowed_warning' as const }, false],
+    [{ overageStatus: 'rejected' as const }, false],
     [{ overageStatus: 'allowed' as const }, false],
     [{}, false],
   ])('%j -> %s', (over, expected) => {
     expect(usingOverage({ status: 'allowed', ...over })).toBe(expected);
+  });
+
+  it('event จริง (2026-11-05): extra usage ถูกปิดระดับองค์กร = ไม่เตือน', () => {
+    const m = new QuotaMonitor();
+    m.record({
+      status: 'allowed',
+      resetsAt: 1793884200,
+      rateLimitType: 'five_hour',
+      overageStatus: 'rejected',
+      isUsingOverage: false,
+      unifiedWindows: {
+        five_hour: { utilization: 0.25, resetsAt: 1793884200 },
+        seven_day: { utilization: 0.28, resetsAt: 1793966400 },
+      },
+    });
+    expect(m.pending()).toBeUndefined();
   });
 });
 
 describe('formatQuotaAlert', () => {
   it('warning: ประเภทภาษาไทย เปอร์เซ็นต์ และเวลารีเซ็ตท้องถิ่น', () => {
     expect(formatQuotaAlert({ kind: 'warning', info: warning() }, now)).toBe('⚠ โควตา 5 ชม. · ใช้ไป 85% · รีเซ็ต 16:30');
+  });
+
+  it('ไม่มี utilization ชั้นบน: ใช้ค่าจาก unifiedWindows ของประเภทโควตานั้น (รูปแบบ event จริง)', () => {
+    const info = warning({
+      utilization: undefined,
+      unifiedWindows: { five_hour: { utilization: 0.87 }, seven_day: { utilization: 0.3 } },
+    });
+    expect(formatQuotaAlert({ kind: 'warning', info }, now)).toBe('⚠ โควตา 5 ชม. · ใช้ไป 87% · รีเซ็ต 16:30');
   });
 
   it('utilization เป็นเปอร์เซ็นต์อยู่แล้ว (> 1) และ resetsAt เป็นมิลลิวินาที', () => {

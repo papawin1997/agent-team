@@ -11,19 +11,26 @@ export interface RateLimitInfo {
   overageResetsAt?: number;
   isUsingOverage?: boolean;
   overageInUse?: boolean;
+  /**
+   * ไม่มีใน type ของ SDK 0.3.278 แต่ event จริงส่งมา: utilization ต่อประเภทโควตา (0–1)
+   * ตัวอย่าง 2026-11-05: { five_hour: { utilization: 0.25, resetsAt }, seven_day: { utilization: 0.28, resetsAt } }
+   */
+  unifiedWindows?: Record<string, { utilization?: number; resetsAt?: number } | undefined>;
 }
 
 export type QuotaAlert = { kind: 'rejected' | 'overage' | 'warning'; info: RateLimitInfo };
 
-/** กำลังใช้ (หรือกำลังจะใช้) extra usage ที่คิดเงินจริง */
+/**
+ * กำลังใช้ extra usage ที่คิดเงินจริง — ไม่ดู overageStatus: ค่านั้นบอกแค่ว่า "ถ้าจะใช้" ได้ไหม
+ * (event จริง: overageStatus "rejected" + overageDisabledReason "org_level_disabled" = ปิดไว้ ไม่ได้ใช้)
+ */
 export function usingOverage(info: RateLimitInfo): boolean {
-  return (
-    info.overageInUse === true ||
-    info.isUsingOverage === true ||
-    info.rateLimitType === 'overage' ||
-    info.overageStatus === 'allowed_warning' ||
-    info.overageStatus === 'rejected'
-  );
+  return info.overageInUse === true || info.isUsingOverage === true || info.rateLimitType === 'overage';
+}
+
+/** % ที่ใช้ไปของประเภทโควตาที่เตือน: ชั้นบนก่อน แล้วค่อยดู unifiedWindows */
+function utilizationOf(info: RateLimitInfo): number | undefined {
+  return info.utilization ?? (info.rateLimitType ? info.unifiedWindows?.[info.rateLimitType]?.utilization : undefined);
 }
 
 const warningKey = (info: RateLimitInfo): string => `${info.rateLimitType ?? '?'}|${info.resetsAt ?? '?'}`;
@@ -91,7 +98,8 @@ export function formatQuotaAlert(alert: QuotaAlert, now: Date = new Date()): str
   if (alert.kind === 'rejected') parts.push(`โควตาเต็มแล้ว (${label})`);
   else if (alert.kind === 'overage') parts.push('⚠ กำลังใช้ extra usage (คิดเงินเพิ่ม)');
   else parts.push(`⚠ ${label}`);
-  if (alert.kind === 'warning' && info.utilization !== undefined) parts.push(`ใช้ไป ${percent(info.utilization)}%`);
+  const used = utilizationOf(info);
+  if (alert.kind === 'warning' && used !== undefined) parts.push(`ใช้ไป ${percent(used)}%`);
   const reset = alert.kind === 'overage' ? (info.overageResetsAt ?? info.resetsAt) : info.resetsAt;
   if (reset !== undefined) parts.push(`รีเซ็ต ${formatReset(reset, now)}`);
   return parts.join(' · ');
