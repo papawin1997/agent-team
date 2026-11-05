@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>UI terminal แบบ Claude CLI (plan 3) Implementation Plan</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; line-height: 1.55;
+         max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1f2933;
+         background: #f5f7fa; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  pre { background: #1f2933; color: #e4e7eb; padding: .9rem 1rem;
+        border-radius: 6px; overflow-x: auto; }
+  code { background: #e4e7eb; padding: .1rem .35rem; border-radius: 4px; }
+  pre code { background: none; padding: 0; color: inherit; }
+  .frame { border-left: 6px solid; border-radius: 8px; padding: 1rem 1.25rem;
+           margin: 1.25rem 0; background: #ffffff;
+           box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .frame-header     { border-color: #2563eb; background: #eff6ff; }  /* blue  */
+  .frame-constraints{ border-color: #d97706; background: #fffbeb; }  /* amber */
+  .frame-task       { border-color: #059669; background: #ecfdf5; }  /* green */
+  .frame h1, .frame h2, .frame h3 { margin-top: 0; }
+  .note { border-color: #7c3aed; background: #f5f3ff; }              /* violet */
+  .step { display: flex; gap: .5rem; align-items: baseline;
+          margin: .75rem 0 .25rem; }
+  .step input { transform: scale(1.2); margin-top: .15rem; }
+  .meta { color: #52606d; font-size: .9rem; }
+</style>
+</head>
+<body>
+
+<div class="frame frame-header">
+  <h1>UI terminal แบบ Claude CLI — plan 3: บล็อกงานของ agent Implementation Plan</h1>
+  <p><strong>เป้าหมาย:</strong> ระหว่าง agent ทำงานให้แสดงบล็อกที่มี tool ล่าสุด 5 รายการ และเมื่อจบให้พิมพ์บล็อกสรุปลง log ถาวร (<code>⏺</code> สำเร็จ / <code>✗</code> ล้ม, เวลา, จำนวน tool, tool ล่าสุดไม่เกิน 8 รายการ) พร้อมบันทึกทุก tool ลง log เป็น event <code>agent.tool</code></p>
+  <p><strong>สถาปัตยกรรม:</strong> <code>StatusSink.stop(ok?)</code> บอกผลของ agent (runner ส่ง <code>false</code> เมื่อล้ม) ; ตรรกะล้วนใน <code>src/tui/agent-block.ts</code> (<code>blockTitle</code>, <code>runningBlock</code>, <code>finishedBlock</code>) ; <code>Activity</code> เก็บรายการ tool ทั้งหมด ; <code>TuiIO.status.stop</code> พิมพ์บล็อกสรุป ; <code>App</code> วาดบล็อกที่ทำงานอยู่แทนบรรทัดสถานะเดิม</p>
+  <p><strong>Tech Stack:</strong> TypeScript, Ink 5.2.1, vitest, ink-testing-library</p>
+  <p class="meta">Design: ส่วนที่ 3 ของ UI ใหม่ (ตกลงใน conversation 2026-11-05) ต่อจาก plan 2 (commit a89016d) — ปรับจาก design: agent ที่สำเร็จโดยไม่ได้ใช้ tool (เช่น PM ตอบข้อความทั่วไป) ไม่พิมพ์บล็อกสรุป เพื่อไม่ให้ log รก ; หัวบล็อกสรุปตัดคำ "กำลัง…" ออกจาก label (<code>[QA] api: กำลังตรวจ</code> → <code>[QA] api</code>)</p>
+</div>
+
+<div class="frame note">
+  <strong>For agentic workers:</strong> REQUIRED SUB-SKILL: Use
+  tb-subagent-driven-development (recommended) or
+  tb-executing-plans to implement this plan task-by-task. Steps keep
+  the <code>- [ ]</code> marker next to each checkbox for tracking.
+</div>
+
+<div class="frame frame-constraints">
+  <h2>Global Constraints</h2>
+  <ul>
+    <li>บล็อกที่ทำงานอยู่: หัว <code>⠹ &lt;label&gt; (1m12s)</code> แล้ว tool ล่าสุดไม่เกิน 5 รายการ (<code>  ⎿ &lt;tool&gt;</code>) ถ้ามีมากกว่าให้บรรทัด <code>  … +N ก่อนหน้า</code> อยู่ก่อนรายการ</li>
+    <li>บล็อกสรุป: <code>⏺ &lt;title&gt;  เสร็จใน 2m05s · 14 tools</code> หรือ <code>✗ &lt;title&gt;  ล้มใน …</code> ; tool ล่าสุดไม่เกิน 8 รายการ ถ้ามีมากกว่าให้ <code>  ⎿ … +N (ดูทั้งหมด: agent-team logs)</code> ก่อนรายการ ; สำเร็จและไม่มี tool = ไม่พิมพ์</li>
+    <li>runner เขียน log <code>agent.tool</code> <code>{ role, tool, detail }</code> ทุก tool_use ; <code>stop(true)</code> เมื่อได้ผลลัพธ์ <code>stop(false)</code> เมื่อล้ม (รวมรอบที่ retry) ; <code>Spinner</code> ของ CliIO ไม่สนพารามิเตอร์นี้</li>
+    <li>คงกฎ plan 1: ไม่ใช้ JSX ; ข้อความในช่องพิมพ์เป็นข้อความก้อนเดียว ; ห้าม commit</li>
+  </ul>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 1: runner ส่งผลของ agent ให้ <code>StatusSink.stop</code> และบันทึก <code>agent.tool</code></h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/activity.ts</code> (<code>StatusSink.stop</code>), <code>src/runner.ts</code> (<code>once</code>)</li>
+    <li>เทสต์: <code>tests/runner.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ส่งต่อ: <code>StatusSink.stop(ok?: boolean): void</code> ; log event <code>agent.tool</code> <code>{ role: RoleName; tool: string; detail: string }</code></li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>ต่อท้าย <code>tests/runner.test.ts</code>:</p>
+<pre><code>describe('SdkRoleRunner: บล็อก agent', () =&gt; {
+  const readTool: Msg = {
+    type: 'assistant',
+    session_id: 's1',
+    parent_tool_use_id: null,
+    message: { content: [{ type: 'tool_use', id: 't1', name: 'Read', input: { file_path: 'src/a.ts' } }] },
+  };
+
+  function run(script: Array&lt;Msg | Error&gt;) {
+    const stops: Array&lt;boolean | undefined&gt; = [];
+    const events: Array&lt;{ event: string; data?: Record&lt;string, unknown&gt; }&gt; = [];
+    const queryFn = (() =&gt;
+      (async function* () {
+        for (const m of script) {
+          if (m instanceof Error) throw m;
+          yield m;
+        }
+      })()) as never;
+    const runner = new SdkRoleRunner({
+      projectDir: 'proj',
+      config: DEFAULT_CONFIG,
+      queryFn,
+      sleep: async () =&gt; {},
+      logger: { log: (_level, event, data) =&gt; void events.push({ event, data }) },
+      status: { start: () =&gt; {}, update: () =&gt; {}, stop: (ok) =&gt; void stops.push(ok) },
+    });
+    return { runner, stops, events };
+  }
+
+  it('สำเร็จ: stop(true) และบันทึก agent.tool', async () =&gt; {
+    const { runner, stops, events } = run([readTool, okResult(validTurn)]);
+    await runner.pmTurn({ prompt: 'x' });
+    expect(stops).toEqual([true]);
+    expect(events.find((e) =&gt; e.event === 'agent.tool')?.data).toEqual({ role: 'pm', tool: 'Read', detail: 'อ่านไฟล์ src/a.ts' });
+  });
+
+  it('ล้ม: stop(false)', async () =&gt; {
+    const { runner, stops } = run([new RoleRunError('boom', false)]);
+    await expect(runner.pmTurn({ prompt: 'x' })).rejects.toThrow('boom');
+    expect(stops).toEqual([false]);
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/runner.test.ts -t "บล็อก agent"</code><br>
+     คาดหวัง: FAIL — <code>stops</code> เป็น <code>[undefined]</code> และไม่มี event <code>agent.tool</code></p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p><code>src/activity.ts</code> ใน <code>interface StatusSink</code> เปลี่ยน <code>stop(): void;</code> เป็น</p>
+<pre><code>  /** ok = agent ได้ผลลัพธ์ (false = ล้ม) — หน้าจอใหม่ใช้เลือก ⏺ / ✗ ; Spinner ไม่สนค่านี้ */
+  stop(ok?: boolean): void;</code></pre>
+  <p><code>src/runner.ts</code> ใน <code>once</code>: เปลี่ยน <code>this.status.start(label);</code> เป็น</p>
+<pre><code>    let succeeded = false;
+    this.status.start(label);</code></pre>
+  <p>เปลี่ยน <code>if (block.type === 'tool_use') this.status.update(describeToolUse(block.name, block.input));</code> เป็น</p>
+<pre><code>            if (block.type === 'tool_use') {
+              const detail = describeToolUse(block.name, block.input);
+              this.status.update(detail);
+              this.logger.log('INFO', 'agent.tool', { role, tool: block.name, detail });
+            }</code></pre>
+  <p>เปลี่ยน <code>if (ok) return { output, sessionId };</code> เป็น</p>
+<pre><code>          if (ok) {
+            succeeded = true;
+            return { output, sessionId };
+          }</code></pre>
+  <p>และใน <code>finally</code> เปลี่ยน <code>this.status.stop();</code> เป็น <code>this.status.stop(succeeded);</code></p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/runner.test.ts tests/activity.test.ts</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS (เทสต์เดิมที่จด <code>stop</code> เป็นข้อความยังผ่าน เพราะไม่สนพารามิเตอร์) ; ถ้ามีเทสต์เดิมที่เทียบรายการ log event แบบตรงตัวแล้วล้มเพราะมี <code>agent.tool</code> เพิ่ม ให้เพิ่ม <code>agent.tool</code> ในรายการที่คาดหวังของเทสต์นั้น</p>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 2: ตรรกะบล็อก agent (<code>src/tui/agent-block.ts</code>)</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/tui/agent-block.ts</code></li>
+    <li>เทสต์: <code>tests/tui/agent-block.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: <code>type Styler</code> (<code>src/style.ts</code>)</li>
+    <li>ส่งต่อ: <code>interface AgentRun { label: string; startedAt: number; tools: readonly string[] }</code> ; <code>blockTitle(label: string): string</code> ; <code>runningBlock(run: AgentRun, frame: string, elapsed: string): string[]</code> ; <code>finishedBlock(run: AgentRun, ok: boolean, elapsed: string, s: Styler): string | undefined</code></li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>สร้าง <code>tests/tui/agent-block.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import { styler } from '../../src/style';
+import { type AgentRun, blockTitle, finishedBlock, runningBlock } from '../../src/tui/agent-block';
+
+const tools = (n: number) =&gt; Array.from({ length: n }, (_, i) =&gt; `t${i + 1}`);
+const run = (n: number, label = '[QA] api: กำลังตรวจ'): AgentRun =&gt; ({ label, startedAt: 0, tools: tools(n) });
+const plain = styler(false);
+
+describe('blockTitle', () =&gt; {
+  it.each([
+    ['[QA] api: กำลังตรวจ', '[QA] api'],
+    ['[PM] กำลังคิด', '[PM]'],
+    ['[Security] กำลังตรวจ design', '[Security]'],
+    ['[backend] api: กำลังทำงาน', '[backend] api'],
+    ['อื่น ๆ', 'อื่น ๆ'],
+  ])('%s -&gt; %s', (label, title) =&gt; {
+    expect(blockTitle(label)).toBe(title);
+  });
+});
+
+describe('runningBlock', () =&gt; {
+  it('ไม่มี tool: มีแต่หัว', () =&gt; {
+    expect(runningBlock(run(0), '⠋', '0m03s')).toEqual(['⠋ [QA] api: กำลังตรวจ (0m03s)']);
+  });
+
+  it('เกิน 5 tool: บอกจำนวนก่อนหน้า แล้วแสดง 5 รายการล่าสุด', () =&gt; {
+    expect(runningBlock(run(7), '⠋', '1m12s')).toEqual([
+      '⠋ [QA] api: กำลังตรวจ (1m12s)',
+      '  … +2 ก่อนหน้า',
+      '  ⎿ t3',
+      '  ⎿ t4',
+      '  ⎿ t5',
+      '  ⎿ t6',
+      '  ⎿ t7',
+    ]);
+  });
+});
+
+describe('finishedBlock', () =&gt; {
+  it('สำเร็จ: หัวสรุป + tool ทั้งหมดเมื่อไม่เกิน 8', () =&gt; {
+    expect(finishedBlock(run(3), true, '2m05s', plain)).toBe(
+      '⏺ [QA] api  เสร็จใน 2m05s · 3 tools\n  ⎿ t1\n  ⎿ t2\n  ⎿ t3',
+    );
+  });
+
+  it('เกิน 8 tool: ยุบส่วนต้นเป็นบรรทัดเดียว แล้วแสดง 8 รายการล่าสุด', () =&gt; {
+    const lines = finishedBlock(run(10), true, '2m05s', plain)!.split('\n');
+    expect(lines[0]).toBe('⏺ [QA] api  เสร็จใน 2m05s · 10 tools');
+    expect(lines[1]).toBe('  ⎿ … +2 (ดูทั้งหมด: agent-team logs)');
+    expect(lines.slice(2)).toEqual(tools(10).slice(2).map((t) =&gt; `  ⎿ ${t}`));
+  });
+
+  it('ล้ม: ใช้ ✗ แม้ไม่มี tool ; สำเร็จโดยไม่มี tool = ไม่พิมพ์', () =&gt; {
+    expect(finishedBlock(run(0, '[PM] กำลังคิด'), false, '0m03s', plain)).toBe('✗ [PM]  ล้มใน 0m03s · 0 tools');
+    expect(finishedBlock(run(0, '[PM] กำลังคิด'), true, '0m03s', plain)).toBeUndefined();
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/tui/agent-block.test.ts</code><br>
+     คาดหวัง: FAIL ด้วย "Cannot find module '../../src/tui/agent-block'"</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p>สร้าง <code>src/tui/agent-block.ts</code>:</p>
+<pre><code>import type { Styler } from '../style';
+
+/** agent ที่กำลังทำงาน (จาก StatusSink) */
+export interface AgentRun {
+  label: string;
+  startedAt: number;
+  /** คำอธิบาย tool ทุกครั้งที่เรียก ตามลำดับ */
+  tools: readonly string[];
+}
+
+const RUNNING_TOOLS = 5;
+const FINISHED_TOOLS = 8;
+
+/** หัวบล็อกสรุป: ตัด "กำลัง…" ท้าย label ออก ("[QA] api: กำลังตรวจ" -&gt; "[QA] api") */
+export function blockTitle(label: string): string {
+  return label.replace(/:?\s+กำลัง.*$/, '');
+}
+
+export function runningBlock(run: AgentRun, frame: string, elapsed: string): string[] {
+  const hidden = run.tools.length - RUNNING_TOOLS;
+  return [
+    `${frame} ${run.label} (${elapsed})`,
+    ...(hidden &gt; 0 ? [`  … +${hidden} ก่อนหน้า`] : []),
+    ...run.tools.slice(-RUNNING_TOOLS).map((t) =&gt; `  ⎿ ${t}`),
+  ];
+}
+
+/** บล็อกสรุปที่พิมพ์ลง log ถาวร (undefined = สำเร็จโดยไม่ได้ใช้ tool ไม่ต้องพิมพ์) */
+export function finishedBlock(run: AgentRun, ok: boolean, elapsed: string, s: Styler): string | undefined {
+  if (ok &amp;&amp; run.tools.length === 0) return undefined;
+  const mark = ok ? s.green('⏺') : s.red('✗');
+  const summary = `${ok ? 'เสร็จ' : 'ล้ม'}ใน ${elapsed} · ${run.tools.length} tools`;
+  const hidden = run.tools.length - FINISHED_TOOLS;
+  return [
+    `${mark} ${s.bold(blockTitle(run.label))}  ${s.dim(summary)}`,
+    ...(hidden &gt; 0 ? [s.dim(`  ⎿ … +${hidden} (ดูทั้งหมด: agent-team logs)`)] : []),
+    ...run.tools.slice(-FINISHED_TOOLS).map((t) =&gt; s.dim(`  ⎿ ${t}`)),
+  ].join('\n');
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/tui/agent-block.test.ts</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS และไม่มี type error</p>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 3: <code>Activity</code> เก็บ tool, <code>TuiIO</code> พิมพ์บล็อกสรุป และ <code>App</code> วาดบล็อกที่ทำงานอยู่</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/tui/screen.ts</code> (<code>Activity</code>), <code>src/tui/tui-io.ts</code> (<code>status</code>), <code>src/tui/app.ts</code> (วาดบล็อก)</li>
+    <li>เทสต์: <code>tests/tui/tui-io.test.ts</code>, <code>tests/tui/app.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: <code>AgentRun</code>, <code>runningBlock</code>, <code>finishedBlock</code> (Task 2) ; <code>StatusSink.stop(ok?)</code> (Task 1)</li>
+    <li>ส่งต่อ: <code>type Activity = AgentRun</code> (แทนรูปเดิม <code>{ label; detail?; startedAt }</code>)</li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>ใน <code>tests/tui/tui-io.test.ts</code> แทนเทสต์ <code>it('status: start/update/stop -&gt; activity ของจอ', ...)</code> ทั้งบล็อกด้วย:</p>
+<pre><code>  it('status: start/update = บล็อกที่ทำงานอยู่ ; stop = พิมพ์บล็อกสรุปลง log', () =&gt; {
+    const { store, io } = setup();
+    io.status.update('ไม่มี agent ทำงาน: เมิน');
+    expect(store.getState().activity).toBeUndefined();
+    io.status.start('[QA] api: กำลังตรวจ');
+    io.status.update('Read a.ts');
+    expect(store.getState().activity).toEqual({ label: '[QA] api: กำลังตรวจ', startedAt: 1000, tools: ['Read a.ts'] });
+    io.status.stop(false);
+    expect(store.getState().activity).toBeUndefined();
+    expect(lastLog(store)).toBe('✗ [QA] api  ล้มใน 0m00s · 1 tools\n  ⎿ Read a.ts');
+    const before = store.getState().log.length;
+    io.status.start('[PM] กำลังคิด');
+    io.status.stop(true);
+    expect(store.getState().log).toHaveLength(before);
+  });</code></pre>
+  <p>ใน <code>tests/tui/app.test.ts</code> แทนเทสต์ <code>it('agent ทำงาน: แสดง label, tool ล่าสุด และเวลา', ...)</code> ทั้งบล็อกด้วย:</p>
+<pre><code>  it('agent ทำงาน: แสดงบล็อกพร้อม label เวลา และ tool ล่าสุด', async () =&gt; {
+    const { store, ui } = await mount();
+    store.setActivity({ label: '[QA] api: กำลังตรวจ', startedAt: 0, tools: ['Read a.ts', 'Edit a.ts'] });
+    await tick();
+    expect(ui.lastFrame()).toContain('[QA] api: กำลังตรวจ (0m00s)');
+    expect(ui.lastFrame()).toContain('⎿ Read a.ts');
+    expect(ui.lastFrame()).toContain('⎿ Edit a.ts');
+  });</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/tui</code><br>
+     คาดหวัง: FAIL — type error ที่ <code>tools</code> ไม่อยู่ใน <code>Activity</code> และ log ยังไม่มีบล็อกสรุป</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แก้ <code>src/tui/screen.ts</code></strong></span></p>
+  <p>แทน <code>export interface Activity { ... }</code> ทั้งบล็อกด้วย:</p>
+<pre><code>/** agent ที่กำลังทำงาน (จาก StatusSink) */
+export type Activity = AgentRun;</code></pre>
+  <p>และเพิ่ม import <code>import type { AgentRun } from './agent-block';</code></p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: แก้ <code>src/tui/tui-io.ts</code></strong></span></p>
+  <p>เพิ่ม import <code>import { formatElapsed, type StatusSink } from '../activity';</code> (แทน <code>import type { StatusSink } from '../activity';</code>) และ <code>import { finishedBlock } from './agent-block';</code> ; แทนการสร้าง <code>this.status = { ... };</code> ใน constructor ด้วย:</p>
+<pre><code>    this.status = {
+      start: (label) =&gt; this.store.setActivity({ label, startedAt: now(), tools: [] }),
+      update: (detail) =&gt; {
+        const current = this.store.getState().activity;
+        if (current) this.store.setActivity({ ...current, tools: [...current.tools, detail] });
+      },
+      stop: (ok = true) =&gt; {
+        const current = this.store.getState().activity;
+        if (!current) return;
+        this.store.setActivity(undefined);
+        const block = finishedBlock(current, ok, formatElapsed(now() - current.startedAt), this.s);
+        if (block) this.store.print(block);
+      },
+    };</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: แก้ <code>src/tui/app.ts</code></strong></span></p>
+  <p>เพิ่ม import <code>import { runningBlock } from './agent-block';</code> ; เปลี่ยน import จาก <code>./screen</code> เป็น <code>import type { LogLine, MenuPrompt, Mounted, ScreenStore } from './screen';</code> ; ลบฟังก์ชัน <code>activityLine</code> ทั้งฟังก์ชัน ; แล้วแทนบรรทัด</p>
+<pre><code>      state.activity ? h(Text, { color: 'yellow' }, activityLine(state.activity, frame, now())) : null,</code></pre>
+  <p>ด้วย (แต่ละบรรทัดเป็น Text แยกใน Box — ไม่ใช่ Text ซ้อนใน Text จึงไม่ติดปัญหาวัดขนาดของ plan 1):</p>
+<pre><code>      state.activity
+        ? h(
+            Box,
+            { flexDirection: 'column' },
+            ...runningBlock(state.activity, FRAMES[frame % FRAMES.length] ?? '⠋', formatElapsed(now() - state.activity.startedAt)).map(
+              (line, i) =&gt; h(Text, { key: i, color: i === 0 ? 'yellow' : undefined, dimColor: i &gt; 0 }, line),
+            ),
+          )
+        : null,</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/tui</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS และไม่มี type error</p>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 4: README และทดลองจริง</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>README.md</code></li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: README</strong></span></p>
+  <p>ในหัวข้อ <code>## หน้าจอ</code> เพิ่มบรรทัดในรายการ ต่อจากบรรทัด <code>- แถบสถานะใต้ช่องพิมพ์: ...</code>:</p>
+<pre><code>- ระหว่าง agent ทำงานจะมีบล็อก `⠹ [backend] api: กำลังทำงาน (1m12s)` พร้อม tool ล่าสุด 5 รายการ ; จบแล้วพิมพ์สรุป `⏺ [backend] api  เสร็จใน 2m05s · 14 tools` (ล้ม = `✗`) พร้อม tool ล่าสุด 8 รายการ — ทั้งหมดดูได้ด้วย `agent-team logs` (event `agent.tool`)</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test ทั้งชุด</strong></span></p>
+  <p>รัน: <code>npm test</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS ทั้งหมด ไม่มี type error</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: ทดลองจริง (ผู้ใช้เป็นคนรัน — ใช้โควตา)</strong></span></p>
+<pre><code>cmd:         npm start -- --project "%TEMP%\at-demo"
+PowerShell:  npm start -- --project "$env:TEMP\at-demo"</code></pre>
+  <p>คาดหวัง: ตอน agent อ่าน/แก้ไฟล์ บล็อกเหนือช่องพิมพ์อัปเดตตาม tool ; จบแล้วมีบล็อกสรุปใน log ; PM ที่ตอบข้อความเฉย ๆ ไม่มีบล็อกสรุป — changes are ready for review</p>
+</div>
+
+</body>
+</html>

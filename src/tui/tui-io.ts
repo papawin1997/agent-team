@@ -1,9 +1,10 @@
-import type { StatusSink } from '../activity';
+import { formatElapsed, type StatusSink } from '../activity';
 import { CHOICE_LABELS, EOF_MESSAGE } from '../cli';
 import type { UserIO } from '../deps';
 import { formatQuotaShort, type RateLimitInfo } from '../quota';
 import type { State } from '../state';
 import { type SayKind, type Styler, styler, styleSay } from '../style';
+import { finishedBlock } from './agent-block';
 import type { MenuOption } from './menu';
 import { type Mounted, type PromptAnswer, type PromptSpec, ScreenStore } from './screen';
 import { jobBar } from './status-bar';
@@ -42,12 +43,18 @@ export class TuiIO implements UserIO {
     this.store = o.store ?? new ScreenStore(now);
     this.s = styler(o.color ?? true);
     this.status = {
-      start: (label) => this.store.setActivity({ label, startedAt: now() }),
+      start: (label) => this.store.setActivity({ label, startedAt: now(), tools: [] }),
       update: (detail) => {
         const current = this.store.getState().activity;
-        if (current) this.store.setActivity({ ...current, detail });
+        if (current) this.store.setActivity({ ...current, tools: [...current.tools, detail] });
       },
-      stop: () => this.store.setActivity(undefined),
+      stop: (ok = true) => {
+        const current = this.store.getState().activity;
+        if (!current) return;
+        this.store.setActivity(undefined);
+        const block = finishedBlock(current, ok, formatElapsed(now() - current.startedAt), this.s);
+        if (block) this.store.print(block);
+      },
     };
     this.mounted = o.mount(this.store);
   }

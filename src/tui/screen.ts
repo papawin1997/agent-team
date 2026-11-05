@@ -1,3 +1,4 @@
+import type { AgentRun } from './agent-block';
 import type { MenuOption } from './menu';
 import type { BarInfo } from './status-bar';
 
@@ -8,11 +9,8 @@ export interface LogLine {
 }
 
 /** agent ที่กำลังทำงาน (จาก StatusSink) */
-export interface Activity {
-  label: string;
-  detail?: string;
-  startedAt: number;
-}
+/** agent ที่กำลังทำงาน (จาก StatusSink) */
+export type Activity = AgentRun;
 
 export type PromptSpec =
   | { kind: 'text'; prompt: string }

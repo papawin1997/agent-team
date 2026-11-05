@@ -664,3 +664,46 @@ describe('SdkRoleRunner: โควตา', () => {
     expect(calls).toBe(1);
   });
 });
+
+describe('SdkRoleRunner: บล็อก agent', () => {
+  const readTool: Msg = {
+    type: 'assistant',
+    session_id: 's1',
+    parent_tool_use_id: null,
+    message: { content: [{ type: 'tool_use', id: 't1', name: 'Read', input: { file_path: 'src/a.ts' } }] },
+  };
+
+  function run(script: Array<Msg | Error>) {
+    const stops: Array<boolean | undefined> = [];
+    const events: Array<{ event: string; data?: Record<string, unknown> }> = [];
+    const queryFn = (() =>
+      (async function* () {
+        for (const m of script) {
+          if (m instanceof Error) throw m;
+          yield m;
+        }
+      })()) as never;
+    const runner = new SdkRoleRunner({
+      projectDir: 'proj',
+      config: DEFAULT_CONFIG,
+      queryFn,
+      sleep: async () => {},
+      logger: { log: (_level, event, data) => void events.push({ event, data }) },
+      status: { start: () => {}, update: () => {}, stop: (ok) => void stops.push(ok) },
+    });
+    return { runner, stops, events };
+  }
+
+  it('สำเร็จ: stop(true) และบันทึก agent.tool', async () => {
+    const { runner, stops, events } = run([readTool, okResult(validTurn)]);
+    await runner.pmTurn({ prompt: 'x' });
+    expect(stops).toEqual([true]);
+    expect(events.find((e) => e.event === 'agent.tool')?.data).toEqual({ role: 'pm', tool: 'Read', detail: 'อ่านไฟล์ src/a.ts' });
+  });
+
+  it('ล้ม: stop(false)', async () => {
+    const { runner, stops } = run([new RoleRunError('boom', false)]);
+    await expect(runner.pmTurn({ prompt: 'x' })).rejects.toThrow('boom');
+    expect(stops).toEqual([false]);
+  });
+});

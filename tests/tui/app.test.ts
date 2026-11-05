@@ -85,11 +85,13 @@ describe('App', () => {
     await expect(answer).resolves.toEqual({ text: 'ข้อความล่วงหน้า' });
   });
 
-  it('agent ทำงาน: แสดง label, tool ล่าสุด และเวลา', async () => {
+  it('agent ทำงาน: แสดงบล็อกพร้อม label เวลา และ tool ล่าสุด', async () => {
     const { store, ui } = await mount();
-    store.setActivity({ label: '[QA] api', detail: 'Read a.ts', startedAt: 0 });
+    store.setActivity({ label: '[QA] api: กำลังตรวจ', startedAt: 0, tools: ['Read a.ts', 'Edit a.ts'] });
     await tick();
-    expect(ui.lastFrame()).toContain('[QA] api · Read a.ts · 0m00s');
+    expect(ui.lastFrame()).toContain('[QA] api: กำลังตรวจ (0m00s)');
+    expect(ui.lastFrame()).toContain('⎿ Read a.ts');
+    expect(ui.lastFrame()).toContain('⎿ Edit a.ts');
   });
 
   it('Ctrl+C เรียก onInterrupt ไม่ปิดจอเอง', async () => {

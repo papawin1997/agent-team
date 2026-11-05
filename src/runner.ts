@@ -218,6 +218,7 @@ export class SdkRoleRunner implements RoleRunner, AdvisorRunner {
       promptChars: prompt.length,
       sessionId: resume,
     });
+    let succeeded = false;
     this.status.start(label);
     try {
       const stream = this.queryFn({
@@ -266,7 +267,11 @@ export class SdkRoleRunner implements RoleRunner, AdvisorRunner {
         }
         if (msg.type === 'assistant') {
           for (const block of msg.message.content) {
-            if (block.type === 'tool_use') this.status.update(describeToolUse(block.name, block.input));
+            if (block.type === 'tool_use') {
+              const detail = describeToolUse(block.name, block.input);
+              this.status.update(detail);
+              this.logger.log('INFO', 'agent.tool', { role, tool: block.name, detail });
+            }
           }
         }
         if (msg.type === 'result') {
@@ -284,7 +289,10 @@ export class SdkRoleRunner implements RoleRunner, AdvisorRunner {
             costUsd: msg.total_cost_usd,
             sessionId,
           });
-          if (ok) return { output, sessionId };
+          if (ok) {
+            succeeded = true;
+            return { output, sessionId };
+          }
           const missing = jsonSchema
             ? 'จบงานโดยไม่ได้ส่ง structured output (ดูสาเหตุด้วย agent-team logs)'
             : 'จบงานโดยไม่มีข้อความตอบ';
@@ -300,7 +308,7 @@ export class SdkRoleRunner implements RoleRunner, AdvisorRunner {
       this.logger.log('WARN', 'agent.no_result', { role, sessionId });
       throw new RoleRunError(`${role}: stream จบโดยไม่มี result`, true);
     } finally {
-      this.status.stop();
+      this.status.stop(succeeded);
     }
   }
 }

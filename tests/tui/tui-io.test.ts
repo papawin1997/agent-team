@@ -81,15 +81,20 @@ describe('TuiIO', () => {
     await expect(answer).resolves.toBe('continue');
   });
 
-  it('status: start/update/stop -> activity ของจอ', () => {
+  it('status: start/update = บล็อกที่ทำงานอยู่ ; stop = พิมพ์บล็อกสรุปลง log', () => {
     const { store, io } = setup();
     io.status.update('ไม่มี agent ทำงาน: เมิน');
     expect(store.getState().activity).toBeUndefined();
-    io.status.start('[QA] api');
+    io.status.start('[QA] api: กำลังตรวจ');
     io.status.update('Read a.ts');
-    expect(store.getState().activity).toEqual({ label: '[QA] api', detail: 'Read a.ts', startedAt: 1000 });
-    io.status.stop();
+    expect(store.getState().activity).toEqual({ label: '[QA] api: กำลังตรวจ', startedAt: 1000, tools: ['Read a.ts'] });
+    io.status.stop(false);
     expect(store.getState().activity).toBeUndefined();
+    expect(lastLog(store)).toBe('✗ [QA] api  ล้มใน 0m00s · 1 tools\n  ⎿ Read a.ts');
+    const before = store.getState().log.length;
+    io.status.start('[PM] กำลังคิด');
+    io.status.stop(true);
+    expect(store.getState().log).toHaveLength(before);
   });
 
   it('close: คำถามที่ค้าง reject ด้วย EOF, ปิดจอครั้งเดียว และถามต่อไม่ได้', async () => {

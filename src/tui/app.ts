@@ -2,9 +2,10 @@ import { Box, render, Static, Text, useInput, useStdout } from 'ink';
 import React, { useEffect, useReducer, useRef, useState, useSyncExternalStore } from 'react';
 import { formatElapsed } from '../activity';
 import type { QuotaBadge } from '../quota';
+import { runningBlock } from './agent-block';
 import { editorKey, type EditorState, emptyEditor, type KeyInput } from './editor';
 import { menuKey, type MenuState, newMenu } from './menu';
-import type { Activity, LogLine, MenuPrompt, Mounted, ScreenStore } from './screen';
+import type { LogLine, MenuPrompt, Mounted, ScreenStore } from './screen';
 import { layoutBar } from './status-bar';
 import { graphemes } from './text';
 
@@ -92,11 +93,6 @@ function MenuView({ prompt, menu }: { prompt: MenuPrompt; menu: MenuState }): Re
   );
 }
 
-function activityLine(a: Activity, frame: number, now: number): string {
-  const detail = a.detail ? ` · ${a.detail}` : '';
-  return `${FRAMES[frame % FRAMES.length]} ${a.label}${detail} · ${formatElapsed(now - a.startedAt)}`;
-}
-
 export interface AppProps {
   store: ScreenStore;
   /** Ctrl+C: index ส่งต่อเป็น process 'SIGINT' ให้ handler หยุดงานเดิม */
@@ -170,7 +166,15 @@ export function App({ store, onInterrupt, now = Date.now }: AppProps): React.Rea
     h(
       Box,
       { flexDirection: 'column', marginTop: 1 },
-      state.activity ? h(Text, { color: 'yellow' }, activityLine(state.activity, frame, now())) : null,
+      state.activity
+        ? h(
+            Box,
+            { flexDirection: 'column' },
+            ...runningBlock(state.activity, FRAMES[frame % FRAMES.length] ?? '⠋', formatElapsed(now() - state.activity.startedAt)).map(
+              (line, i) => h(Text, { key: i, color: i === 0 ? 'yellow' : undefined, dimColor: i > 0 }, line),
+            ),
+          )
+        : null,
       prompt?.kind === 'text' && prompt.prompt ? h(Text, { bold: true }, prompt.prompt) : null,
       prompt?.kind === 'menu'
         ? h(MenuView, { prompt, menu: menuFor(prompt) })
