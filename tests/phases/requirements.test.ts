@@ -13,7 +13,7 @@ import {
   quickProposal,
   standardProposal,
 } from '../helpers/builders';
-import { makeDeps } from '../helpers/fakes';
+import { FakeCards, makeDeps } from '../helpers/fakes';
 
 const pmInput = (runner: { calls: { input: unknown }[] }, i: number) => runner.calls[i]!.input as PmInput;
 
@@ -602,5 +602,56 @@ describe('runRequirements', () => {
       expect(state.phase).toBe('DESIGN');
       expect(pmInput(runner, 0).prompt).toBe('ขอแบบสั้น ๆ');
     });
+  });
+});
+
+describe('runRequirements: การ์ด Jira', () => {
+  it('ข้อความแรกมีการ์ด: PM ได้การ์ดนำหน้า และชื่องานมาจากการ์ด', async () => {
+    const { deps, runner } = makeDeps({ pm: [proposal()] }, ['ทำตาม RTRPMS-1', 'confirm']);
+    deps.cards = new FakeCards();
+    const state = newState();
+    await runRequirements(deps, state);
+    expect(pmInput(runner, 0).prompt).toBe('[CARD RTRPMS-1]\n\nทำตาม RTRPMS-1');
+    expect(state.title).toBe('RTRPMS-1 สร้างหน้า login');
+  });
+
+  it('ไม่มีการ์ด: prompt และชื่องานเหมือนเดิม', async () => {
+    const { deps, runner } = makeDeps({ pm: [proposal()] }, ['อยากได้ todo list', 'confirm']);
+    const cards = new FakeCards();
+    deps.cards = cards;
+    const state = newState();
+    await runRequirements(deps, state);
+    expect(pmInput(runner, 0).prompt).toBe('อยากได้ todo list');
+    expect(state.title).toBe('อยากได้ todo list');
+    expect(cards.calls).toEqual(['อยากได้ todo list']);
+  });
+
+  it('ข้อความคุยต่อที่มีการ์ดก็ถูกแนบ', async () => {
+    const { deps, runner } = makeDeps({ pm: [asking('มีการ์ดไหม?'), proposal()] }, ['อยากได้ login', 'ดู RTRPMS-1', 'confirm']);
+    deps.cards = new FakeCards();
+    await runRequirements(deps, newState());
+    expect(pmInput(runner, 1).prompt).toBe('[CARD RTRPMS-1]\n\nดู RTRPMS-1');
+  });
+
+  it('pendingPrompt (เช่นคำขอแก้จาก DELIVER) ก็ถูกแนบ และนำหน้าด้วย requirements เดิมตามปกติ', async () => {
+    const { deps, runner } = makeDeps({ pm: [proposal()] }, ['confirm']);
+    deps.cards = new FakeCards();
+    const state = { ...newState(), title: 'งานเดิม', requirements: makeRequirements(), pendingPrompt: 'เพิ่มตาม RTRPMS-1' };
+    await runRequirements(deps, state);
+    const prompt = pmInput(runner, 0).prompt;
+    expect(prompt.startsWith('requirements ปัจจุบัน:')).toBe(true);
+    expect(prompt).toContain('คำขอแก้ไขจาก user: [CARD RTRPMS-1]\n\nเพิ่มตาม RTRPMS-1');
+    expect(state.title).toBe('งานเดิม');
+  });
+
+  it('PM ล้มแล้วกด Enter: ส่งข้อความที่แนบการ์ดแล้วซ้ำ ไม่ดึงการ์ดใหม่', async () => {
+    const { deps, runner } = makeDeps({ pm: [proposal()] }, ['RTRPMS-1', '', 'confirm']);
+    const cards = new FakeCards();
+    deps.cards = cards;
+    // แบบเดียวกับเทสต์ "PM ตอบไม่สำเร็จ" เดิม: call ที่ล้มไม่ถูกบันทึกใน runner.calls
+    vi.spyOn(runner, 'pmTurn').mockRejectedValueOnce(new Error('boom'));
+    await runRequirements(deps, newState());
+    expect(cards.calls).toEqual(['RTRPMS-1']);
+    expect(pmInput(runner, 0).prompt).toBe('[CARD RTRPMS-1]\n\nRTRPMS-1');
   });
 });

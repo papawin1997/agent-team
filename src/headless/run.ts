@@ -1,7 +1,9 @@
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { CliArgs } from '../args';
 import type { TeamConfig } from '../config';
-import type { RoleRunner, StateStore, UserIO } from '../deps';
+import type { CardEnricher, RoleRunner, StateStore, UserIO } from '../deps';
+import { jiraCardsFor } from '../jira-cards';
 import type { SnapshotProvider } from '../snapshot';
 import { makeInterruptHandler, type InterruptSignal } from '../interrupt';
 import { selectJob, type SelectedJob } from '../job-menu';
@@ -75,6 +77,8 @@ export interface HeadlessJobOptions {
   projectDir?: string;
   /** ส่งต่อเข้า Deps.abortSignal (ctx.abortController.signal) */
   abortSignal?: AbortSignal;
+  /** ส่งต่อเข้า Deps.cards (แนบการ์ด Jira ในข้อความถึง PM) */
+  cards?: CardEnricher;
 }
 
 /** รัน orchestrator กับงานที่ lock แล้ว เขียน exit.json ตอนจบทุกทาง และปล่อย lock */
@@ -101,6 +105,7 @@ export async function runHeadlessJob(o: HeadlessJobOptions): Promise<ExitStatus>
       snapshots: o.snapshots,
       projectDir: o.projectDir,
       abortSignal: o.abortSignal,
+      cards: o.cards,
     });
     const status: ExitStatus = final.phase === 'DONE' ? 'done' : 'aborted';
     writeExit(dir, status);
@@ -182,6 +187,7 @@ export async function runHeadless(args: CliArgs): Promise<number> {
     snapshots: ctx.snapshots,
     projectDir,
     abortSignal: ctx.abortController.signal,
+    cards: jiraCardsFor({ settings: ctx.config.jira, projectDir, dir: path.join(dir, 'jira'), io, log: ctx.logger }),
   });
   console.log(JSON.stringify({ jobId: job.id, status }));
   return status === 'error' || status === 'idle' ? 1 : 0;

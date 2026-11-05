@@ -1,4 +1,4 @@
-import type { AdvisorRunner, UserIO } from '../deps';
+import type { AdvisorRunner, CardEnricher, UserIO } from '../deps';
 import { confirmYesNo } from '../io-util';
 import { buildAskResumePrompt } from '../prompts';
 import type { Handoff } from '../schemas';
@@ -10,6 +10,8 @@ export interface AskDeps {
   store: HandoffStore;
   /** agent-team ask --resume: ให้เลือก handoff ที่เก็บไว้เป็นบริบทของ session ใหม่ */
   resume: boolean;
+  /** แนบการ์ด Jira ที่อ้างในข้อความก่อนส่ง advisor — ไม่มี = ส่งข้อความตามเดิม */
+  cards?: CardEnricher;
 }
 
 /** exit = จบ, job = ผู้ใช้ยืนยันให้ส่ง handoff ไปเปิดงานใหม่กับทีม */
@@ -55,8 +57,8 @@ export async function runAsk(deps: AskDeps): Promise<AskOutcome> {
   let sessionId: string | undefined;
   /** มีการคุยหลัง handoff ล่าสุด (ใช้ตัดสินว่าจะถามเก็บตอน /exit ไหม) */
   let unsaved = false;
-  /** ข้อความที่ advisor ตอบไม่สำเร็จ — กด Enter เพื่อส่งซ้ำ */
-  let failed: string | undefined;
+  /** ข้อความที่ advisor ตอบไม่สำเร็จ (input = ที่ผู้ใช้พิมพ์, message = ที่ส่งจริงหลังแนบการ์ด) — กด Enter เพื่อส่งซ้ำ */
+  let failed: { input: string; message: string } | undefined;
 
   const showHandoff = (h: Handoff): void => io.say(`# ${h.title}\n\n${h.markdown}`, 'advisor');
 
@@ -85,7 +87,7 @@ export async function runAsk(deps: AskDeps): Promise<AskOutcome> {
 
   for (;;) {
     const raw = (await io.ask(PROMPT)).trim();
-    const input = raw === '' ? failed : raw;
+    const input = raw === '' ? failed?.input : raw;
     if (input === undefined) continue;
     const command = input.toLowerCase();
 
@@ -117,7 +119,9 @@ export async function runAsk(deps: AskDeps): Promise<AskOutcome> {
       continue;
     }
 
-    const prompt = context !== undefined && sessionId === undefined ? buildAskResumePrompt(context, input) : input;
+    const message =
+      raw === '' && failed ? failed.message : deps.cards ? (await deps.cards.enrich(input)).prompt : input;
+    const prompt = context !== undefined && sessionId === undefined ? buildAskResumePrompt(context, message) : message;
     try {
       const out = await runner.advise({ prompt, sessionId });
       sessionId = out.sessionId;
@@ -125,7 +129,7 @@ export async function runAsk(deps: AskDeps): Promise<AskOutcome> {
       failed = undefined;
       io.say(out.text, 'advisor');
     } catch (e) {
-      failed = input;
+      failed = { input, message };
       io.say(
         `advisor ตอบไม่สำเร็จ (${errMessage(e)}) — กด Enter เพื่อส่งข้อความเดิมอีกครั้ง หรือพิมพ์ข้อความใหม่ ` +
           '(ถ้าชนขีดจำกัด ให้ /save แล้วเริ่มใหม่ด้วย agent-team ask --resume)',

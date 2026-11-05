@@ -421,3 +421,13 @@ describe('วินัยจาก skill: QA, Security และตรวจร�
     }
   });
 });
+
+describe('PM กับการ์ด Jira', () => {
+  it('ใช้การ์ดเป็นฐาน ถามเฉพาะที่ไม่ชัด เริ่ม AC จากการ์ด และ goal ขึ้นต้นด้วย key', () => {
+    const pm = SYSTEM_PROMPTS.pm;
+    expect(pm).toContain('Jira card');
+    expect(pm).toContain('never re-ask what it already says');
+    expect(pm).toContain("start acceptanceCriteria from the card's criteria");
+    expect(pm).toContain('begin "goal" with the issue key');
+  });
+});

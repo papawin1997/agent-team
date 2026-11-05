@@ -1,4 +1,5 @@
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { parseArgs } from './args';
 import { HandoffStore } from './ask/handoff-store';
 import { askJobPrompt, runAsk } from './ask/session';
@@ -7,6 +8,7 @@ import { isHeadlessCommand, parseHeadlessCommand } from './headless/args';
 import { runHeadlessCommand } from './headless/commands';
 import { runHeadless } from './headless/run';
 import { makeInterruptHandler } from './interrupt';
+import { jiraCardsFor } from './jira-cards';
 import { createAskJob, selectJob, type SelectedJob } from './job-menu';
 import { LoggingIO } from './logger';
 import { runLogsCommand } from './logview/command';
@@ -98,7 +100,19 @@ async function main(): Promise<void> {
   try {
     let job: SelectedJob;
     if (args.command === 'ask') {
-      const outcome = await runAsk({ runner, io: loggingIO, store: new HandoffStore(projectDir), resume: args.resume });
+      const outcome = await runAsk({
+        runner,
+        io: loggingIO,
+        store: new HandoffStore(projectDir),
+        resume: args.resume,
+        cards: jiraCardsFor({
+          settings: config.jira,
+          projectDir,
+          dir: path.join(projectDir, '.agent-team', 'ask', 'jira'),
+          io: loggingIO,
+          log: logger,
+        }),
+      });
       if (outcome.kind === 'exit') {
         logger.log('INFO', 'run.end', { mode: 'ask' });
         return;
@@ -125,6 +139,13 @@ async function main(): Promise<void> {
       snapshots: ctx.snapshots,
       projectDir,
       abortSignal: abortController.signal,
+      cards: jiraCardsFor({
+        settings: config.jira,
+        projectDir,
+        dir: path.join(repo.jobDir(job.id), 'jira'),
+        io: loggingIO,
+        log: logger,
+      }),
     });
     console.log(
       final.phase === 'DONE'

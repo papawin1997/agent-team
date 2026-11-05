@@ -266,3 +266,25 @@ describe('checkSkillNames', () => {
     expect(() => loadConfig(file, plugin)).toThrow(/team:missing/);
   });
 });
+
+describe('jira config', () => {
+  it('ค่าเริ่มต้นชี้ site ของ ThaiBev, project RTRPMS และ field Key details', () => {
+    expect(DEFAULT_CONFIG.jira).toEqual({
+      site: 'digital-and-technology.atlassian.net',
+      projects: ['RTRPMS'],
+      keyDetailsFields: ['customfield_10119', 'customfield_10121'],
+    });
+  });
+
+  it('override บาง field ได้ ที่เหลือคงค่าเริ่มต้น', () => {
+    const cfg = mergeConfig(DEFAULT_CONFIG, { jira: { projects: ['RTRPMS', 'PMS'] } });
+    expect(cfg.jira.projects).toEqual(['RTRPMS', 'PMS']);
+    expect(cfg.jira.site).toBe('digital-and-technology.atlassian.net');
+    expect(mergeConfig(DEFAULT_CONFIG, {}).jira).toEqual(DEFAULT_CONFIG.jira);
+  });
+
+  it('ปฏิเสธ project ที่ไม่ใช่ตัวพิมพ์ใหญ่ และ key ที่ไม่รู้จัก', () => {
+    expect(() => mergeConfig(DEFAULT_CONFIG, { jira: { projects: ['rtred'] } })).toThrow();
+    expect(() => mergeConfig(DEFAULT_CONFIG, { jira: { token: 'x' } })).toThrow();
+  });
+});

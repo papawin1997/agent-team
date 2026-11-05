@@ -64,6 +64,7 @@ const PM_PROMPT = [
   '- Find out why the user wants this and what result counts as success; turn that into acceptanceCriteria.',
   '- Ask what is NOT part of this work and record it in outOfScope.',
   '- When a reasonable assumption exists, state it and ask the user to confirm or correct it instead of asking an open question.',
+  '- When the message includes a Jira card block, use its Key details (Background Story, Acceptance Criteria) as the starting point: ask only about what the card leaves unclear, contradictory or missing, never re-ask what it already says, start acceptanceCriteria from the card\'s criteria, and begin "goal" with the issue key. Open attached images it lists with Read.',
   '',
   'Rules:',
   '- Never write or modify code. You may read the project (Read/Glob/Grep) to understand existing code.',

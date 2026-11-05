@@ -2,6 +2,7 @@ import { parseChoice } from '../../src/cli';
 import { plainText, type SayKind } from '../../src/style';
 import { DEFAULT_CONFIG } from '../../src/config';
 import type {
+  CardEnricher,
   Deps,
   PlanInput,
   PmInput,
@@ -172,4 +173,15 @@ export function makeDeps(script: FakeScript, answers: string[]) {
   const store = new MemoryStore();
   const deps: Deps = { runner, io, store, config: DEFAULT_CONFIG };
   return { deps, runner, io, store };
+}
+
+/** แนบ "[CARD RTRPMS-1]" เมื่อข้อความมี RTRPMS-1 (ทุกครั้ง ไม่จำ) — title ใช้ตอนข้อความมีการ์ด */
+export class FakeCards implements CardEnricher {
+  calls: string[] = [];
+  constructor(private readonly title = 'RTRPMS-1 สร้างหน้า login') {}
+
+  async enrich(text: string): Promise<{ prompt: string; title?: string }> {
+    this.calls.push(text);
+    return text.includes('RTRPMS-1') ? { prompt: `[CARD RTRPMS-1]\n\n${text}`, title: this.title } : { prompt: text };
+  }
 }

@@ -217,6 +217,24 @@ Security ถูกเรียกเฉพาะรอบที่ QA ผ่า�
 `reports/<id>-round<n>.json` ของรอบเดียวกันด้วย) ส่วนรอบที่ QA ไม่ผ่านตั้งแต่แรกจะไม่มี `security.report` เลย
 (ประหยัด API call) — ใช้แยกได้ว่ารอบนั้นเสียเพราะ Security เจอช่องโหว่ ไม่ใช่ QA ไม่ผ่านงานปกติ
 
+## อ่านการ์ด Jira
+พิมพ์ issue key (เช่น `RTRPMS-1920`) หรือลิงก์ `https://digital-and-technology.atlassian.net/browse/RTRPMS-1920`
+ในข้อความถึง PM (ตอนเล่า requirement, คุยต่อ, ขอแก้) หรือใน `agent-team ask` แล้ว agent-team จะดึงการ์ด
+(Key details = Background Story + Acceptance Criteria และรูปแนบ) ให้ PM/advisor อ่านก่อนตอบ
+PM จะถามเฉพาะสิ่งที่การ์ดไม่ชัดหรือขาด และขึ้นต้น goal ด้วย issue key
+
+ตั้ง env ครั้งเดียว (สร้าง token ที่ https://id.atlassian.com/manage-profile/security/api-tokens) แล้วเปิด terminal ใหม่:
+
+    setx JIRA_EMAIL you@thaibev.com
+    setx JIRA_TOKEN <token>
+
+- ดึงเฉพาะ project ใน `jira.projects` (ค่าเริ่มต้น `RTRPMS`) ทั้ง key และลิงก์ project อื่นไม่ถูกดึงเลย
+- เลขเปล่า (`2612`) ไม่นับเป็นการ์ด ; ดึงสูงสุด 3 ใบต่อข้อความ ; รูปแนบสูงสุด 5 รูป (รูปละไม่เกิน 5 MB)
+- การ์ดและรูปเก็บที่ `.agent-team/jobs/<id>/jira/` (ask: `.agent-team/ask/jira/`) งานเดียวกันไม่ดึงซ้ำ
+- ดึงไม่สำเร็จ (ไม่ได้ตั้ง env, ไม่มีสิทธิ์, ไม่พบ, network) จะเตือนแล้วส่งข้อความเดิมให้ PM ตามปกติ งานไม่หยุด
+- `JIRA_EMAIL` / `JIRA_TOKEN` ไม่ถูกส่งให้ agent และเนื้อหาการ์ดถูกส่งให้ agent ในฐานะข้อมูล ไม่ใช่คำสั่ง
+- ปรับได้ใน `agent-team.config.json`: `{ "jira": { "site": "...", "projects": ["RTRPMS"], "keyDetailsFields": ["customfield_10119", "customfield_10121"] } }`
+
 ## ตั้งค่า (ไม่บังคับ)
 สร้าง `agent-team.config.json` ที่ราก repo นี้ ตัวอย่าง:
 (ไฟล์นี้จะอยู่ถาวรเฉพาะเครื่องที่ clone แล้ว `npm link` เท่านั้น — เครื่องที่ติดตั้งแบบ global จาก GitHub

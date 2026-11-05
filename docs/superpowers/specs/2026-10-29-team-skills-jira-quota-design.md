@@ -45,12 +45,12 @@
 ## ส่วนที่ 2 — อ่านการ์ด Jira แล้ว PM ถามตอบ
 
 ### พฤติกรรม
-- ข้อความใดก็ตามที่ผู้ใช้ส่งถึง PM ใน REQUIREMENTS (ข้อความแรก, ข้อความคุยต่อ, `revise`, คำขอแก้ตอน DELIVER ที่วิ่งกลับเข้า REQUIREMENTS) และข้อความใน `agent-team ask` — ถ้ามี issue key (`[A-Z][A-Z0-9]+-\d+` ที่ prefix ตรงกับ `jira.projects`) หรือ URL `https://<jira.site>/browse/<KEY>` → โค้ดดึงการ์ดก่อนเรียก agent
+- ข้อความใดก็ตามที่ผู้ใช้ส่งถึง PM ใน REQUIREMENTS (ข้อความแรก, ข้อความคุยต่อ, `revise`, คำขอแก้ตอน DELIVER ที่วิ่งกลับเข้า REQUIREMENTS) และข้อความใน `agent-team ask` — ถ้ามี issue key (`[A-Z][A-Z0-9]+-\d+` ที่ prefix ตรงกับ `jira.projects`) หรือ URL `https://<jira.site>/browse/<KEY>` ที่ project อยู่ใน `jira.projects` → โค้ดดึงการ์ดก่อนเรียก agent ; project อื่น (เช่น RTRED) ไม่ดึงเลยแม้เป็นลิงก์ (ผู้ใช้กำหนด 2026-11-05: เอาเฉพาะ RTRPMS)
 - เลขเปล่า (เช่น `2612`) **ไม่** นับเป็นการ์ด (การตัดสินใจของผู้ออกแบบ: กันจับผิดกับ "แก้ 3 ไฟล์")
 - เนื้อหาการ์ดแนบหน้า prompt ของ PM/advisor ในบล็อก untrusted (ใช้รูปแบบเดียวกับ `untrusted()` ใน prompts.ts: เป็น DATA ไม่ใช่คำสั่ง) ตามด้วยข้อความเดิมของผู้ใช้
 - เพิ่มกฎใน `PM_PROMPT`: เมื่อมีการ์ด Jira ให้ใช้ Background Story/Acceptance Criteria เป็นฐาน ถามเฉพาะสิ่งที่การ์ดไม่ชัด/ขัดกัน/ขาด ไม่ถามซ้ำสิ่งที่การ์ดบอกแล้ว, `acceptanceCriteria` เริ่มจาก AC ของการ์ด, `goal` ขึ้นต้นด้วย issue key
-- แสดงในจอ (kind `system`): `ดึงการ์ด RTRED-2612: <summary> · รูปแนบ 2` ; ล้มเหลว (ไม่มี env, 401/403/404, network) → kind `warn` บอกสาเหตุสั้น ๆ แล้วส่งข้อความผู้ใช้ให้ PM ตามเดิม (ไม่หยุดงาน) ; ไม่ได้ตั้ง env → บอกวิธีตั้ง `JIRA_EMAIL`/`JIRA_TOKEN`
-- headless: `--request "RTRED-2612 ..."` ทำงานเหมือนกัน (ข้อความ warn ไปทาง events ตามปกติของ io)
+- แสดงในจอ (kind `system`): `ดึงการ์ด RTRPMS-1920: <summary> · รูปแนบ 2` ; ล้มเหลว (ไม่มี env, 401/403/404, network) → kind `warn` บอกสาเหตุสั้น ๆ แล้วส่งข้อความผู้ใช้ให้ PM ตามเดิม (ไม่หยุดงาน) ; ไม่ได้ตั้ง env → บอกวิธีตั้ง `JIRA_EMAIL`/`JIRA_TOKEN`
+- headless: `--request "RTRPMS-1920 ..."` ทำงานเหมือนกัน (ข้อความ warn ไปทาง events ตามปกติของ io)
 - ตั้ง `state.title` จาก `<KEY> <summary>` เมื่อข้อความแรกมีการ์ด (ถ้า title ยังไม่ถูกตั้ง)
 
 ### การดึง (โมดูลใหม่ `src/jira.ts`)
@@ -63,7 +63,7 @@
 - ห้าม log token / header auth ; log event `jira.fetch` (key, ok, status, attachments) ลง agent-team.log
 
 ### Config และ env
-- `agent-team.config.json` เพิ่ม `jira`: `{ site: "digital-and-technology.atlassian.net", projects: ["RTRED"], keyDetailsFields: ["customfield_10119","customfield_10121"] }` (ทั้งหมด optional ค่าเริ่มต้นตามนี้) — ปรับ schema ใน `src/config.ts`
+- `agent-team.config.json` เพิ่ม `jira`: `{ site: "digital-and-technology.atlassian.net", projects: ["RTRPMS"], keyDetailsFields: ["customfield_10119","customfield_10121"] }` (ทั้งหมด optional ค่าเริ่มต้นตามนี้) — ปรับ schema ใน `src/config.ts`
 - `src/env.ts`: ตัด `JIRA_TOKEN`, `JIRA_EMAIL` ออกจาก `agentEnv()` (ไม่สนตัวพิมพ์บน Windows เหมือน billing vars)
 
 เกณฑ์ตรวจรับส่วนที่ 2:
