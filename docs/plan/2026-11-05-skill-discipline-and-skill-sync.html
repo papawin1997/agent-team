@@ -1,0 +1,886 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>วินัยจาก skill + sync skill-ai-naja Implementation Plan</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; line-height: 1.55;
+         max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1f2933;
+         background: #f5f7fa; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  pre { background: #1f2933; color: #e4e7eb; padding: .9rem 1rem;
+        border-radius: 6px; overflow-x: auto; }
+  code { background: #e4e7eb; padding: .1rem .35rem; border-radius: 4px; }
+  pre code { background: none; padding: 0; color: inherit; }
+  .frame { border-left: 6px solid; border-radius: 8px; padding: 1rem 1.25rem;
+           margin: 1.25rem 0; background: #ffffff;
+           box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .frame-header     { border-color: #2563eb; background: #eff6ff; }  /* blue  */
+  .frame-constraints{ border-color: #d97706; background: #fffbeb; }  /* amber */
+  .frame-task       { border-color: #059669; background: #ecfdf5; }  /* green */
+  .frame h1, .frame h2, .frame h3 { margin-top: 0; }
+  .note { border-color: #7c3aed; background: #f5f3ff; }              /* violet */
+  .step { display: flex; gap: .5rem; align-items: baseline;
+          margin: .75rem 0 .25rem; }
+  .step input { transform: scale(1.2); margin-top: .15rem; }
+  .meta { color: #52606d; font-size: .9rem; }
+</style>
+</head>
+<body>
+
+<div class="frame frame-header">
+  <h1>วินัยจาก skill (ส่วนที่ 1) + sync skill-ai-naja (ส่วนที่ 4) Implementation Plan</h1>
+  <p><strong>เป้าหมาย:</strong> ใส่วินัยย่อจาก skill tb-* ลง system prompt ของทุก role เป็นค่าเริ่มต้น และเพิ่ม skill เต็มจาก skill-ai-naja เป็น option ที่เปิดต่อ role ได้ผ่าน config</p>
+  <p><strong>สถาปัตยกรรม:</strong> ส่วนที่ 1 แก้เฉพาะข้อความใน <code>src/prompts.ts</code> (ไม่เปลี่ยน schema) ส่วนที่ 4 เพิ่ม script sync (<code>scripts/sync-skills-lib.ts</code> ที่เทสต์ได้ + <code>scripts/sync-skills.ts</code> ตัวรัน) ที่ copy skill ลง plugin <code>team</code> เดิม (<code>skills/skills/</code>), ต่อกฎ "Skills" ท้าย system prompt ใน <code>buildQueryOptions</code> เฉพาะ role ที่เปิด skill และตรวจชื่อ skill ตอน <code>loadConfig</code></p>
+  <p><strong>Tech Stack:</strong> TypeScript (ESM, tsx), zod, vitest, Node <code>fs</code> / <code>child_process</code> — ไม่มี dependency ใหม่</p>
+  <p class="meta">Design: <code>docs/superpowers/specs/2026-10-29-team-skills-jira-quota-design.md</code> (ส่วนที่ 1 และ 4) · ส่วนที่ 2 และ 3 อยู่ใน plan แยก</p>
+</div>
+
+<div class="frame note">
+  <strong>For agentic workers:</strong> REQUIRED SUB-SKILL: Use
+  tb-subagent-driven-development (recommended) or
+  tb-executing-plans to implement this plan task-by-task. Steps keep
+  the <code>- [ ]</code> marker next to each checkbox for tracking.
+</div>
+
+<div class="frame frame-constraints">
+  <h2>Global Constraints</h2>
+  <ul>
+    <li>TypeScript ตาม style ของ repo: คอมเมนต์ภาษาไทย, ไม่มี dependency ใหม่, Node <code>&gt;=20.6</code></li>
+    <li>ข้อความ prompt ของ agent เขียนเป็นภาษาอังกฤษ (เหมือน prompt เดิม) ข้อความที่แสดงผู้ใช้เป็นภาษาไทย</li>
+    <li>เทสต์ด้วย vitest (<code>tests/**/*.test.ts</code>) ห้ามเรียก SDK หรือ GitHub จริงในเทสต์</li>
+    <li>ไม่เปลี่ยน JSON schema ใน <code>src/schemas.ts</code></li>
+    <li>system prompt ของแต่ละ role ยาวขึ้นไม่เกิน 1,500 ตัวอักษรจากเดิม (เดิม: pm 3231, planning 1093, frontend 1073, backend 1085, qa 1891, security 1637)</li>
+    <li>prompt ใน <code>SYSTEM_PROMPTS</code> ต้องไม่มีคำว่า <code>HTML</code> และ <code>Skill tool</code></li>
+    <li>ค่าเริ่มต้นทุก role <code>skills: []</code> เหมือนเดิม — role ที่ไม่เปิด skill ต้องได้ system prompt เดิมทุกตัวอักษร</li>
+    <li>deny list ของการ sync: <code>tb-subagent-driven-development</code>, <code>tb-executing-plans</code>, <code>tb-using-git-worktrees</code>, <code>tb-finishing-a-development-branch</code>, <code>tb-requesting-code-review</code>, <code>tb-read-jira</code>, <code>web-pow</code>, <code>handoff</code></li>
+    <li>ต้นทาง sync ตามลำดับ: <code>--from &lt;path&gt;</code> → env <code>SKILL_AI_NAJA_DIR</code> → <code>~/ai-skills</code> → clone <code>https://github.com/papawin1997/skill-ai-naja.git</code> แบบ <code>--depth 1</code> ลง temp (ห้ามอ่านจาก <code>~/.claude/skills/</code>)</li>
+    <li>ไม่ลบหรือเปลี่ยนพฤติกรรมเดิมที่ไม่เกี่ยว ; ห้าม commit — ผู้ใช้ตรวจ diff และ commit เอง</li>
+    <li>ห้ามใช้ repo นี้เป็น <code>--project</code> ของ agent-team เอง</li>
+  </ul>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 1: วินัยของ PM และ Planning</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/prompts.ts:43-79</code> (<code>PM_PROMPT</code>, <code>PLANNING_PROMPT</code>)</li>
+    <li>เทสต์: <code>tests/prompts.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: ไม่มี</li>
+    <li>ส่งต่อ: <code>SYSTEM_PROMPTS.pm</code>, <code>SYSTEM_PROMPTS.planning</code> (string) — Task 3 ใช้ในเทสต์รวม</li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: ติดตั้ง dependency (repo นี้ยังไม่มี node_modules)</strong></span></p>
+  <p>รัน: <code>npm install</code> แล้ว <code>npm test</code><br>
+     คาดหวัง: เทสต์เดิมผ่านทั้งหมด (เป็น baseline)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>ต่อท้าย <code>tests/prompts.test.ts</code>:</p>
+<pre><code>describe('วินัยจาก skill: PM และ Planning', () =&gt; {
+  it('PM อ่านโค้ดก่อนถาม ถามหาเหตุผล/เกณฑ์สำเร็จ/สิ่งที่ไม่ทำ และเสนอข้อสันนิษฐาน', () =&gt; {
+    const pm = SYSTEM_PROMPTS.pm;
+    expect(pm).toContain('Never ask the user what the code already answers');
+    expect(pm).toContain('what result counts as success');
+    expect(pm).toContain('outOfScope');
+    expect(pm).toContain('state it and ask the user to confirm or correct it');
+    // กฎเดิมของงาน quick ยังอยู่
+    expect(pm).toContain('at most ONE clarifying question');
+  });
+
+  it('Planning: task เล็ก ระบุไฟล์ เกณฑ์รันได้ ระบุเทสต์ ไม่มีขั้น commit และตรวจทวนก่อนส่ง', () =&gt; {
+    const p = SYSTEM_PROMPTS.planning;
+    expect(p).toContain('finish it in a single session');
+    expect(p).toContain('name the files you expect it to create or change');
+    expect(p).toContain('name the tests the worker should write');
+    expect(p).toContain('Never include a commit step');
+    expect(p).toContain('re-read the requirements');
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/prompts.test.ts</code><br>
+     คาดหวัง: FAIL 2 เทสต์ใหม่ ด้วย "expected ... to contain 'Never ask the user what the code already answers'" และ "'finish it in a single session'"</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: เพิ่มวินัยใน PM_PROMPT</strong></span></p>
+  <p>ใน <code>PM_PROMPT</code> แทรกบรรทัดเหล่านี้ <em>ก่อน</em> <code>'Rules:',</code> (หลังบรรทัดว่างที่ตามข้อ Triage):</p>
+<pre><code>  'Discipline (requirements):',
+  '- Read the relevant code first (Read/Glob/Grep). Never ask the user what the code already answers.',
+  '- Find out why the user wants this and what result counts as success; turn that into acceptanceCriteria.',
+  '- Ask what is NOT part of this work and record it in outOfScope.',
+  '- When a reasonable assumption exists, state it and ask the user to confirm or correct it instead of asking an open question.',
+  '',</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: เพิ่มวินัยใน PLANNING_PROMPT</strong></span></p>
+  <p>ใน <code>PLANNING_PROMPT</code> แทรกก่อนบรรทัดสุดท้าย <code>'- Do not write code.',</code>:</p>
+<pre><code>  '- Size every task so one worker can finish it in a single session.',
+  '- In each task description, name the files you expect it to create or change.',
+  '- Every acceptance criterion must be checkable by running a test or a command; name the tests the worker should write.',
+  '- Never include a commit step.',
+  '- Before answering, re-read the requirements and check that every feature and acceptance criterion is covered by a task; fix gaps yourself.',</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/prompts.test.ts</code><br>
+     คาดหวัง: PASS ทั้งไฟล์ (รวมเทสต์เดิมของ PM)</p>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 2: วินัยของ worker (TDD) และรอบแก้ (หาต้นเหตุ)</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/prompts.ts:86-100</code> (<code>workerPrompt</code>), <code>src/prompts.ts:172-191</code> (<code>buildWorkPrompt</code>, <code>buildWorkFixPrompt</code>)</li>
+    <li>เทสต์: <code>tests/prompts.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: <code>failReport</code>, <code>makeTask</code>, <code>makeDesign</code>, <code>makeRequirements</code> จาก <code>tests/helpers/builders.ts</code> (import อยู่แล้วที่หัวไฟล์เทสต์)</li>
+    <li>ส่งต่อ: ค่าคงที่ภายใน <code>FIX_DISCIPLINE: string</code> (ไม่ export)</li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1–2: เขียน test ที่ต้อง fail</strong></span></p>
+  <p class="meta"><code>failReport(taskId: string, severity = 'major'): QAReport</code> จาก <code>tests/helpers/builders.ts</code></p>
+<pre><code>describe('วินัยจาก skill: worker', () =&gt; {
+  it('frontend/backend: เขียนเทสต์ก่อน เห็น fail แล้วค่อย implement และห้ามลดเงื่อนไขเทสต์', () =&gt; {
+    for (const role of ['frontend', 'backend'] as const) {
+      const p = SYSTEM_PROMPTS[role];
+      expect(p).toContain('confirm they fail for the expected reason');
+      expect(p).toContain('then write the minimal code to make them pass');
+      expect(p).toContain('say in summary how you verified the task');
+      expect(p).toContain('Never weaken or delete a test to make it pass');
+    }
+  });
+
+  it('รอบแก้ (buildWorkFixPrompt): ทำซ้ำ ไล่ code path แก้ที่ต้นเหตุ และสรุปสาเหตุใน summary', () =&gt; {
+    const p = buildWorkFixPrompt({ task, design, requirements, previousReport: failReport('api') });
+    expect(p).toContain('reproduce it');
+    expect(p).toContain('fix the cause rather than the symptom');
+    expect(p).toContain('root cause you found briefly in summary');
+  });
+
+  it('buildWorkPrompt มีวินัยรอบแก้เฉพาะเมื่อมี previousReport', () =&gt; {
+    const withReport = buildWorkPrompt({ task, design, requirements, previousReport: failReport('api') });
+    const fresh = buildWorkPrompt({ task, design, requirements });
+    expect(withReport).toContain('fix the cause rather than the symptom');
+    expect(fresh).not.toContain('fix the cause rather than the symptom');
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/prompts.test.ts -t "worker"</code><br>
+     คาดหวัง: FAIL 3 เทสต์ใหม่ด้วย "expected ... to contain"</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: เพิ่มวินัย TDD ใน workerPrompt</strong></span></p>
+  <p>ใน <code>workerPrompt</code> แทรกหลังบรรทัด <code>'- Write clean, minimal code that satisfies the acceptance criteria. ...'</code>:</p>
+<pre><code>    '- If the project has a test setup: first write tests for the acceptance criteria, run them and confirm they fail for the expected reason, then write the minimal code to make them pass, then run the whole test suite.',
+    '- If the project has no test setup, say in summary how you verified the task instead.',
+    '- Never weaken or delete a test to make it pass.',</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: เพิ่ม FIX_DISCIPLINE และใช้ในรอบแก้</strong></span></p>
+  <p>เพิ่มค่าคงที่ใต้ <code>workerPrompt</code>:</p>
+<pre><code>// วินัยรอบแก้ (ย่อจาก tb-investigate-error / debug-mantra) — สรุปสาเหตุใน summary ไม่ทำรายงานแยก
+const FIX_DISCIPLINE =
+  'Before fixing each blocker or major issue: reproduce it (run the test or command), trace the failing code path to the real cause, fix the cause rather than the symptom, then confirm the fix with a test. State the root cause you found briefly in summary.';</code></pre>
+  <p>ใน <code>buildWorkPrompt</code> เปลี่ยนส่วน previousReport เป็น:</p>
+<pre><code>  if (input.previousReport) {
+    parts.push(`Previous QA report (fix the blocker and major issues):\n${json(input.previousReport)}`);
+    parts.push(FIX_DISCIPLINE);
+  }</code></pre>
+  <p>ใน <code>buildWorkFixPrompt</code> แทรก <code>FIX_DISCIPLINE</code> เป็นสมาชิกตัวที่ 3 ของ array (หลัง <code>`QA report:...`</code> ก่อนข้อความ <code>'Fix every blocker...'</code>):</p>
+<pre><code>  return [
+    `QA reviewed your implementation of task "${input.task.id}" and found problems.`,
+    `QA report:\n${json(input.previousReport)}`,
+    FIX_DISCIPLINE,
+    'Fix every blocker and major issue in it. Do not rework unrelated code. Run the relevant build/lint/test commands again, then return the JSON result (taskId, summary, filesChanged, howToVerify) for this round.',
+  ].join('\n\n');</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/prompts.test.ts</code><br>
+     คาดหวัง: PASS ทั้งไฟล์</p>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 3: วินัยของ QA และ Security + ตรวจรวม (ไม่มี HTML/Skill tool, ความยาว)</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/prompts.ts:102-128</code> (<code>QA_PROMPT</code>, <code>SECURITY_PROMPT</code>)</li>
+    <li>เทสต์: <code>tests/prompts.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: <code>SYSTEM_PROMPTS</code> ของ Task 1–2</li>
+    <li>ส่งต่อ: ไม่มี</li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+<pre><code>describe('วินัยจาก skill: QA, Security และตรวจรวม', () =&gt; {
+  it('QA ตรวจเจตนา ไล่ code path จริง เสนอทางที่ง่ายกว่าเป็น minor และ issue ต้องมีเหตุผล+file', () =&gt; {
+    const qa = SYSTEM_PROMPTS.qa;
+    expect(qa).toContain('really achieves the intent');
+    expect(qa).toContain('Trace the real code path that calls the new code');
+    expect(qa).toContain('clearly simpler approach');
+    expect(qa).toContain('Every issue must state its reason and a file');
+  });
+
+  it('Security ไล่ data flow ก่อนรายงาน', () =&gt; {
+    expect(SYSTEM_PROMPTS.security).toContain('trace the data flow from user input');
+  });
+
+  it('ไม่มี role ไหนถูกสั่งให้ทำ HTML หรือใช้ Skill tool', () =&gt; {
+    for (const role of ROLE_NAMES) {
+      expect(SYSTEM_PROMPTS[role]).not.toContain('HTML');
+      expect(SYSTEM_PROMPTS[role]).not.toContain('Skill tool');
+    }
+  });
+
+  it('system prompt แต่ละ role ยาวขึ้นไม่เกิน 1,500 ตัวอักษร', () =&gt; {
+    // ความยาวก่อนเพิ่มวินัย (วัดเมื่อ 2026-11-05)
+    const before = { pm: 3231, planning: 1093, frontend: 1073, backend: 1085, qa: 1891, security: 1637, advisor: 842 };
+    for (const role of ROLE_NAMES) {
+      expect(SYSTEM_PROMPTS[role].length - before[role]).toBeLessThanOrEqual(1500);
+    }
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/prompts.test.ts -t "QA, Security"</code><br>
+     คาดหวัง: FAIL 2 เทสต์แรก ("really achieves the intent", "trace the data flow") ส่วนเทสต์ HTML และความยาวผ่านอยู่แล้ว</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เพิ่มวินัยใน QA_PROMPT</strong></span></p>
+  <p>แทรกหลังบรรทัด <code>'- If the design includes securityNotes, verify the implementation actually follows them.',</code>:</p>
+<pre><code>  '- Beyond the acceptance criteria, check that the code really achieves the intent of the task and the requirements.',
+  '- Trace the real code path that calls the new code, not only the changed files.',
+  '- If a clearly simpler approach would achieve the same result, report it as a "minor" issue with the reason.',
+  '- Every issue must state its reason and a file it refers to.',</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: เพิ่มวินัยใน SECURITY_PROMPT</strong></span></p>
+  <p>แทรกหลังบรรทัด <code>'- Report only real, concrete findings tied to specific code or design text. ...'</code>:</p>
+<pre><code>  '- Before reporting a finding, trace the data flow from user input to the risky code in the actual project.',</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: รัน test ทั้งชุดและ typecheck</strong></span></p>
+  <p>รัน: <code>npm test</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS ทั้งหมด ไม่มี type error</p>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 4: ตรรกะ sync skill (lib ที่เทสต์ได้)</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>scripts/sync-skills-lib.ts</code></li>
+    <li>เทสต์: <code>tests/sync-skills.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: ไม่มี</li>
+    <li>ส่งต่อ (Task 5 ใช้):
+      <ul>
+        <li><code>interface SyncConfig { repo: string; deny: string[] }</code></li>
+        <li><code>interface SyncOptions { sourceDir: string; targetDir: string; manifestFile: string; licensesDir: string; deny: readonly string[] }</code></li>
+        <li><code>interface SyncResult { added: string[]; updated: string[]; removed: string[]; skipped: string[] }</code></li>
+        <li><code>listSourceSkills(sourceDir: string, deny: readonly string[]): string[]</code></li>
+        <li><code>syncSkills(opts: SyncOptions): SyncResult</code></li>
+        <li><code>resolveSource(input: { from?: string; env: NodeJS.ProcessEnv; home: string }): string | null</code> (null = ต้อง clone)</li>
+        <li><code>formatResult(r: SyncResult): string</code></li>
+      </ul>
+    </li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>สร้าง <code>tests/sync-skills.test.ts</code>:</p>
+<pre><code>import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { formatResult, listSourceSkills, resolveSource, syncSkills } from '../scripts/sync-skills-lib';
+
+let root: string;
+let source: string;
+let target: string;
+let manifestFile: string;
+let licensesDir: string;
+
+const write = (file: string, content = 'x') =&gt; {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, content);
+};
+const skill = (dir: string, name: string, body = `# ${name}`) =&gt; write(path.join(dir, name, 'SKILL.md'), body);
+const run = (deny: string[] = []) =&gt; syncSkills({ sourceDir: source, targetDir: target, manifestFile, licensesDir, deny });
+
+beforeEach(() =&gt; {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'sync-skills-'));
+  source = path.join(root, 'src');
+  target = path.join(root, 'plugin', 'skills');
+  manifestFile = path.join(root, 'plugin', 'synced.json');
+  licensesDir = path.join(root, 'plugin', 'licenses');
+  fs.mkdirSync(source, { recursive: true });
+});
+
+afterEach(() =&gt; fs.rmSync(root, { recursive: true, force: true }));
+
+describe('listSourceSkills', () =&gt; {
+  it('เอาเฉพาะโฟลเดอร์ที่มี SKILL.md ไม่อยู่ใน deny และไม่ขึ้นต้นด้วยจุด เรียงตามชื่อ', () =&gt; {
+    skill(source, 'b-skill');
+    skill(source, 'a-skill');
+    skill(source, 'denied');
+    skill(source, '.hidden');
+    write(path.join(source, 'licenses', 'MIT.txt'));
+    write(path.join(source, 'README.md'));
+    expect(listSourceSkills(source, ['denied'])).toEqual(['a-skill', 'b-skill']);
+  });
+});
+
+describe('syncSkills', () =&gt; {
+  it('copy ทั้งโฟลเดอร์ (รวมไฟล์ประกอบ) และจดชื่อลง manifest', () =&gt; {
+    skill(source, 'tb-scrutinize');
+    write(path.join(source, 'tb-scrutinize', 'scripts', 'helper.js'), 'h');
+    const r = run();
+    expect(r.added).toEqual(['tb-scrutinize']);
+    expect(fs.readFileSync(path.join(target, 'tb-scrutinize', 'scripts', 'helper.js'), 'utf8')).toBe('h');
+    expect(JSON.parse(fs.readFileSync(manifestFile, 'utf8'))).toEqual(['tb-scrutinize']);
+  });
+
+  it('ข้าม skill ใน deny', () =&gt; {
+    skill(source, 'web-pow');
+    skill(source, 'tb-scrutinize');
+    run(['web-pow']);
+    expect(fs.existsSync(path.join(target, 'web-pow'))).toBe(false);
+    expect(fs.existsSync(path.join(target, 'tb-scrutinize', 'SKILL.md'))).toBe(true);
+  });
+
+  it('sync ซ้ำ: ทับทั้งโฟลเดอร์ ไฟล์ที่หายจากต้นทางก็หายจากปลายทาง และนับเป็น updated', () =&gt; {
+    skill(source, 'tb-scrutinize');
+    write(path.join(source, 'tb-scrutinize', 'old.md'));
+    run();
+    fs.rmSync(path.join(source, 'tb-scrutinize', 'old.md'));
+    skill(source, 'tb-scrutinize', 'v2');
+    const r = run();
+    expect(r.updated).toEqual(['tb-scrutinize']);
+    expect(fs.existsSync(path.join(target, 'tb-scrutinize', 'old.md'))).toBe(false);
+    expect(fs.readFileSync(path.join(target, 'tb-scrutinize', 'SKILL.md'), 'utf8')).toBe('v2');
+  });
+
+  it('ลบเฉพาะ skill ที่เคย sync มาแล้วหายจากต้นทางหรือถูก deny', () =&gt; {
+    skill(source, 'gone');
+    skill(source, 'to-deny');
+    skill(source, 'stay');
+    run();
+    fs.rmSync(path.join(source, 'gone'), { recursive: true });
+    const r = run(['to-deny']);
+    expect(r.removed.sort()).toEqual(['gone', 'to-deny']);
+    expect(fs.existsSync(path.join(target, 'gone'))).toBe(false);
+    expect(fs.existsSync(path.join(target, 'to-deny'))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(manifestFile, 'utf8'))).toEqual(['stay']);
+  });
+
+  it('ไม่แตะ skill ที่เขียนเองใน plugin และไม่ทับเมื่อชื่อซ้ำ (รายงาน skipped)', () =&gt; {
+    skill(target, 'my-own', 'mine');
+    skill(target, 'clash', 'mine');
+    skill(source, 'clash', 'theirs');
+    const r = run();
+    expect(r.skipped).toEqual(['clash']);
+    expect(fs.readFileSync(path.join(target, 'clash', 'SKILL.md'), 'utf8')).toBe('mine');
+    expect(fs.readFileSync(path.join(target, 'my-own', 'SKILL.md'), 'utf8')).toBe('mine');
+    expect(JSON.parse(fs.readFileSync(manifestFile, 'utf8'))).toEqual([]);
+  });
+
+  it('copy licenses/ ของต้นทางไปที่ licensesDir', () =&gt; {
+    skill(source, 'a');
+    write(path.join(source, 'licenses', 'superpowers-MIT.txt'), 'MIT');
+    run();
+    expect(fs.readFileSync(path.join(licensesDir, 'superpowers-MIT.txt'), 'utf8')).toBe('MIT');
+  });
+});
+
+describe('resolveSource', () =&gt; {
+  it('--from มาก่อน env และ ~/ai-skills', () =&gt; {
+    const from = path.join(root, 'from');
+    fs.mkdirSync(from);
+    expect(resolveSource({ from, env: { SKILL_AI_NAJA_DIR: source }, home: root })).toBe(from);
+  });
+
+  it('ใช้ SKILL_AI_NAJA_DIR เมื่อไม่มี --from', () =&gt; {
+    expect(resolveSource({ env: { SKILL_AI_NAJA_DIR: source }, home: root })).toBe(source);
+  });
+
+  it('ใช้ ~/ai-skills เมื่อไม่ระบุอะไร', () =&gt; {
+    const local = path.join(root, 'ai-skills');
+    fs.mkdirSync(local);
+    expect(resolveSource({ env: {}, home: root })).toBe(local);
+  });
+
+  it('คืน null เมื่อไม่มีต้นทางในเครื่อง (ต้อง clone)', () =&gt; {
+    expect(resolveSource({ env: {}, home: root })).toBeNull();
+  });
+
+  it('path ที่ระบุแต่ไม่มีอยู่ -&gt; error ที่บอก path', () =&gt; {
+    const missing = path.join(root, 'nope');
+    expect(() =&gt; resolveSource({ from: missing, env: {}, home: root })).toThrow(missing);
+  });
+});
+
+describe('formatResult', () =&gt; {
+  it('สรุปทุกหมวดและเตือนให้ commit เอง', () =&gt; {
+    const text = formatResult({ added: ['a'], updated: [], removed: ['b'], skipped: [] });
+    expect(text).toContain('เพิ่ม (1): a');
+    expect(text).toContain('อัปเดต (0): -');
+    expect(text).toContain('ลบ (1): b');
+    expect(text).toContain('commit เอง');
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/sync-skills.test.ts</code><br>
+     คาดหวัง: FAIL ด้วย "Failed to resolve import ../scripts/sync-skills-lib"</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p>สร้าง <code>scripts/sync-skills-lib.ts</code>:</p>
+<pre><code>import * as fs from 'node:fs';
+import * as path from 'node:path';
+
+/** skills/sync.json */
+export interface SyncConfig {
+  repo: string;
+  deny: string[];
+}
+
+export interface SyncOptions {
+  sourceDir: string;
+  /** skills/skills ของ plugin team */
+  targetDir: string;
+  /** skills/synced.json: ชื่อ skill ที่ sync มาครั้งก่อน (ใช้ตัดสินว่าลบ/ทับได้ไหม) */
+  manifestFile: string;
+  /** ปลายทางของ licenses/ จากต้นทาง */
+  licensesDir: string;
+  deny: readonly string[];
+}
+
+export interface SyncResult {
+  added: string[];
+  updated: string[];
+  removed: string[];
+  /** ชื่อซ้ำกับ skill ที่เขียนเองใน plugin จึงไม่ทับ */
+  skipped: string[];
+}
+
+const hasSkill = (dir: string): boolean =&gt; fs.existsSync(path.join(dir, 'SKILL.md'));
+
+/** ชื่อ skill ในต้นทาง: โฟลเดอร์ที่มี SKILL.md ไม่ขึ้นต้นด้วยจุด และไม่อยู่ใน deny */
+export function listSourceSkills(sourceDir: string, deny: readonly string[]): string[] {
+  return fs
+    .readdirSync(sourceDir, { withFileTypes: true })
+    .filter((e) =&gt; e.isDirectory() &amp;&amp; !e.name.startsWith('.') &amp;&amp; !deny.includes(e.name))
+    .map((e) =&gt; e.name)
+    .filter((name) =&gt; hasSkill(path.join(sourceDir, name)))
+    .sort();
+}
+
+function readManifest(file: string): string[] {
+  if (!fs.existsSync(file)) return [];
+  const value: unknown = JSON.parse(fs.readFileSync(file, 'utf8'));
+  return Array.isArray(value) ? value.filter((v): v is string =&gt; typeof v === 'string') : [];
+}
+
+export function syncSkills(opts: SyncOptions): SyncResult {
+  const previous = readManifest(opts.manifestFile);
+  const result: SyncResult = { added: [], updated: [], removed: [], skipped: [] };
+  const synced: string[] = [];
+  fs.mkdirSync(opts.targetDir, { recursive: true });
+
+  for (const name of listSourceSkills(opts.sourceDir, opts.deny)) {
+    const target = path.join(opts.targetDir, name);
+    const exists = fs.existsSync(target);
+    // มีอยู่แล้วแต่ไม่ได้มาจากการ sync = skill ที่ผู้ใช้เขียนเอง ห้ามทับ
+    if (exists &amp;&amp; !previous.includes(name)) {
+      result.skipped.push(name);
+      continue;
+    }
+    fs.rmSync(target, { recursive: true, force: true });
+    fs.cpSync(path.join(opts.sourceDir, name), target, { recursive: true, dereference: true });
+    (exists ? result.updated : result.added).push(name);
+    synced.push(name);
+  }
+
+  // ลบเฉพาะตัวที่เคย sync มาแต่รอบนี้ไม่มีแล้ว (หายจากต้นทางหรือถูกเพิ่มเข้า deny)
+  for (const name of previous) {
+    if (synced.includes(name)) continue;
+    fs.rmSync(path.join(opts.targetDir, name), { recursive: true, force: true });
+    result.removed.push(name);
+  }
+
+  const licenses = path.join(opts.sourceDir, 'licenses');
+  if (fs.existsSync(licenses)) {
+    fs.rmSync(opts.licensesDir, { recursive: true, force: true });
+    fs.cpSync(licenses, opts.licensesDir, { recursive: true, dereference: true });
+  }
+
+  fs.writeFileSync(opts.manifestFile, `${JSON.stringify(synced, null, 2)}\n`);
+  return result;
+}
+
+/** โฟลเดอร์ต้นทางในเครื่อง: --from → SKILL_AI_NAJA_DIR → ~/ai-skills ; null = ต้อง clone */
+export function resolveSource(input: { from?: string; env: NodeJS.ProcessEnv; home: string }): string | null {
+  const explicit = input.from ?? input.env.SKILL_AI_NAJA_DIR;
+  if (explicit) {
+    if (!fs.existsSync(explicit)) throw new Error(`ไม่พบโฟลเดอร์ต้นทาง: ${explicit}`);
+    return path.resolve(explicit);
+  }
+  const local = path.join(input.home, 'ai-skills');
+  return fs.existsSync(local) ? local : null;
+}
+
+export function formatResult(r: SyncResult): string {
+  const line = (label: string, names: string[]) =&gt;
+    `${label} (${names.length}): ${names.length &gt; 0 ? names.join(', ') : '-'}`;
+  return [
+    line('เพิ่ม', r.added),
+    line('อัปเดต', r.updated),
+    line('ลบ', r.removed),
+    line('ข้าม (ชื่อซ้ำกับ skill ที่เขียนเอง)', r.skipped),
+    'ตรวจ diff ใน skills/ แล้ว commit เอง',
+  ].join('\n');
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/sync-skills.test.ts</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS ทุกเทสต์ ไม่มี type error</p>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 5: ตัวรัน sync, sync.json, ดึง skill จริง และเอกสาร</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>scripts/sync-skills.ts</code>, <code>skills/sync.json</code></li>
+    <li>สร้างโดย script: <code>skills/synced.json</code>, <code>skills/skills/&lt;7 skill&gt;/</code>, <code>skills/licenses/</code></li>
+    <li>แก้ไข: <code>package.json</code> (scripts), <code>skills/README.md</code>, <code>README.md</code> (หัวข้อ "## Skills")</li>
+    <li>เทสต์: <code>tests/sync-skills.test.ts</code> (เพิ่มเทสต์ของ <code>skills/sync.json</code>)</li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: <code>syncSkills</code>, <code>resolveSource</code>, <code>formatResult</code>, <code>SyncConfig</code> จาก Task 4</li>
+    <li>ส่งต่อ: คำสั่ง <code>npm run sync-skills [-- --from &lt;path&gt;]</code> ; โฟลเดอร์ <code>skills/skills/&lt;ชื่อ&gt;/SKILL.md</code> ที่ Task 7 ใช้ตรวจชื่อ</li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail (sync.json จริงของ repo)</strong></span></p>
+  <p>ต่อท้าย <code>tests/sync-skills.test.ts</code>:</p>
+<pre><code>describe('skills/sync.json', () =&gt; {
+  it('ชี้ repo skill-ai-naja และ deny ครบ 8 ตัวตาม design', () =&gt; {
+    const cfg = JSON.parse(fs.readFileSync(path.resolve('skills', 'sync.json'), 'utf8'));
+    expect(cfg.repo).toBe('https://github.com/papawin1997/skill-ai-naja.git');
+    expect([...cfg.deny].sort()).toEqual(
+      [
+        'handoff',
+        'tb-executing-plans',
+        'tb-finishing-a-development-branch',
+        'tb-read-jira',
+        'tb-requesting-code-review',
+        'tb-subagent-driven-development',
+        'tb-using-git-worktrees',
+        'web-pow',
+      ].sort(),
+    );
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/sync-skills.test.ts -t "sync.json"</code><br>
+     คาดหวัง: FAIL ด้วย "ENOENT ... skills/sync.json"</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: สร้าง skills/sync.json</strong></span></p>
+<pre><code>{
+  "repo": "https://github.com/papawin1997/skill-ai-naja.git",
+  "deny": [
+    "tb-subagent-driven-development",
+    "tb-executing-plans",
+    "tb-using-git-worktrees",
+    "tb-finishing-a-development-branch",
+    "tb-requesting-code-review",
+    "tb-read-jira",
+    "web-pow",
+    "handoff"
+  ]
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: สร้าง scripts/sync-skills.ts</strong></span></p>
+<pre><code>import { execFileSync } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { formatResult, resolveSource, type SyncConfig, syncSkills } from './sync-skills-lib';
+
+// sync skill จาก skill-ai-naja เข้า plugin team (skills/skills/) — ใช้: npm run sync-skills [-- --from &lt;path&gt;]
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const PLUGIN_DIR = path.join(ROOT, 'skills');
+
+function argFrom(argv: string[]): string | undefined {
+  const i = argv.indexOf('--from');
+  return i &gt;= 0 ? argv[i + 1] : undefined;
+}
+
+function main(): void {
+  const config = JSON.parse(fs.readFileSync(path.join(PLUGIN_DIR, 'sync.json'), 'utf8')) as SyncConfig;
+  let source = resolveSource({ from: argFrom(process.argv), env: process.env, home: os.homedir() });
+  let tmp: string | undefined;
+  if (!source) {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-ai-naja-'));
+    console.log(`ไม่พบต้นทางในเครื่อง กำลัง clone ${config.repo}`);
+    execFileSync('git', ['clone', '--depth', '1', config.repo, tmp], { stdio: 'inherit' });
+    source = tmp;
+  }
+  try {
+    console.log(`ต้นทาง: ${source}`);
+    const result = syncSkills({
+      sourceDir: source,
+      targetDir: path.join(PLUGIN_DIR, 'skills'),
+      manifestFile: path.join(PLUGIN_DIR, 'synced.json'),
+      licensesDir: path.join(PLUGIN_DIR, 'licenses'),
+      deny: config.deny,
+    });
+    console.log(formatResult(result));
+  } finally {
+    if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+try {
+  main();
+} catch (e) {
+  console.error('sync-skills ล้มเหลว:', e instanceof Error ? e.message : e);
+  process.exitCode = 1;
+}</code></pre>
+  <p>เพิ่มใน <code>package.json</code> ส่วน <code>"scripts"</code> (ต่อจาก <code>"smoke:auth"</code>):</p>
+<pre><code>    "smoke:auth": "tsx scripts/smoke-auth.ts",
+    "sync-skills": "tsx scripts/sync-skills.ts"</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/sync-skills.test.ts</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS และไม่มี type error</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: sync skill จริง</strong></span></p>
+  <p>clone ในเครื่องผู้ใช้อยู่ที่ <code>F:/ThaiBev/project/ai/skill-ai-naja</code> รัน:
+     <code>npm run sync-skills -- --from "F:/ThaiBev/project/ai/skill-ai-naja"</code><br>
+     คาดหวัง: <code>เพิ่ม (7): gen-subtasks, review-angular, tb-brainstorming, tb-investigate-error, tb-scrutinize, tb-test-driven-development, tb-writing-plans</code>, ลบ/ข้าม (0) และมี <code>skills/synced.json</code>, <code>skills/licenses/superpowers-MIT.txt</code><br>
+     ตรวจเพิ่ม: <code>ls skills/skills</code> ต้องเห็น 7 โฟลเดอร์และไม่มี <code>web-pow</code>/<code>handoff</code></p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: อัปเดต skills/README.md</strong></span></p>
+  <p>แทนเนื้อหาทั้งไฟล์ด้วย:</p>
+<pre><code># Skills ของ agent-team
+
+โฟลเดอร์นี้เป็น plugin ชื่อ `team` (ดู `.claude-plugin/plugin.json`) skill อยู่ที่ `skills/skills/&lt;ชื่อ&gt;/SKILL.md`
+
+## skill จาก skill-ai-naja
+skill ส่วนใหญ่ sync มาจาก https://github.com/papawin1997/skill-ai-naja ด้วย
+
+    npm run sync-skills                      # ต้นทาง: SKILL_AI_NAJA_DIR → ~/ai-skills → clone จาก GitHub
+    npm run sync-skills -- --from &lt;path&gt;     # ระบุโฟลเดอร์ต้นทางเอง
+
+- copy ทุกโฟลเดอร์ที่มี `SKILL.md` ยกเว้นรายชื่อ `deny` ใน `sync.json` (skill ที่ต้องใช้ subagent/browser/commit หรือซ้ำกับระบบของ agent-team)
+- `synced.json` จดชื่อที่ sync มา: sync รอบต่อไปลบเฉพาะตัวที่หายจากต้นทางหรือถูกเพิ่มเข้า deny
+- skill ที่เขียนเองไม่ถูกแตะ ถ้าชื่อซ้ำกับต้นทางจะไม่ถูกทับ (ขึ้นในหมวด "ข้าม")
+- อย่าแก้ไฟล์ของ skill ที่ sync มาใน repo นี้ — แก้ที่ skill-ai-naja แล้ว sync ใหม่
+- sync เสร็จแล้วตรวจ diff และ commit เอง
+
+## เปิดให้ role ใช้
+ค่าเริ่มต้นไม่เปิด skill ให้ role ใด เปิดผ่าน `agent-team.config.json` ที่ราก repo:
+
+    { "roles": { "frontend": { "skills": ["team:tb-test-driven-development"] } } }
+
+ชื่อต้องขึ้นต้นด้วย `team:` และเปิดได้ทีละชื่อ (ห้ามใช้ "all") ชื่อที่ไม่มีในโฟลเดอร์นี้จะทำให้ agent-team แจ้ง error ตอนเริ่ม</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 8: อัปเดตหัวข้อ "## Skills" ใน README.md</strong></span></p>
+  <p>แทนสองบรรทัดใต้ <code>## Skills</code> (บรรทัด "วาง skill ที่ ..." และ "ทุก role ค่าเริ่มต้นไม่มี skill ...") ด้วย:</p>
+<pre><code>ทุก role มีวินัยย่อจาก skill ชุด tb-* อยู่ใน system prompt แล้ว (เขียนเทสต์ก่อน, หาต้นเหตุก่อนแก้, QA ไล่ code path จริง ฯลฯ) โดยไม่ต้องเปิด skill
+
+ถ้าอยากให้ agent ใช้ skill ฉบับเต็ม เปิดต่อ role ได้ (ค่าเริ่มต้นไม่เปิด และไม่โหลด skill/hook/CLAUDE.md ส่วนตัวใน `~/.claude`):
+
+    { "roles": {
+        "pm": { "skills": ["team:tb-brainstorming"] },
+        "planning": { "skills": ["team:tb-writing-plans"] },
+        "frontend": { "skills": ["team:tb-test-driven-development"] },
+        "backend": { "skills": ["team:tb-test-driven-development", "team:tb-investigate-error"] },
+        "qa": { "skills": ["team:tb-scrutinize", "team:review-angular"] } } }
+
+agent จะเลือกเรียก skill เองเมื่อเห็นว่าเข้ากับขั้นที่ทำ และได้กฎเพิ่มว่าห้ามสร้าง HTML/spec/plan, ห้ามเปิด browser/subagent, ห้าม commit และผลต้องลงช่อง JSON ตามเดิม
+**เปิด skill แล้วเปลือง token และโควตามากขึ้นชัดเจน** (skill เต็มยาวหลายร้อยบรรทัด โหลดทุกครั้งที่เรียก) เปิดเฉพาะ role ที่คุ้ม
+
+skill ที่มี (sync จาก skill-ai-naja ด้วย `npm run sync-skills` ดู `skills/README.md`):
+gen-subtasks, review-angular, tb-brainstorming, tb-investigate-error, tb-scrutinize, tb-test-driven-development, tb-writing-plans
+วาง skill ที่เขียนเองได้ที่ `skills/skills/&lt;ชื่อ&gt;/SKILL.md` (ชื่อ `team:&lt;ชื่อ&gt;`)</code></pre>
+  <p>รัน: <code>npm test</code><br>
+     คาดหวัง: PASS ทั้งหมด</p>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 6: กฎ "Skills" ใน system prompt ของ role ที่เปิด skill</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/options.ts:19-26</code></li>
+    <li>เทสต์: <code>tests/options.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: ไม่มี</li>
+    <li>ส่งต่อ: <code>export const SKILLS_RULES: string</code> จาก <code>src/options.ts</code></li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>แก้บรรทัด import เป็น <code>import { buildQueryOptions, SKILLS_RULES } from '../src/options';</code> แล้วเพิ่มใน <code>describe('buildQueryOptions')</code>:</p>
+<pre><code>  it('role ที่เปิด skill: ต่อกฎ Skills ท้าย system prompt', () =&gt; {
+    const config = { ...DEFAULT_CONFIG.roles.qa, skills: ['team:tb-scrutinize'] };
+    const o = buildQueryOptions({ ...base, role: 'qa', config });
+    expect(o.systemPrompt).toBe(`sys\n\n${SKILLS_RULES}`);
+  });
+
+  it('กฎ Skills ห้าม HTML/browser/subagent/commit และให้ผลลง JSON schema', () =&gt; {
+    expect(SKILLS_RULES).toContain('Never create HTML, spec, plan or report files');
+    expect(SKILLS_RULES).toContain('dispatch subagents');
+    expect(SKILLS_RULES).toContain('commit');
+    expect(SKILLS_RULES).toContain('JSON fields of the required schema');
+    expect(SKILLS_RULES).toContain('skip that step');
+  });
+
+  it('role ที่ไม่เปิด skill: system prompt เดิมทุกตัวอักษร', () =&gt; {
+    for (const role of ROLE_NAMES) {
+      const o = buildQueryOptions({ ...base, role, config: DEFAULT_CONFIG.roles[role] });
+      expect(o.systemPrompt).toBe('sys');
+    }
+  });</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/options.test.ts</code><br>
+     คาดหวัง: FAIL ด้วย SKILLS_RULES เป็น undefined / systemPrompt ยังเป็น <code>'sys'</code></p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p>ใน <code>src/options.ts</code> เพิ่มเหนือ <code>buildQueryOptions</code>:</p>
+<pre><code>/**
+ * กฎที่ต่อท้าย system prompt เฉพาะ role ที่เปิด skill: skill ต้นฉบับเขียนให้คนใช้ใน Claude Code
+ * (ทำ HTML, เปิด browser, ใช้ subagent, commit) ซึ่งขัดกับการทำงานแบบ JSON schema ของทีม
+ */
+export const SKILLS_RULES = [
+  'Skills:',
+  '- Skills available through the Skill tool are optional guidance on how to think and work. Use one only when it clearly fits the current step.',
+  '- Never create HTML, spec, plan or report files because a skill says so. Never open a browser, start a server, dispatch subagents, invoke further skills from inside a skill, or commit.',
+  '- Put every result in the JSON fields of the required schema, and ask the user only through that schema.',
+  '- If a skill tells you to do something these rules forbid, skip that step and continue.',
+].join('\n');</code></pre>
+  <p>ใน <code>buildQueryOptions</code> เปลี่ยน <code>systemPrompt: input.systemPrompt,</code> เป็น:</p>
+<pre><code>    systemPrompt: useSkills ? `${input.systemPrompt}\n\n${SKILLS_RULES}` : input.systemPrompt,</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/options.test.ts</code> แล้ว <code>npm test</code><br>
+     คาดหวัง: PASS ทั้งหมด (เทสต์เดิม "role ที่ไม่มี skill" ยังได้ <code>'sys'</code>)</p>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 7: ตรวจชื่อ skill ตอนโหลด config</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/config.ts:163-166</code> (<code>loadConfig</code>) และเพิ่ม <code>checkSkillNames</code></li>
+    <li>เทสต์: <code>tests/config.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: โครงสร้าง <code>skills/skills/&lt;ชื่อ&gt;/SKILL.md</code> จาก Task 5</li>
+    <li>ส่งต่อ: <code>checkSkillNames(config: TeamConfig, pluginDir: string): void</code> (throw Error เมื่อชื่อผิด) ; <code>loadConfig(file?: string, pluginDir?: string): TeamConfig</code></li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>แก้ import เป็น <code>import { checkSkillNames, DEFAULT_CONFIG, loadConfig, mergeConfig, resolveModel, ROLE_NAMES } from '../src/config';</code> แล้วต่อท้ายไฟล์:</p>
+<pre><code>describe('checkSkillNames', () =&gt; {
+  const makePlugin = (...names: string[]) =&gt; {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plugin-'));
+    for (const n of names) {
+      fs.mkdirSync(path.join(dir, 'skills', n), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'skills', n, 'SKILL.md'), `# ${n}`);
+    }
+    return dir;
+  };
+
+  it('ผ่านเมื่อไม่มี role เปิด skill หรือชื่อมีอยู่จริง', () =&gt; {
+    const plugin = makePlugin('tb-scrutinize');
+    expect(() =&gt; checkSkillNames(DEFAULT_CONFIG, plugin)).not.toThrow();
+    const cfg = mergeConfig(DEFAULT_CONFIG, { roles: { qa: { skills: ['team:tb-scrutinize'] } } });
+    expect(() =&gt; checkSkillNames(cfg, plugin)).not.toThrow();
+  });
+
+  it('ชื่อที่ไม่มีหรือไม่ขึ้นต้น team: -&gt; error บอก role, ชื่อผิด และรายชื่อที่มี', () =&gt; {
+    const plugin = makePlugin('tb-scrutinize');
+    const cfg = mergeConfig(DEFAULT_CONFIG, {
+      roles: { qa: { skills: ['team:tb-scrutinze'] }, pm: { skills: ['tb-brainstorming'] } },
+    });
+    expect(() =&gt; checkSkillNames(cfg, plugin)).toThrow(/qa: team:tb-scrutinze/);
+    expect(() =&gt; checkSkillNames(cfg, plugin)).toThrow(/pm: tb-brainstorming/);
+    expect(() =&gt; checkSkillNames(cfg, plugin)).toThrow(/team:tb-scrutinize/);
+  });
+
+  it('loadConfig ตรวจชื่อ skill กับ plugin ที่ระบุ', () =&gt; {
+    const plugin = makePlugin();
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cfg-')), 'agent-team.config.json');
+    fs.writeFileSync(file, JSON.stringify({ roles: { qa: { skills: ['team:missing'] } } }));
+    expect(() =&gt; loadConfig(file, plugin)).toThrow(/team:missing/);
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/config.test.ts</code><br>
+     คาดหวัง: FAIL ด้วย "checkSkillNames is not a function" / loadConfig ไม่ throw</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p>ใน <code>src/config.ts</code> แทน <code>loadConfig</code> เดิมด้วย:</p>
+<pre><code>/** ชื่อ skill ต้องเป็น team:&lt;ชื่อ&gt; และมี skills/skills/&lt;ชื่อ&gt;/SKILL.md — กันพิมพ์ผิดแล้ว agent ไม่ได้ skill แบบเงียบ ๆ */
+export function checkSkillNames(config: TeamConfig, pluginDir: string): void {
+  const dir = path.join(pluginDir, 'skills');
+  const available = fs.existsSync(dir)
+    ? fs
+        .readdirSync(dir)
+        .filter((n) =&gt; fs.existsSync(path.join(dir, n, 'SKILL.md')))
+        .sort()
+    : [];
+  const bad: string[] = [];
+  for (const role of ROLE_NAMES) {
+    for (const skill of config.roles[role].skills) {
+      const name = skill.startsWith('team:') ? skill.slice('team:'.length) : '';
+      if (!available.includes(name)) bad.push(`${role}: ${skill}`);
+    }
+  }
+  if (bad.length === 0) return;
+  const list = available.length &gt; 0 ? available.map((n) =&gt; `team:${n}`).join(', ') : '(ยังไม่มี — รัน npm run sync-skills)';
+  throw new Error(`agent-team.config.json เปิด skill ที่ไม่มี: ${bad.join(', ')}\nskill ที่มี: ${list}`);
+}
+
+export function loadConfig(
+  file: string = path.join(TEAM_ROOT, 'agent-team.config.json'),
+  pluginDir: string = SKILLS_PLUGIN_DIR,
+): TeamConfig {
+  if (!fs.existsSync(file)) return DEFAULT_CONFIG;
+  const config = mergeConfig(DEFAULT_CONFIG, JSON.parse(fs.readFileSync(file, 'utf8')));
+  checkSkillNames(config, pluginDir);
+  return config;
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/config.test.ts</code> แล้ว <code>npm test</code> และ <code>npm run typecheck</code><br>
+     คาดหวัง: PASS ทั้งหมด ไม่มี type error (เทสต์ loadConfig เดิมไม่มี skills จึงไม่กระทบ)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: ทดลองจริง (ผู้ใช้เป็นคนรัน เพราะใช้โควตาจริง)</strong></span></p>
+  <p>สร้าง <code>agent-team.config.json</code> ชั่วคราว <code>{ "roles": { "pm": { "skills": ["team:tb-brainstorming"] } } }</code> แล้วรัน <code>AGENT_TEAM_DEBUG=1</code> กับโปรเจกต์ทดลอง (ไม่ใช่ repo นี้) ส่งข้อความสั้น ๆ ให้ PM 1 ข้อความ<br>
+     คาดหวัง: บรรทัด <code>[pm] init skills=[...]</code> มี <code>team:tb-brainstorming</code> จากนั้นลบ config ชั่วคราวออก ถ้า SDK ใช้ชื่ออื่น (เช่นไม่มี prefix) ให้แจ้งผู้ออกแบบก่อนแก้ — changes are ready for review</p>
+</div>
+
+</body>
+</html>

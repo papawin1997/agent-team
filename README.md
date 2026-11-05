@@ -239,8 +239,23 @@ Security เพิ่มการเรียก Sonnet 1 ครั้งต่�
 `headlessIdleMinutes` — เวลาที่รอการตอบคำถามเป็นนาที ก่อนที่ process headless จะหยุดรอ (สถานะ `idle` งานไม่ถูกยกเลิก ทำต่อได้ด้วย `agent-team run --headless --job <id>`) (ค่าเริ่มต้น 120, ต้องเป็นจำนวนเต็มบวก)
 
 ## Skills
-วาง skill ที่ `skills/skills/<ชื่อ>/SKILL.md` แล้วเปิดให้ role ผ่าน config ด้านบน (ชื่อ `team:<ชื่อ>`)
-ทุก role ค่าเริ่มต้นไม่มี skill และไม่โหลด skill/hook/CLAUDE.md ส่วนตัวใน `~/.claude`
+ทุก role มีวินัยย่อจาก skill ชุด tb-* อยู่ใน system prompt แล้ว (เขียนเทสต์ก่อน, หาต้นเหตุก่อนแก้, QA ไล่ code path จริง ฯลฯ) โดยไม่ต้องเปิด skill
+
+ถ้าอยากให้ agent ใช้ skill ฉบับเต็ม เปิดต่อ role ได้ (ค่าเริ่มต้นไม่เปิด และไม่โหลด skill/hook/CLAUDE.md ส่วนตัวใน `~/.claude`):
+
+    { "roles": {
+        "pm": { "skills": ["team:tb-brainstorming"] },
+        "planning": { "skills": ["team:tb-writing-plans"] },
+        "frontend": { "skills": ["team:tb-test-driven-development"] },
+        "backend": { "skills": ["team:tb-test-driven-development", "team:tb-investigate-error"] },
+        "qa": { "skills": ["team:tb-scrutinize", "team:review-angular"] } } }
+
+agent จะเลือกเรียก skill เองเมื่อเห็นว่าเข้ากับขั้นที่ทำ และได้กฎเพิ่มว่าห้ามสร้าง HTML/spec/plan, ห้ามเปิด browser/subagent, ห้าม commit และผลต้องลงช่อง JSON ตามเดิม
+**เปิด skill แล้วเปลือง token และโควตามากขึ้นชัดเจน** (skill เต็มยาวหลายร้อยบรรทัด โหลดทุกครั้งที่เรียก) เปิดเฉพาะ role ที่คุ้ม
+
+skill ที่มี (sync จาก skill-ai-naja ด้วย `npm run sync-skills` ดู `skills/README.md`):
+gen-subtasks, review-angular, tb-brainstorming, tb-investigate-error, tb-scrutinize, tb-test-driven-development, tb-writing-plans
+วาง skill ที่เขียนเองได้ที่ `skills/skills/<ชื่อ>/SKILL.md` (ชื่อ `team:<ชื่อ>`)
 
 ## ความปลอดภัยและข้อจำกัด
 - เขียนไฟล์ได้เฉพาะในโฟลเดอร์โปรเจกต์ ห้ามแตะ `.git`, `.agent-team`, `.claude`

@@ -8,11 +8,11 @@
 ข้อจำกัดหลักคือ **ประหยัด token**: skill ต้นฉบับยาว (TDD 371 บรรทัด, writing-plans 242) และทำไฟล์ HTML/spec ที่ไม่มีใครอ่าน เพราะผู้ใช้ไม่ได้นั่งตรวจ
 ผู้ใช้ใช้ subscription เท่านั้น จึงอยากรู้ตัวก่อนโควตาหมด และมี AI หลายตัว ถ้าต้องหยุดอยากได้ handoff ที่ใครก็ทำต่อได้
 
-ทำเป็น 3 ส่วนแยกกัน ตามลำดับ: **1 → 2 → 3** (แต่ละส่วนเทสต์ผ่านและใช้ได้ด้วยตัวเอง)
+ทำเป็น 4 ส่วนแยกกัน ตามลำดับ: **1 → 4 → 2 → 3** (แต่ละส่วนเทสต์ผ่านและใช้ได้ด้วยตัวเอง; ส่วนที่ 4 เพิ่มเมื่อ 2026-11-05)
 
 ## Non-goals / Anti-goals
 
-- ไม่โหลด skill ฉบับเต็มเข้า agent และไม่เรียก Skill tool (เปลือง turn + context ทุกรอบ QA) — ไม่แตะกลไก `skills` / plugin `team` เดิม
+- ไม่เปิด skill ฉบับเต็มให้ role ใดเป็นค่าเริ่มต้น (เปลือง turn + context ทุกรอบ QA) — skill เต็มเป็น opt-in ต่อ role ผ่านกลไก `skills` / plugin `team` เดิม (ดูส่วนที่ 4)
 - ไม่สร้าง HTML, ไฟล์ spec/plan, browser companion, subagent review ใด ๆ จาก agent ในทีม
 - ไม่แก้ไฟล์ใน `~/.claude/skills/` (ฉบับย่อในทีมจึงไม่ sync ตามต้นฉบับ — ยอมรับ)
 - ไม่ให้ agent ตัวไหนเห็น `JIRA_TOKEN` และไม่เปิด `curl`/`python` เพิ่มให้ role ใด
@@ -116,6 +116,25 @@ SDK 0.3.278 ส่ง `SDKRateLimitEvent` (`type: 'rate_limit_event'`, `rate_lim
 - headless: หยุดเพราะโควตาสะท้อนใน exit/status
 - README อธิบายพฤติกรรมนี้
 - **ทดลองจริง** (ผู้ใช้เป็นคนรัน เพราะใช้โควตาจริง): รันงานเล็กแล้วดู `quota.event` ใน log ว่ามาจริงและค่าเป็นรูปแบบใด
+
+---
+
+## ส่วนที่ 4 — skill จาก skill-ai-naja เป็น option เปิดต่อ role (เพิ่ม 2026-11-05)
+
+ผู้ใช้อยากให้ agent เลือกใช้ skill ของ https://github.com/papawin1997/skill-ai-naja ได้ โดยวินัยย่อของส่วนที่ 1 ยังเป็นค่าเริ่มต้น และ skill เต็มเป็น opt-in
+
+- เก็บที่ `skills/skills/<ชื่อ>/` (plugin `team` เดิม) commit ใน repo ; copy `licenses/` ของต้นทางไป `skills/licenses/`
+- `npm run sync-skills` (`scripts/sync-skills.ts` + `scripts/sync-skills-lib.ts`): ต้นทาง `--from <path>` → `~/ai-skills` → clone `repo` แบบ shallow ลง temp (ไม่อ่าน `~/.claude/skills/` เพราะมี skill อื่นปน)
+- `skills/sync.json`: `{ repo, deny }` ; copy ทุกโฟลเดอร์ที่มี `SKILL.md` ยกเว้น deny (ทับทั้งโฟลเดอร์) ; `skills/synced.json` จดชื่อที่ sync มา เพื่อลบเฉพาะตัวที่ sync มาแล้วหายจากต้นทางหรือถูก deny ; skill ที่เขียนเองชื่อซ้ำไม่ถูกทับ (รายงาน skipped)
+- deny: tb-subagent-driven-development, tb-executing-plans, tb-using-git-worktrees, tb-finishing-a-development-branch, tb-requesting-code-review, tb-read-jira, web-pow, handoff
+- ค่าเริ่มต้นไม่เปิด skill ให้ role ใด ; README มีตัวอย่าง pm→tb-brainstorming, planning→tb-writing-plans, frontend/backend→tb-test-driven-development, qa→tb-scrutinize/review-angular พร้อมคำเตือนเรื่อง token
+- `buildQueryOptions`: role ที่เปิด skill ได้ย่อหน้า "Skills" ต่อท้าย system prompt (skill เป็นแนวทาง, ห้าม HTML/spec/plan/browser/server/subagent/commit/เรียก skill ต่อ, ผลลง JSON schema, ถามผู้ใช้ผ่าน schema, ขั้นที่ขัดให้ข้าม) ; role ที่ไม่เปิดได้ prompt เดิมทุกตัวอักษร
+- `loadConfig`: ชื่อ skill ที่ไม่ขึ้นต้น `team:` หรือไม่มี `skills/skills/<ชื่อ>/SKILL.md` → error ที่บอกรายชื่อที่มี
+
+เกณฑ์ตรวจรับส่วนที่ 4:
+- เทสต์ sync: deny, ข้ามโฟลเดอร์ไม่มี SKILL.md, ทับทั้งโฟลเดอร์, ลบเฉพาะที่เคย sync, ไม่ทับของเขียนเอง, เลือกต้นทาง
+- เทสต์ options: กฎ Skills เฉพาะ role ที่เปิด ; เทสต์ config: ชื่อผิด → error
+- `npm test`, `npm run typecheck` ผ่าน ; ผู้ใช้รัน `AGENT_TEAM_DEBUG=1` ยืนยันว่า `team:<ชื่อ>` โหลดได้จริง
 
 ---
 

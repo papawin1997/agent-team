@@ -160,7 +160,34 @@ export function mergeConfig(base: TeamConfig, override: unknown): TeamConfig {
   };
 }
 
-export function loadConfig(file: string = path.join(TEAM_ROOT, 'agent-team.config.json')): TeamConfig {
+/** ชื่อ skill ต้องเป็น team:<ชื่อ> และมี skills/skills/<ชื่อ>/SKILL.md — กันพิมพ์ผิดแล้ว agent ไม่ได้ skill แบบเงียบ ๆ */
+export function checkSkillNames(config: TeamConfig, pluginDir: string): void {
+  const dir = path.join(pluginDir, 'skills');
+  const available = fs.existsSync(dir)
+    ? fs
+        .readdirSync(dir)
+        .filter((n) => fs.existsSync(path.join(dir, n, 'SKILL.md')))
+        .sort()
+    : [];
+  const bad: string[] = [];
+  for (const role of ROLE_NAMES) {
+    for (const skill of config.roles[role].skills) {
+      const name = skill.startsWith('team:') ? skill.slice('team:'.length) : '';
+      if (!available.includes(name)) bad.push(`${role}: ${skill}`);
+    }
+  }
+  if (bad.length === 0) return;
+  const list =
+    available.length > 0 ? available.map((n) => `team:${n}`).join(', ') : '(ยังไม่มี — รัน npm run sync-skills)';
+  throw new Error(`agent-team.config.json เปิด skill ที่ไม่มี: ${bad.join(', ')}\nskill ที่มี: ${list}`);
+}
+
+export function loadConfig(
+  file: string = path.join(TEAM_ROOT, 'agent-team.config.json'),
+  pluginDir: string = SKILLS_PLUGIN_DIR,
+): TeamConfig {
   if (!fs.existsSync(file)) return DEFAULT_CONFIG;
-  return mergeConfig(DEFAULT_CONFIG, JSON.parse(fs.readFileSync(file, 'utf8')));
+  const config = mergeConfig(DEFAULT_CONFIG, JSON.parse(fs.readFileSync(file, 'utf8')));
+  checkSkillNames(config, pluginDir);
+  return config;
 }
