@@ -2,7 +2,7 @@ import { once } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ERASE_LINE } from '../src/activity';
-import { CliIO, type CliIOOptions, parseChoice } from '../src/cli';
+import { CHOICE_LABELS, CliIO, type CliIOOptions, parseChoice } from '../src/cli';
 
 const options = ['confirm', 'revise'] as const;
 
@@ -217,5 +217,12 @@ describe('CliIO', () => {
     await vi.waitFor(() => expect(written()).toContain('\x1b[1m\x1b[32m> \x1b[39m\x1b[22m'));
     input.write('ok\n');
     expect(await answer).toBe('ok');
+  });
+});
+
+describe('CHOICE_LABELS', () => {
+  it('มีป้ายของ handoff (คำถามโควตา) และเลือกด้วยป้ายนั้นได้', () => {
+    expect(CHOICE_LABELS.handoff).toBe('หยุดแล้วเขียนไฟล์ส่งต่องาน');
+    expect(parseChoice('หยุดแล้วเขียนไฟล์ส่งต่องาน', ['handoff', 'continue'] as const)).toBe('handoff');
   });
 });

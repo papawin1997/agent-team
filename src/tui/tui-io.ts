@@ -1,0 +1,94 @@
+import type { StatusSink } from '../activity';
+import { CHOICE_LABELS, EOF_MESSAGE } from '../cli';
+import type { UserIO } from '../deps';
+import { type SayKind, type Styler, styler, styleSay } from '../style';
+import type { MenuOption } from './menu';
+import { type Mounted, type PromptAnswer, type PromptSpec, ScreenStore } from './screen';
+
+export interface TuiIOOptions {
+  store?: ScreenStore;
+  /** ใส่สี ANSI ใน log (ค่าเริ่มต้น true) */
+  color?: boolean;
+  /** เปิดจอ (index ใช้ mountApp ของ Ink ; เทสต์ส่งตัวปลอม) */
+  mount: (store: ScreenStore) => Mounted;
+  now?: () => number;
+}
+
+/** prompt ของ readline มี "> " ท้าย — UI ใหม่มีช่องพิมพ์อยู่แล้วจึงตัดออก */
+export function cleanPrompt(prompt: string): string {
+  return prompt.replace(/\s*>\s*$/, '').trimEnd();
+}
+
+export function menuOptions(options: readonly string[]): MenuOption[] {
+  return options.map((value) => {
+    const label = CHOICE_LABELS[value];
+    return label ? { value, label } : { value };
+  });
+}
+
+/** UserIO + StatusSink ของ UI ใหม่: เขียนสถานะลง ScreenStore และรอคำตอบจากจอ */
+export class TuiIO implements UserIO {
+  readonly store: ScreenStore;
+  readonly status: StatusSink;
+  private readonly s: Styler;
+  private readonly mounted: Mounted;
+  private closed = false;
+
+  constructor(o: TuiIOOptions) {
+    this.store = o.store ?? new ScreenStore();
+    this.s = styler(o.color ?? true);
+    const now = o.now ?? Date.now;
+    this.status = {
+      start: (label) => this.store.setActivity({ label, startedAt: now() }),
+      update: (detail) => {
+        const current = this.store.getState().activity;
+        if (current) this.store.setActivity({ ...current, detail });
+      },
+      stop: () => this.store.setActivity(undefined),
+    };
+    this.mounted = o.mount(this.store);
+  }
+
+  say(text: string, kind?: SayKind): void {
+    this.store.print(styleSay(text, kind, this.s));
+  }
+
+  async ask(prompt: string): Promise<string> {
+    const answer = await this.request({ kind: 'text', prompt: cleanPrompt(prompt) });
+    const text = ('text' in answer ? answer.text : answer.choice).trim();
+    this.store.print(this.s.dim(`> ${text}`));
+    return text;
+  }
+
+  async chooseOrText<T extends string>(prompt: string, options: readonly T[]): Promise<T | { text: string }> {
+    const answer = await this.request({ kind: 'menu', prompt: cleanPrompt(prompt), options: menuOptions(options), allowText: true });
+    if ('choice' in answer) return this.chosen(answer.choice as T);
+    const text = answer.text.trim();
+    this.store.print(this.s.dim(`> ${text}`));
+    return { text };
+  }
+
+  async choose<T extends string>(prompt: string, options: readonly T[]): Promise<T> {
+    const answer = await this.request({ kind: 'menu', prompt: cleanPrompt(prompt), options: menuOptions(options), allowText: false });
+    if (!('choice' in answer)) throw new Error('คำถามนี้ต้องเลือกจากตัวเลือกเท่านั้น');
+    return this.chosen(answer.choice as T);
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.store.close(new Error(EOF_MESSAGE));
+    this.mounted.unmount();
+  }
+
+  private chosen<T extends string>(choice: T): T {
+    const label = CHOICE_LABELS[choice];
+    this.store.print(this.s.dim(`เลือก: ${label ?? choice} (${choice})`));
+    return choice;
+  }
+
+  private request(spec: PromptSpec): Promise<PromptAnswer> {
+    if (this.closed) return Promise.reject(new Error(EOF_MESSAGE));
+    return this.store.request(spec);
+  }
+}

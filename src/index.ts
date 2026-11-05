@@ -3,7 +3,6 @@ import * as path from 'node:path';
 import { parseArgs } from './args';
 import { HandoffStore } from './ask/handoff-store';
 import { askJobPrompt, runAsk } from './ask/session';
-import { CliIO } from './cli';
 import { QuotaStopError } from './errors';
 import { isHeadlessCommand, parseHeadlessCommand } from './headless/args';
 import { runHeadlessCommand } from './headless/commands';
@@ -19,6 +18,7 @@ import { selectProject } from './project-menu';
 import { ProjectRegistry, teamRootError } from './projects';
 import { guardAdvisor, guardRunner, QuotaGate } from './quota-gate';
 import { announceRun, createRunContext } from './run-context';
+import { createTerminalIO } from './tui/select';
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
@@ -35,8 +35,9 @@ async function main(): Promise<void> {
     process.exitCode = await runHeadless(args);
     return;
   }
-  const cli = new CliIO();
-  // CliIO ส่ง Ctrl+C ต่อเป็น process 'SIGINT' แต่ handler หลักยังไม่ถูกตั้งตอนอยู่ในเมนูโปรเจกต์
+  // terminal จริง = หน้าจอแบบใหม่ (Ink) ; pipe หรือ AGENT_TEAM_UI=classic = CliIO เดิม
+  const cli = createTerminalIO();
+  // ทั้งสองแบบส่ง Ctrl+C ต่อเป็น process 'SIGINT' แต่ handler หลักยังไม่ถูกตั้งตอนอยู่ในเมนูโปรเจกต์
   const quitBeforeStart = (): void => {
     cli.close();
     process.exit(130);

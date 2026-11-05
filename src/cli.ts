@@ -4,16 +4,18 @@ import { Spinner } from './activity';
 import type { UserIO } from './deps';
 import { colorEnabled, plainText, type SayKind, type Styler, styler, styleSay, stylePrompt } from './style';
 
-const LABELS: Record<string, string> = {
+/** ป้ายภาษาไทยของตัวเลือก (ใช้ทั้งเมนูแบบเดิมและ UI ใหม่) */
+export const CHOICE_LABELS: Record<string, string> = {
   confirm: 'ยืนยัน',
   revise: 'ขอแก้',
   accept: 'รับงาน',
   change: 'ขอแก้/เพิ่ม',
   continue: 'ทำต่อ',
   abort: 'ยกเลิก',
+  handoff: 'หยุดแล้วเขียนไฟล์ส่งต่องาน',
 };
 
-const EOF_MESSAGE = 'stdin ถูกปิด (EOF) — หยุดการทำงาน';
+export const EOF_MESSAGE = 'stdin ถูกปิด (EOF) — หยุดการทำงาน';
 
 export function parseChoice<T extends string>(input: string, options: readonly T[]): T | undefined {
   const text = input.trim().replace(/[.)]+$/, '');
@@ -22,7 +24,7 @@ export function parseChoice<T extends string>(input: string, options: readonly T
     if (n >= 1 && n <= options.length) return options[n - 1];
   }
   const lower = text.toLowerCase();
-  return options.find((o) => o.toLowerCase() === lower || LABELS[o] === text);
+  return options.find((o) => o.toLowerCase() === lower || CHOICE_LABELS[o] === text);
 }
 
 export interface CliIOOptions {
@@ -89,7 +91,7 @@ export class CliIO implements UserIO {
   }
 
   async chooseOrText<T extends string>(prompt: string, options: readonly T[]): Promise<T | { text: string }> {
-    const menu = options.map((o, i) => `${i + 1}) ${o}${LABELS[o] ? ` (${LABELS[o]})` : ''}`).join('   ');
+    const menu = options.map((o, i) => `${i + 1}) ${o}${CHOICE_LABELS[o] ? ` (${CHOICE_LABELS[o]})` : ''}`).join('   ');
     const text = `${prompt}\n${menu}\nหรือพิมพ์คำถาม/ความเห็นถึง PM ก่อนตัดสินใจก็ได้\n> `;
     const answer = await this.ask(this.style ? `\n${text}` : text);
     const choice = parseChoice(answer, options);
