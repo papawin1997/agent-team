@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatQuotaAlert, QuotaMonitor, type RateLimitInfo, usingOverage } from '../src/quota';
+import { formatQuotaAlert, formatQuotaShort, type QuotaBadge, QuotaMonitor, type RateLimitInfo, usingOverage } from '../src/quota';
 
 const now = new Date(2026, 10, 5, 12, 0);
 const at = (h: number, m: number, day = 5) => new Date(2026, 10, day, h, m).getTime() / 1000;
@@ -57,18 +57,43 @@ describe('usingOverage', () => {
     [{ overageInUse: true }, true],
     [{ isUsingOverage: true }, true],
     [{ rateLimitType: 'overage' }, true],
-    [{ overageStatus: 'allowed_warning' as const }, true],
-    [{ overageStatus: 'rejected' as const }, true],
+    // overageStatus บอกแค่ว่า "ถ้าจะใช้" extra usage ได้หรือไม่ — ไม่ได้แปลว่ากำลังใช้
+    [{ overageStatus: 'allowed_warning' as const }, false],
+    [{ overageStatus: 'rejected' as const }, false],
     [{ overageStatus: 'allowed' as const }, false],
     [{}, false],
   ])('%j -> %s', (over, expected) => {
     expect(usingOverage({ status: 'allowed', ...over })).toBe(expected);
+  });
+
+  it('event จริง (2026-11-05): extra usage ถูกปิดระดับองค์กร = ไม่เตือน', () => {
+    const m = new QuotaMonitor();
+    m.record({
+      status: 'allowed',
+      resetsAt: 1793884200,
+      rateLimitType: 'five_hour',
+      overageStatus: 'rejected',
+      isUsingOverage: false,
+      unifiedWindows: {
+        five_hour: { utilization: 0.25, resetsAt: 1793884200 },
+        seven_day: { utilization: 0.28, resetsAt: 1793966400 },
+      },
+    });
+    expect(m.pending()).toBeUndefined();
   });
 });
 
 describe('formatQuotaAlert', () => {
   it('warning: ประเภทภาษาไทย เปอร์เซ็นต์ และเวลารีเซ็ตท้องถิ่น', () => {
     expect(formatQuotaAlert({ kind: 'warning', info: warning() }, now)).toBe('⚠ โควตา 5 ชม. · ใช้ไป 85% · รีเซ็ต 16:30');
+  });
+
+  it('ไม่มี utilization ชั้นบน: ใช้ค่าจาก unifiedWindows ของประเภทโควตานั้น (รูปแบบ event จริง)', () => {
+    const info = warning({
+      utilization: undefined,
+      unifiedWindows: { five_hour: { utilization: 0.87 }, seven_day: { utilization: 0.3 } },
+    });
+    expect(formatQuotaAlert({ kind: 'warning', info }, now)).toBe('⚠ โควตา 5 ชม. · ใช้ไป 87% · รีเซ็ต 16:30');
   });
 
   it('utilization เป็นเปอร์เซ็นต์อยู่แล้ว (> 1) และ resetsAt เป็นมิลลิวินาที', () => {
@@ -88,5 +113,36 @@ describe('formatQuotaAlert', () => {
     expect(formatQuotaAlert({ kind: 'rejected', info: { status: 'rejected', rateLimitType: 'five_hour', resetsAt: at(16, 30) } }, now)).toBe(
       'โควตาเต็มแล้ว (โควตา 5 ชม.) · รีเซ็ต 16:30',
     );
+  });
+});
+
+describe('formatQuotaShort', () => {
+  it.each([
+    [
+      { status: 'allowed', rateLimitType: 'five_hour', unifiedWindows: { five_hour: { utilization: 0.25 } } },
+      { text: 'โควตา 5 ชม. 25%', tone: 'normal' },
+    ],
+    [{ status: 'allowed_warning', rateLimitType: 'seven_day', utilization: 0.9 }, { text: 'โควตา 7 วัน 90%', tone: 'warn' }],
+    [{ status: 'allowed_warning' }, { text: 'โควตา', tone: 'warn' }],
+    [{ status: 'allowed', isUsingOverage: true }, { text: 'extra usage (คิดเงินเพิ่ม)', tone: 'overage' }],
+    [{ status: 'rejected', rateLimitType: 'five_hour', isUsingOverage: true }, { text: 'โควตา 5 ชม. เต็มแล้ว', tone: 'danger' }],
+  ] as Array<[RateLimitInfo, QuotaBadge]>)('%j', (info, badge) => {
+    expect(formatQuotaShort(info)).toEqual(badge);
+  });
+
+  it('allowed ที่ไม่มีเปอร์เซ็นต์: ไม่แสดง', () => {
+    expect(formatQuotaShort({ status: 'allowed' })).toBeUndefined();
+  });
+});
+
+describe('QuotaMonitor.subscribe', () => {
+  it('แจ้งทุกครั้งที่ record จนกว่าจะยกเลิก', () => {
+    const m = new QuotaMonitor();
+    const seen: string[] = [];
+    const off = m.subscribe((info) => seen.push(info.status));
+    m.record({ status: 'allowed' });
+    off();
+    m.record({ status: 'rejected' });
+    expect(seen).toEqual(['allowed']);
   });
 });

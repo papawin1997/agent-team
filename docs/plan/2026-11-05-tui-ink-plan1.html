@@ -1,0 +1,1422 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>UI terminal แบบ Claude CLI (plan 1) Implementation Plan</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; line-height: 1.55;
+         max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1f2933;
+         background: #f5f7fa; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  pre { background: #1f2933; color: #e4e7eb; padding: .9rem 1rem;
+        border-radius: 6px; overflow-x: auto; }
+  code { background: #e4e7eb; padding: .1rem .35rem; border-radius: 4px; }
+  pre code { background: none; padding: 0; color: inherit; }
+  .frame { border-left: 6px solid; border-radius: 8px; padding: 1rem 1.25rem;
+           margin: 1.25rem 0; background: #ffffff;
+           box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .frame-header     { border-color: #2563eb; background: #eff6ff; }  /* blue  */
+  .frame-constraints{ border-color: #d97706; background: #fffbeb; }  /* amber */
+  .frame-task       { border-color: #059669; background: #ecfdf5; }  /* green */
+  .frame h1, .frame h2, .frame h3 { margin-top: 0; }
+  .note { border-color: #7c3aed; background: #f5f3ff; }              /* violet */
+  .step { display: flex; gap: .5rem; align-items: baseline;
+          margin: .75rem 0 .25rem; }
+  .step input { transform: scale(1.2); margin-top: .15rem; }
+  .meta { color: #52606d; font-size: .9rem; }
+</style>
+</head>
+<body>
+
+<div class="frame frame-header">
+  <h1>UI terminal แบบ Claude CLI — plan 1: โครง Ink, ช่องพิมพ์ไทย, เมนูลูกศร Implementation Plan</h1>
+  <p><strong>เป้าหมาย:</strong> เมื่อรัน agent-team ใน terminal จริง ให้ใช้หน้าจอแบบ Claude CLI (log ถาวรด้านบน, บรรทัดสถานะ agent, ช่องพิมพ์มีกรอบที่พิมพ์ไทยถูกต้อง, เมนูลูกศรที่มีแถวพิมพ์ถึง PM) แทน readline เดิม โดยตรรกะของทีมไม่เปลี่ยน และยังมีโหมดเดิม (classic) เป็นทางหนี</p>
+  <p><strong>สถาปัตยกรรม:</strong> ตรรกะล้วนแยกเป็น <code>src/tui/text.ts</code> (ความกว้าง/grapheme), <code>editor.ts</code> (ช่องพิมพ์), <code>menu.ts</code> (เมนู) ; <code>ScreenStore</code> (<code>screen.ts</code>) เก็บสถานะจอ และ <code>TuiIO</code> (<code>tui-io.ts</code>) ใช้ทั้ง <code>UserIO</code> และ <code>StatusSink</code> โดยไม่รู้จัก Ink ; <code>app.ts</code> เป็นส่วนวาดจอด้วย Ink อ่าน store แล้วส่งคำตอบกลับ ; <code>select.ts</code> เลือก UI ตอนเริ่ม (<code>TuiIO</code> หรือ <code>CliIO</code> เดิม) แล้ว <code>index.ts</code> ใช้แทน <code>new CliIO()</code></p>
+  <p><strong>Tech Stack:</strong> TypeScript (ไม่ใช้ JSX — ใช้ <code>React.createElement</code>), <code>ink@5.2.1</code>, <code>react@18.3.1</code>, vitest, <code>ink-testing-library@4.0.0</code>, <code>Intl.Segmenter</code> ของ Node</p>
+  <p class="meta">Design: ตกลงใน conversation 2026-11-05 (ส่วนที่ 1–2 ของ UI ใหม่) ; ต้นแบบที่ผู้ใช้ลองแล้ว: วิธีวัดความกว้าง "A" ตรงกับ terminal และกรอบไม่เบี้ยว ; plan 2 (แถบสถานะ) และ plan 3 (บล็อก agent) เขียนแยกภายหลัง</p>
+</div>
+
+<div class="frame note">
+  <strong>For agentic workers:</strong> REQUIRED SUB-SKILL: Use
+  tb-subagent-driven-development (recommended) or
+  tb-executing-plans to implement this plan task-by-task. Steps keep
+  the <code>- [ ]</code> marker next to each checkbox for tracking.
+</div>
+
+<div class="frame frame-constraints">
+  <h2>Global Constraints</h2>
+  <ul>
+    <li>dependency ใหม่ปักเวอร์ชันตรงตัว: <code>ink@5.2.1</code>, <code>react@18.3.1</code> (dependencies) ; <code>@types/react@18.3.12</code>, <code>ink-testing-library@4.0.0</code> (devDependencies) — ห้ามเพิ่มอย่างอื่น</li>
+    <li>ไม่ใช้ JSX: ไฟล์ทั้งหมดเป็น <code>.ts</code> และใช้ <code>const h = React.createElement</code> — ไม่แก้ <code>tsconfig.json</code> และ <code>vitest.config.ts</code> (เทสต์อยู่ใน <code>tests/tui/*.test.ts</code>)</li>
+    <li>ความกว้างตัวอักษร: grapheme ด้วย <code>Intl.Segmenter</code> ; ความกว้าง = ผลรวมราย code point โดย <code>\p{Mn}</code>, <code>\p{Me}</code>, <code>\p{Cf}</code> และ control = 0, East Asian wide = 2, emoji (Extended_Pictographic) = 2 ต่อ grapheme (วิธี A ที่ผ่านไม้บรรทัด: <code>ทำหน้า login</code> = 11, <code>น้ำ</code> = 2, <code>กำลังทำงาน</code> = 9)</li>
+    <li>← → เลื่อนทีละ grapheme ; Backspace (ทั้ง <code>key.backspace</code> และ <code>key.delete</code> ของ Ink) ลบทีละ code point ; <code>\</code> แล้ว Enter = ขึ้นบรรทัดใหม่ ; paste ที่มี CR/CRLF = ขึ้นบรรทัด ไม่ส่ง</li>
+    <li>ใช้ UI ใหม่เมื่อ stdin และ stdout เป็น TTY และ stdin มี <code>setRawMode</code> และไม่ได้ตั้ง <code>AGENT_TEAM_UI=classic</code> ; สร้าง UI ใหม่ไม่สำเร็จ = เตือนแล้วใช้ <code>CliIO</code> เดิม</li>
+    <li>Ctrl+C ใน UI ใหม่ = <code>process.emit('SIGINT')</code> เหมือน <code>CliIO</code> (ปิด <code>exitOnCtrlC</code> ของ Ink) ; <code>close()</code> ต้องทำให้คำถามที่ค้าง reject ด้วยข้อความ EOF เดิม <code>stdin ถูกปิด (EOF) — หยุดการทำงาน</code></li>
+    <li>ไม่แก้ phases, orchestrator, runner, headless, logview ; ข้อความบนจอเป็นภาษาไทย ; เทสต์ห้ามต้องใช้ TTY จริงหรือเรียก SDK</li>
+    <li>ห้าม commit — ผู้ใช้ตรวจ diff และ commit เอง</li>
+  </ul>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 1: ติดตั้ง dependency และตรรกะตัวอักษร (<code>src/tui/text.ts</code>)</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>package.json</code>, <code>package-lock.json</code> (ผ่าน npm)</li>
+    <li>สร้าง: <code>src/tui/text.ts</code></li>
+    <li>เทสต์: <code>tests/tui/text.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ส่งต่อ: <code>graphemes(text: string): string[]</code> ; <code>displayWidth(text: string): number</code> ; <code>prevBoundary(text: string, cursor: number): number</code> ; <code>nextBoundary(text: string, cursor: number): number</code> ; <code>deleteBackward(text: string, cursor: number): { text: string; cursor: number }</code> ; <code>offsetAtWidth(line: string, column: number): number</code></li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: ติดตั้ง dependency</strong></span></p>
+  <p>รันที่ราก repo:</p>
+<pre><code>npm install --save-exact ink@5.2.1 react@18.3.1
+npm install --save-exact -D @types/react@18.3.12 ink-testing-library@4.0.0</code></pre>
+  <p>คาดหวัง: <code>package.json</code> มี <code>"ink": "5.2.1"</code>, <code>"react": "18.3.1"</code> ใน dependencies และ <code>"@types/react": "18.3.12"</code>, <code>"ink-testing-library": "4.0.0"</code> ใน devDependencies ; <code>npm test</code> ยังผ่านเท่าเดิม</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>สร้าง <code>tests/tui/text.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import { deleteBackward, displayWidth, graphemes, nextBoundary, offsetAtWidth, prevBoundary } from '../../src/tui/text';
+
+describe('graphemes', () =&gt; {
+  it('สระบนล่างและวรรณยุกต์อยู่กลุ่มเดียวกับพยัญชนะ', () =&gt; {
+    expect(graphemes('ที่นี่')).toEqual(['ที่', 'นี่']);
+    expect(graphemes('น้ำ')).toEqual(['น้ำ']);
+    expect(graphemes('')).toEqual([]);
+  });
+});
+
+describe('displayWidth (วิธี A ที่ผ่านไม้บรรทัด)', () =&gt; {
+  it.each([
+    ['', 0],
+    ['abc', 3],
+    ['ทำหน้า login', 11],
+    ['น้ำ', 2],
+    ['กำลังทำงาน', 9],
+    ['ที่นี่มีน้ำไหม', 8],
+    ['ผู้ใช้', 3],
+    ['日本', 4],
+    ['👍', 2],
+  ])('%s -&gt; %i', (text, width) =&gt; {
+    expect(displayWidth(text)).toBe(width);
+  });
+});
+
+describe('prevBoundary / nextBoundary', () =&gt; {
+  it('เลื่อนทีละ grapheme ไม่หยุดกลางสระหรือวรรณยุกต์', () =&gt; {
+    expect(prevBoundary('ที่นี่', 6)).toBe(3);
+    expect(prevBoundary('ที่นี่', 3)).toBe(0);
+    expect(prevBoundary('ที่นี่', 0)).toBe(0);
+    expect(nextBoundary('ที่นี่', 0)).toBe(3);
+    expect(nextBoundary('ที่นี่', 6)).toBe(6);
+  });
+});
+
+describe('deleteBackward', () =&gt; {
+  it('ลบทีละ code point แบบคีย์บอร์ดไทย (วรรณยุกต์ก่อน แล้วสระ แล้วพยัญชนะ)', () =&gt; {
+    expect(deleteBackward('ที่', 3)).toEqual({ text: 'ที', cursor: 2 });
+    expect(deleteBackward('ที', 2)).toEqual({ text: 'ท', cursor: 1 });
+    expect(deleteBackward('กขค', 2)).toEqual({ text: 'กค', cursor: 1 });
+    expect(deleteBackward('ก', 0)).toEqual({ text: 'ก', cursor: 0 });
+  });
+
+  it('emoji (surrogate pair) ลบทั้งตัว', () =&gt; {
+    expect(deleteBackward('a👍', 3)).toEqual({ text: 'a', cursor: 1 });
+  });
+});
+
+describe('offsetAtWidth', () =&gt; {
+  it('หา offset ที่ขอบ grapheme ตามความกว้างที่ต้องการ', () =&gt; {
+    expect(offsetAtWidth('ทำหน้า', 2)).toBe(2);
+    expect(offsetAtWidth('ทำหน้า', 1)).toBe(0);
+    expect(offsetAtWidth('ab', 5)).toBe(2);
+    expect(offsetAtWidth('', 3)).toBe(0);
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/tui/text.test.ts</code><br>
+     คาดหวัง: FAIL ด้วย "Cannot find module '../../src/tui/text'"</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: เขียน implementation</strong></span></p>
+  <p>สร้าง <code>src/tui/text.ts</code>:</p>
+<pre><code>// ตรรกะตัวอักษรของ UI ใหม่: grapheme และความกว้างที่ตรงกับ terminal (วิธี A — ผู้ใช้ยืนยันด้วยไม้บรรทัดแล้ว)
+// ต่างจาก string-width ของ Ink ตรงสระอำ: "น้ำ" กว้าง 2 ช่อง (น + ำ) ไม่ใช่ 1
+
+const segmenter = new Intl.Segmenter('th', { granularity: 'grapheme' });
+const ZERO_WIDTH = /^[\p{Mn}\p{Me}\p{Cf}]$/u;
+const PICTOGRAPH = /\p{Extended_Pictographic}/u;
+
+export function graphemes(text: string): string[] {
+  return Array.from(segmenter.segment(text), (s) =&gt; s.segment);
+}
+
+function isWide(cp: number): boolean {
+  return (
+    (cp &gt;= 0x1100 &amp;&amp; cp &lt;= 0x115f) ||
+    (cp &gt;= 0x2e80 &amp;&amp; cp &lt;= 0xa4cf) ||
+    (cp &gt;= 0xac00 &amp;&amp; cp &lt;= 0xd7a3) ||
+    (cp &gt;= 0xf900 &amp;&amp; cp &lt;= 0xfaff) ||
+    (cp &gt;= 0xfe30 &amp;&amp; cp &lt;= 0xfe4f) ||
+    (cp &gt;= 0xff00 &amp;&amp; cp &lt;= 0xff60) ||
+    (cp &gt;= 0xffe0 &amp;&amp; cp &lt;= 0xffe6) ||
+    (cp &gt;= 0x20000 &amp;&amp; cp &lt;= 0x3fffd)
+  );
+}
+
+function codePointWidth(ch: string): number {
+  const cp = ch.codePointAt(0) ?? 0;
+  if (cp &lt; 0x20 || (cp &gt;= 0x7f &amp;&amp; cp &lt; 0xa0)) return 0;
+  if (ZERO_WIDTH.test(ch)) return 0;
+  return isWide(cp) ? 2 : 1;
+}
+
+/** จำนวนช่องบนจอ: สระบน/ล่าง วรรณยุกต์ = 0, สระอำ = 1, อักษรจีน/emoji = 2 */
+export function displayWidth(text: string): number {
+  let width = 0;
+  for (const g of graphemes(text)) {
+    width += PICTOGRAPH.test(g) ? 2 : Array.from(g).reduce((sum, ch) =&gt; sum + codePointWidth(ch), 0);
+  }
+  return width;
+}
+
+/** ขอบ grapheme ก่อนหน้า (cursor ต้องอยู่ที่ขอบ grapheme อยู่แล้ว) */
+export function prevBoundary(text: string, cursor: number): number {
+  let pos = 0;
+  for (const g of graphemes(text.slice(0, cursor))) {
+    if (pos + g.length &gt;= cursor) return pos;
+    pos += g.length;
+  }
+  return 0;
+}
+
+export function nextBoundary(text: string, cursor: number): number {
+  const g = graphemes(text.slice(cursor))[0];
+  return g === undefined ? cursor : cursor + g.length;
+}
+
+/** Backspace แบบคีย์บอร์ดไทย: ลบทีละ code point */
+export function deleteBackward(text: string, cursor: number): { text: string; cursor: number } {
+  if (cursor === 0) return { text, cursor };
+  const head = Array.from(text.slice(0, cursor));
+  head.pop();
+  const kept = head.join('');
+  return { text: kept + text.slice(cursor), cursor: kept.length };
+}
+
+/** offset ในบรรทัดที่ขอบ grapheme ซึ่งความกว้างก่อนหน้าไม่เกิน column (ใช้ตอน ↑↓ ข้ามบรรทัด) */
+export function offsetAtWidth(line: string, column: number): number {
+  let width = 0;
+  let pos = 0;
+  for (const g of graphemes(line)) {
+    const w = displayWidth(g);
+    if (width + w &gt; column) return pos;
+    width += w;
+    pos += g.length;
+  }
+  return pos;
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/tui/text.test.ts</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS และไม่มี type error</p>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 2: ตรรกะช่องพิมพ์ (<code>src/tui/editor.ts</code>)</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/tui/editor.ts</code></li>
+    <li>เทสต์: <code>tests/tui/editor.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: <code>deleteBackward</code>, <code>displayWidth</code>, <code>nextBoundary</code>, <code>offsetAtWidth</code>, <code>prevBoundary</code> (Task 1)</li>
+    <li>ส่งต่อ:
+      <ul>
+        <li><code>interface KeyInput { input: string; return?: boolean; escape?: boolean; tab?: boolean; backspace?: boolean; delete?: boolean; leftArrow?: boolean; rightArrow?: boolean; upArrow?: boolean; downArrow?: boolean; ctrl?: boolean; meta?: boolean }</code> (รูปเดียวกับ <code>Key</code> ของ Ink บวก <code>input</code>)</li>
+        <li><code>interface EditorState { value: string; cursor: number; history: readonly string[]; historyIndex: number }</code></li>
+        <li><code>emptyEditor(history?: readonly string[]): EditorState</code></li>
+        <li><code>interface EditorResult { state: EditorState; submit?: string }</code> ; <code>editorKey(state: EditorState, key: KeyInput): EditorResult</code></li>
+      </ul>
+    </li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>สร้าง <code>tests/tui/editor.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import { editorKey, type EditorState, emptyEditor, type KeyInput } from '../../src/tui/editor';
+
+const LEFT = { leftArrow: true };
+const RIGHT = { rightArrow: true };
+const UP = { upArrow: true };
+const DOWN = { downArrow: true };
+const RETURN = { input: '\r', return: true };
+const BACKSPACE = { backspace: true };
+
+/** ป้อนทีละปุ่ม: string = พิมพ์/paste ข้อความนั้น, object = ปุ่มพิเศษ */
+function type(state: EditorState, ...keys: Array&lt;string | Partial&lt;KeyInput&gt;&gt;): EditorState {
+  return keys.reduce&lt;EditorState&gt;(
+    (acc, k) =&gt; editorKey(acc, typeof k === 'string' ? { input: k } : { input: '', ...k }).state,
+    state,
+  );
+}
+
+describe('editorKey', () =&gt; {
+  it('พิมพ์ไทยแล้วเลื่อน cursor ทีละตัวอักษร ไม่หยุดกลางสระหรือวรรณยุกต์', () =&gt; {
+    const s = type(emptyEditor(), 'ที่', 'นี่');
+    expect(s).toMatchObject({ value: 'ที่นี่', cursor: 6 });
+    expect(type(s, LEFT).cursor).toBe(3);
+    expect(type(s, LEFT, LEFT).cursor).toBe(0);
+    expect(type(s, LEFT, LEFT, RIGHT).cursor).toBe(3);
+  });
+
+  it('Backspace ลบทีละ code point ทั้ง key.backspace และ key.delete', () =&gt; {
+    const s = type(emptyEditor(), 'ที่');
+    expect(type(s, BACKSPACE).value).toBe('ที');
+    expect(type(s, { delete: true }, { delete: true }).value).toBe('ท');
+  });
+
+  it('พิมพ์แทรกที่ตำแหน่ง cursor', () =&gt; {
+    expect(type(emptyEditor(), 'ac', LEFT, 'b')).toMatchObject({ value: 'abc', cursor: 2 });
+  });
+
+  it('paste ที่มี CRLF/CR กลายเป็นขึ้นบรรทัด ไม่ส่งข้อความ', () =&gt; {
+    const r = editorKey(emptyEditor(), { input: 'บรรทัดแรก\r\nบรรทัดสอง\rสาม' });
+    expect(r.submit).toBeUndefined();
+    expect(r.state.value).toBe('บรรทัดแรก\nบรรทัดสอง\nสาม');
+  });
+
+  it('\\ แล้ว Enter = ขึ้นบรรทัดใหม่ ไม่ส่ง', () =&gt; {
+    const r = editorKey(type(emptyEditor(), 'ab\\'), RETURN);
+    expect(r.submit).toBeUndefined();
+    expect(r.state).toMatchObject({ value: 'ab\n', cursor: 3 });
+  });
+
+  it('Enter ส่งข้อความ ล้างช่อง และเก็บประวัติ (ไม่เก็บข้อความว่างหรือซ้ำกับล่าสุด)', () =&gt; {
+    const r = editorKey(type(emptyEditor(), 'ทำหน้า login'), RETURN);
+    expect(r.submit).toBe('ทำหน้า login');
+    expect(r.state).toMatchObject({ value: '', cursor: 0, history: ['ทำหน้า login'], historyIndex: -1 });
+    const again = editorKey(type(r.state, 'ทำหน้า login'), RETURN);
+    expect(again.state.history).toEqual(['ทำหน้า login']);
+    const empty = editorKey(again.state, RETURN);
+    expect(empty.submit).toBe('');
+    expect(empty.state.history).toEqual(['ทำหน้า login']);
+  });
+
+  it('↑↓ เรียกประวัติ ใหม่สุดก่อน แล้วกลับเป็นช่องว่าง', () =&gt; {
+    const s = emptyEditor(['ล่าสุด', 'เก่า']);
+    expect(type(s, UP)).toMatchObject({ value: 'ล่าสุด', cursor: 'ล่าสุด'.length });
+    expect(type(s, UP, UP).value).toBe('เก่า');
+    expect(type(s, UP, UP, UP).value).toBe('เก่า');
+    expect(type(s, UP, DOWN).value).toBe('');
+  });
+
+  it('หลายบรรทัด: ↑↓ เลื่อนข้ามบรรทัดโดยคงคอลัมน์ตามความกว้างจริง', () =&gt; {
+    const s = type(emptyEditor(['เก่า']), 'ทำงาน\nab');
+    const up = type(s, UP);
+    expect(up.value).toBe('ทำงาน\nab');
+    expect(up.cursor).toBe(2); // หลัง "ทำ" ซึ่งกว้าง 2 ช่องเท่ากับ "ab"
+    expect(type(up, DOWN).cursor).toBe('ทำงาน\nab'.length);
+  });
+
+  it('Ctrl+A / Ctrl+E ไปต้น/ท้ายบรรทัดปัจจุบัน ; Esc ล้าง', () =&gt; {
+    const s = type(emptyEditor(), 'ab\ncd', LEFT);
+    expect(type(s, { input: 'a', ctrl: true }).cursor).toBe(3);
+    expect(type(s, { input: 'a', ctrl: true }, { input: 'e', ctrl: true }).cursor).toBe(5);
+    expect(type(s, { escape: true })).toMatchObject({ value: '', cursor: 0 });
+  });
+
+  it('Tab และปุ่มที่กด Ctrl/Meta ไม่ถูกพิมพ์ลงช่อง', () =&gt; {
+    expect(type(emptyEditor(), { input: '\t', tab: true }, { input: 'x', ctrl: true }, { input: 'y', meta: true }).value).toBe('');
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/tui/editor.test.ts</code><br>
+     คาดหวัง: FAIL ด้วย "Cannot find module '../../src/tui/editor'"</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p>สร้าง <code>src/tui/editor.ts</code>:</p>
+<pre><code>import { deleteBackward, displayWidth, nextBoundary, offsetAtWidth, prevBoundary } from './text';
+
+/** ปุ่มที่กด: รูปเดียวกับ Key ของ Ink บวกตัวอักษรที่พิมพ์ (paste = ทั้งก้อน) */
+export interface KeyInput {
+  input: string;
+  return?: boolean;
+  escape?: boolean;
+  tab?: boolean;
+  backspace?: boolean;
+  delete?: boolean;
+  leftArrow?: boolean;
+  rightArrow?: boolean;
+  upArrow?: boolean;
+  downArrow?: boolean;
+  ctrl?: boolean;
+  meta?: boolean;
+}
+
+export interface EditorState {
+  value: string;
+  /** offset ใน value (อยู่ที่ขอบ grapheme เสมอ) */
+  cursor: number;
+  /** ข้อความที่เคยส่ง ใหม่สุดก่อน (จำเฉพาะในการรันนี้) */
+  history: readonly string[];
+  /** -1 = ไม่ได้อยู่ในประวัติ */
+  historyIndex: number;
+}
+
+export interface EditorResult {
+  state: EditorState;
+  /** มีค่าเมื่อกด Enter ส่งข้อความ */
+  submit?: string;
+}
+
+export const emptyEditor = (history: readonly string[] = []): EditorState =&gt; ({ value: '', cursor: 0, history, historyIndex: -1 });
+
+const lineStart = (value: string, cursor: number): number =&gt; value.lastIndexOf('\n', cursor - 1) + 1;
+const lineEnd = (value: string, cursor: number): number =&gt; {
+  const nl = value.indexOf('\n', cursor);
+  return nl === -1 ? value.length : nl;
+};
+
+function insert(s: EditorState, input: string): EditorState {
+  const text = input.replace(/\r\n?/g, '\n');
+  return { ...s, value: s.value.slice(0, s.cursor) + text + s.value.slice(s.cursor), cursor: s.cursor + text.length };
+}
+
+/** ข้ามบรรทัดในข้อความหลายบรรทัด (undefined = อยู่บรรทัดแรก/สุดท้ายแล้ว ให้ไปใช้ประวัติแทน) */
+function moveLine(s: EditorState, dir: -1 | 1): EditorState | undefined {
+  const start = lineStart(s.value, s.cursor);
+  const column = displayWidth(s.value.slice(start, s.cursor));
+  if (dir === -1) {
+    if (start === 0) return undefined;
+    const prevStart = lineStart(s.value, start - 1);
+    return { ...s, cursor: prevStart + offsetAtWidth(s.value.slice(prevStart, start - 1), column) };
+  }
+  const end = lineEnd(s.value, s.cursor);
+  if (end === s.value.length) return undefined;
+  const nextStart = end + 1;
+  return { ...s, cursor: nextStart + offsetAtWidth(s.value.slice(nextStart, lineEnd(s.value, nextStart)), column) };
+}
+
+function recall(s: EditorState, dir: -1 | 1): EditorState {
+  const index = dir === -1 ? Math.min(s.historyIndex + 1, s.history.length - 1) : Math.max(s.historyIndex - 1, -1);
+  if (index === s.historyIndex) return s;
+  const value = index === -1 ? '' : (s.history[index] ?? '');
+  return { ...s, value, cursor: value.length, historyIndex: index };
+}
+
+export function editorKey(s: EditorState, k: KeyInput): EditorResult {
+  if (k.return) {
+    if (s.value.slice(0, s.cursor).endsWith('\\')) {
+      return { state: { ...s, value: `${s.value.slice(0, s.cursor - 1)}\n${s.value.slice(s.cursor)}` } };
+    }
+    const submit = s.value;
+    const keep = submit.trim() === '' || s.history[0] === submit;
+    return { state: emptyEditor(keep ? s.history : [submit, ...s.history]), submit };
+  }
+  if (k.escape) return { state: { ...s, value: '', cursor: 0, historyIndex: -1 } };
+  if (k.leftArrow) return { state: { ...s, cursor: prevBoundary(s.value, s.cursor) } };
+  if (k.rightArrow) return { state: { ...s, cursor: nextBoundary(s.value, s.cursor) } };
+  if (k.upArrow) return { state: moveLine(s, -1) ?? recall(s, -1) };
+  if (k.downArrow) return { state: moveLine(s, 1) ?? recall(s, 1) };
+  if (k.ctrl &amp;&amp; k.input === 'a') return { state: { ...s, cursor: lineStart(s.value, s.cursor) } };
+  if (k.ctrl &amp;&amp; k.input === 'e') return { state: { ...s, cursor: lineEnd(s.value, s.cursor) } };
+  if (k.backspace || k.delete) {
+    const r = deleteBackward(s.value, s.cursor);
+    return { state: { ...s, value: r.text, cursor: r.cursor } };
+  }
+  if (k.input &amp;&amp; !k.ctrl &amp;&amp; !k.meta &amp;&amp; !k.tab) return { state: insert(s, k.input) };
+  return { state: s };
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/tui/editor.test.ts</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS และไม่มี type error</p>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 3: ตรรกะเมนูที่มีแถวพิมพ์ (<code>src/tui/menu.ts</code>) และ export ป้ายตัวเลือกจาก <code>cli.ts</code></h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/tui/menu.ts</code></li>
+    <li>แก้ไข: <code>src/cli.ts</code> (เปลี่ยน <code>LABELS</code> เป็น <code>export const CHOICE_LABELS</code> เพิ่ม <code>handoff</code> ; export <code>EOF_MESSAGE</code>)</li>
+    <li>เทสต์: <code>tests/tui/menu.test.ts</code>, <code>tests/cli.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: <code>KeyInput</code>, <code>EditorState</code>, <code>emptyEditor</code>, <code>editorKey</code> (Task 2)</li>
+    <li>ส่งต่อ:
+      <ul>
+        <li><code>interface MenuOption { value: string; label?: string }</code></li>
+        <li><code>interface MenuState { index: number; editor: EditorState }</code> ; <code>newMenu(): MenuState</code></li>
+        <li><code>interface MenuResult { state: MenuState; choice?: string; text?: string }</code> ; <code>menuKey(state: MenuState, key: KeyInput, options: readonly MenuOption[], allowText: boolean): MenuResult</code> — แถวพิมพ์อยู่ที่ index = <code>options.length</code> เมื่อ <code>allowText</code></li>
+        <li><code>CHOICE_LABELS: Record&lt;string, string&gt;</code> และ <code>EOF_MESSAGE</code> จาก <code>src/cli.ts</code></li>
+      </ul>
+    </li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>สร้าง <code>tests/tui/menu.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import type { KeyInput } from '../../src/tui/editor';
+import { type MenuOption, type MenuResult, menuKey, newMenu } from '../../src/tui/menu';
+
+const OPTIONS: MenuOption[] = [
+  { value: 'confirm', label: 'ยืนยัน' },
+  { value: 'revise', label: 'ขอแก้' },
+];
+
+/** กดปุ่มต่อกันจากเมนูใหม่ คืนผลของปุ่มสุดท้าย */
+function press(keys: Array&lt;Partial&lt;KeyInput&gt;&gt;, allowText = true): MenuResult {
+  let result: MenuResult = { state: newMenu() };
+  for (const k of keys) result = menuKey(result.state, { input: '', ...k }, OPTIONS, allowText);
+  return result;
+}
+
+describe('menuKey', () =&gt; {
+  it('Enter เลือกตัวเลือกปัจจุบัน ; ↓ แล้ว Enter = ตัวถัดไป', () =&gt; {
+    expect(press([{ return: true }]).choice).toBe('confirm');
+    expect(press([{ downArrow: true }, { return: true }]).choice).toBe('revise');
+  });
+
+  it('กดเลขเลือกได้ทันที', () =&gt; {
+    expect(press([{ input: '2' }]).choice).toBe('revise');
+  });
+
+  it('↑ จากแถวแรกวนไปแถวพิมพ์ (มีแถวพิมพ์) หรือแถวสุดท้าย (ไม่มีแถวพิมพ์)', () =&gt; {
+    expect(press([{ upArrow: true }]).state.index).toBe(2);
+    expect(press([{ upArrow: true }], false).state.index).toBe(1);
+  });
+
+  it('พิมพ์ตัวอักษรบนตัวเลือก = กระโดดไปแถวพิมพ์พร้อมตัวอักษรนั้น ; Enter ส่งเป็นข้อความ', () =&gt; {
+    const typed = press([{ input: 'ทำไม' }]);
+    expect(typed.state.index).toBe(2);
+    expect(typed.state.editor.value).toBe('ทำไม');
+    const sent = menuKey(typed.state, { input: '\r', return: true }, OPTIONS, true);
+    expect(sent.text).toBe('ทำไม');
+    expect(sent.choice).toBeUndefined();
+  });
+
+  it('↑ จากแถวพิมพ์กลับไปตัวเลือกได้ ข้อความที่พิมพ์ค้างยังอยู่ ; Tab สลับไปมา', () =&gt; {
+    const back = press([{ input: 'ถาม' }, { upArrow: true }]);
+    expect(back.state.index).toBe(1);
+    expect(back.state.editor.value).toBe('ถาม');
+    expect(press([{ tab: true }]).state.index).toBe(2);
+    expect(press([{ tab: true }, { tab: true }]).state.index).toBe(0);
+  });
+
+  it('แถวพิมพ์: Enter ตอนว่างไม่ส่ง ; Esc ล้าง แล้ว Esc อีกครั้งกลับตัวเลือกแรก ; เลขกลายเป็นข้อความ', () =&gt; {
+    const empty = press([{ tab: true }, { return: true }]);
+    expect(empty.text).toBeUndefined();
+    expect(empty.choice).toBeUndefined();
+    const cleared = press([{ input: 'x' }, { escape: true }]);
+    expect(cleared.state.index).toBe(2);
+    expect(cleared.state.editor.value).toBe('');
+    expect(press([{ input: 'x' }, { escape: true }, { escape: true }]).state.index).toBe(0);
+    expect(press([{ tab: true }, { input: '2' }]).state.editor.value).toBe('2');
+  });
+
+  it('แถวพิมพ์: \\ แล้ว Enter ขึ้นบรรทัดใหม่ ไม่ส่ง', () =&gt; {
+    const r = press([{ input: 'a\\' }, { return: true }]);
+    expect(r.text).toBeUndefined();
+    expect(r.state.editor.value).toBe('a\n');
+  });
+
+  it('ไม่มีแถวพิมพ์: ตัวอักษรถูกเมิน', () =&gt; {
+    const r = press([{ input: 'x' }], false);
+    expect(r.choice).toBeUndefined();
+    expect(r.text).toBeUndefined();
+    expect(r.state.index).toBe(0);
+  });
+});</code></pre>
+  <p>ใน <code>tests/cli.test.ts</code> แก้ import เป็น <code>import { CHOICE_LABELS, CliIO, type CliIOOptions, parseChoice } from '../src/cli';</code> แล้วต่อท้ายไฟล์:</p>
+<pre><code>describe('CHOICE_LABELS', () =&gt; {
+  it('มีป้ายของ handoff (คำถามโควตา) และเลือกด้วยป้ายนั้นได้', () =&gt; {
+    expect(CHOICE_LABELS.handoff).toBe('หยุดแล้วเขียนไฟล์ส่งต่องาน');
+    expect(parseChoice('หยุดแล้วเขียนไฟล์ส่งต่องาน', ['handoff', 'continue'] as const)).toBe('handoff');
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/tui/menu.test.ts tests/cli.test.ts</code><br>
+     คาดหวัง: FAIL — "Cannot find module '../../src/tui/menu'" และ <code>CHOICE_LABELS</code> ไม่ถูก export</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แก้ <code>src/cli.ts</code></strong></span></p>
+  <p>แทนบล็อก <code>const LABELS ... };</code> และบรรทัด <code>const EOF_MESSAGE = ...</code> ด้วย:</p>
+<pre><code>/** ป้ายภาษาไทยของตัวเลือก (ใช้ทั้งเมนูแบบเดิมและ UI ใหม่) */
+export const CHOICE_LABELS: Record&lt;string, string&gt; = {
+  confirm: 'ยืนยัน',
+  revise: 'ขอแก้',
+  accept: 'รับงาน',
+  change: 'ขอแก้/เพิ่ม',
+  continue: 'ทำต่อ',
+  abort: 'ยกเลิก',
+  handoff: 'หยุดแล้วเขียนไฟล์ส่งต่องาน',
+};
+
+export const EOF_MESSAGE = 'stdin ถูกปิด (EOF) — หยุดการทำงาน';</code></pre>
+  <p>แล้วเปลี่ยน <code>LABELS</code> ที่เหลือในไฟล์ (ใน <code>parseChoice</code> และ <code>chooseOrText</code>) เป็น <code>CHOICE_LABELS</code></p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: สร้าง <code>src/tui/menu.ts</code></strong></span></p>
+<pre><code>import { editorKey, type EditorState, emptyEditor, type KeyInput } from './editor';
+
+export interface MenuOption {
+  value: string;
+  /** ป้ายภาษาไทย เช่น confirm = ยืนยัน */
+  label?: string;
+}
+
+export interface MenuState {
+  /** แถวที่เลือกอยู่ ; แถวพิมพ์ = options.length */
+  index: number;
+  /** ข้อความในแถวพิมพ์ (ค้างไว้แม้ย้ายกลับไปที่ตัวเลือก) */
+  editor: EditorState;
+}
+
+export interface MenuResult {
+  state: MenuState;
+  choice?: string;
+  text?: string;
+}
+
+export const newMenu = (): MenuState =&gt; ({ index: 0, editor: emptyEditor() });
+
+const printable = (k: KeyInput): boolean =&gt; k.input !== '' &amp;&amp; !k.ctrl &amp;&amp; !k.meta &amp;&amp; !k.escape &amp;&amp; !k.tab &amp;&amp; !k.return;
+
+/** เมนูลูกศร: ↑↓ เลือก, Enter/เลข ยืนยัน, Tab หรือพิมพ์ตัวอักษร = ไปแถวพิมพ์ (allowText) */
+export function menuKey(s: MenuState, k: KeyInput, options: readonly MenuOption[], allowText: boolean): MenuResult {
+  const rows = options.length + (allowText ? 1 : 0);
+  const textRow = allowText ? options.length : -1;
+  if (k.upArrow) return { state: { ...s, index: (s.index + rows - 1) % rows } };
+  if (k.downArrow) return { state: { ...s, index: (s.index + 1) % rows } };
+  if (k.tab &amp;&amp; allowText) return { state: { ...s, index: s.index === textRow ? 0 : textRow } };
+
+  if (s.index === textRow) {
+    if (k.escape) return { state: s.editor.value !== '' ? { ...s, editor: emptyEditor() } : { ...s, index: 0 } };
+    if (k.return &amp;&amp; !s.editor.value.slice(0, s.editor.cursor).endsWith('\\')) {
+      if (s.editor.value.trim() === '') return { state: s };
+      return { state: { ...s, editor: emptyEditor() }, text: s.editor.value };
+    }
+    return { state: { ...s, editor: editorKey(s.editor, k).state } };
+  }
+
+  if (/^[1-9]$/.test(k.input) &amp;&amp; !k.ctrl &amp;&amp; !k.meta) {
+    const option = options[Number(k.input) - 1];
+    if (option) return { state: s, choice: option.value };
+  }
+  if (k.return) {
+    const option = options[s.index];
+    return option ? { state: s, choice: option.value } : { state: s };
+  }
+  if (allowText &amp;&amp; printable(k)) return { state: { index: textRow, editor: editorKey(s.editor, k).state } };
+  return { state: s };
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/tui tests/cli.test.ts</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS (รวมเทสต์ CliIO เดิม) และไม่มี type error</p>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 4: สถานะจอ (<code>src/tui/screen.ts</code>) และ <code>TuiIO</code> (<code>src/tui/tui-io.ts</code>)</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/tui/screen.ts</code>, <code>src/tui/tui-io.ts</code></li>
+    <li>เทสต์: <code>tests/tui/tui-io.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: <code>MenuOption</code> (Task 3), <code>CHOICE_LABELS</code>, <code>EOF_MESSAGE</code> (Task 3), <code>UserIO</code> (<code>src/deps.ts</code>), <code>StatusSink</code> (<code>src/activity.ts</code>), <code>styler</code>, <code>styleSay</code>, <code>type Styler</code> (<code>src/style.ts</code>)</li>
+    <li>ส่งต่อ:
+      <ul>
+        <li><code>screen.ts</code>: <code>LogLine { id: number; text: string }</code> ; <code>Activity { label: string; detail?: string; startedAt: number }</code> ; <code>PromptSpec</code> (<code>{ kind: 'text'; prompt }</code> หรือ <code>{ kind: 'menu'; prompt; options: MenuOption[]; allowText }</code>) ; <code>PromptRequest = PromptSpec &amp; { id: number }</code> ; <code>MenuPrompt</code> ; <code>PromptAnswer = { text: string } | { choice: string }</code> ; <code>ScreenState { log; prompt?; activity?; notice?; closed? }</code> ; <code>Mounted { unmount(): void }</code> ; <code>class ScreenStore { getState; subscribe; print(text); setActivity(a); setNotice(n); request(spec): Promise&lt;PromptAnswer&gt;; answer(a); close(error) }</code></li>
+        <li><code>tui-io.ts</code>: <code>cleanPrompt(prompt: string): string</code> ; <code>menuOptions(options: readonly string[]): MenuOption[]</code> ; <code>class TuiIO implements UserIO { readonly store: ScreenStore; readonly status: StatusSink; constructor(o: { store?: ScreenStore; color?: boolean; mount: (store: ScreenStore) =&gt; Mounted; now?: () =&gt; number }); close(): void }</code></li>
+      </ul>
+    </li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>สร้าง <code>tests/tui/tui-io.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import { ScreenStore } from '../../src/tui/screen';
+import { cleanPrompt, menuOptions, TuiIO } from '../../src/tui/tui-io';
+
+function setup() {
+  const store = new ScreenStore();
+  let unmounts = 0;
+  const io = new TuiIO({
+    store,
+    color: false,
+    mount: () =&gt; ({ unmount: () =&gt; void (unmounts += 1) }),
+    now: () =&gt; 1000,
+  });
+  return { store, io, unmounts: () =&gt; unmounts };
+}
+const lastLog = (store: ScreenStore) =&gt; store.getState().log.at(-1)?.text;
+
+describe('cleanPrompt / menuOptions', () =&gt; {
+  it('ตัด "&gt; " ท้าย prompt ของ readline ออก', () =&gt; {
+    expect(cleanPrompt('คุณอยากได้ระบบอะไร?\n&gt; ')).toBe('คุณอยากได้ระบบอะไร?');
+    expect(cleanPrompt('&gt; ')).toBe('');
+    expect(cleanPrompt('เลือกงาน')).toBe('เลือกงาน');
+  });
+
+  it('ใส่ป้ายภาษาไทยเมื่อมี', () =&gt; {
+    expect(menuOptions(['confirm', 'x'])).toEqual([{ value: 'confirm', label: 'ยืนยัน' }, { value: 'x' }]);
+  });
+});
+
+describe('TuiIO', () =&gt; {
+  it('say -&gt; log (color=false ได้ข้อความไม่มีสี)', () =&gt; {
+    const { store, io } = setup();
+    io.say('สวัสดี', 'system');
+    expect(store.getState().log.map((l) =&gt; l.text)).toEqual(['สวัสดี']);
+  });
+
+  it('ask: แสดง prompt ที่ตัด "&gt; " แล้ว resolve เมื่อตอบ พร้อมพิมพ์คำตอบลง log', async () =&gt; {
+    const { store, io } = setup();
+    const answer = io.ask('คุณอยากได้ระบบอะไร?\n&gt; ');
+    expect(store.getState().prompt).toMatchObject({ kind: 'text', prompt: 'คุณอยากได้ระบบอะไร?' });
+    store.answer({ text: '  ทำหน้า login ' });
+    await expect(answer).resolves.toBe('ทำหน้า login');
+    expect(store.getState().prompt).toBeUndefined();
+    expect(lastLog(store)).toBe('&gt; ทำหน้า login');
+  });
+
+  it('chooseOrText: เมนูมีแถวพิมพ์และป้ายไทย ; คืนตัวเลือกหรือ { text }', async () =&gt; {
+    const { store, io } = setup();
+    const first = io.chooseOrText('ยืนยันไหม?', ['confirm', 'revise'] as const);
+    expect(store.getState().prompt).toMatchObject({
+      kind: 'menu',
+      allowText: true,
+      options: [
+        { value: 'confirm', label: 'ยืนยัน' },
+        { value: 'revise', label: 'ขอแก้' },
+      ],
+    });
+    store.answer({ choice: 'revise' });
+    await expect(first).resolves.toBe('revise');
+    expect(lastLog(store)).toBe('เลือก: ขอแก้ (revise)');
+    const second = io.chooseOrText('ยืนยันไหม?', ['confirm', 'revise'] as const);
+    store.answer({ text: ' ทำไมต้องแบบนี้ ' });
+    await expect(second).resolves.toEqual({ text: 'ทำไมต้องแบบนี้' });
+    expect(lastLog(store)).toBe('&gt; ทำไมต้องแบบนี้');
+  });
+
+  it('choose: เมนูไม่มีแถวพิมพ์ (คำถามโควตา)', async () =&gt; {
+    const { store, io } = setup();
+    const answer = io.choose('จะทำอย่างไรต่อ?\n&gt; ', ['handoff', 'continue'] as const);
+    expect(store.getState().prompt).toMatchObject({
+      kind: 'menu',
+      allowText: false,
+      prompt: 'จะทำอย่างไรต่อ?',
+      options: [
+        { value: 'handoff', label: 'หยุดแล้วเขียนไฟล์ส่งต่องาน' },
+        { value: 'continue', label: 'ทำต่อ' },
+      ],
+    });
+    store.answer({ choice: 'continue' });
+    await expect(answer).resolves.toBe('continue');
+  });
+
+  it('status: start/update/stop -&gt; activity ของจอ', () =&gt; {
+    const { store, io } = setup();
+    io.status.update('ไม่มี agent ทำงาน: เมิน');
+    expect(store.getState().activity).toBeUndefined();
+    io.status.start('[QA] api');
+    io.status.update('Read a.ts');
+    expect(store.getState().activity).toEqual({ label: '[QA] api', detail: 'Read a.ts', startedAt: 1000 });
+    io.status.stop();
+    expect(store.getState().activity).toBeUndefined();
+  });
+
+  it('close: คำถามที่ค้าง reject ด้วย EOF, ปิดจอครั้งเดียว และถามต่อไม่ได้', async () =&gt; {
+    const { store, io, unmounts } = setup();
+    const pending = io.ask('&gt; ');
+    io.close();
+    io.close();
+    await expect(pending).rejects.toThrow('stdin ถูกปิด');
+    await expect(io.ask('&gt; ')).rejects.toThrow('stdin ถูกปิด');
+    expect(unmounts()).toBe(1);
+    expect(store.getState().closed).toBe(true);
+  });
+});
+
+describe('ScreenStore', () =&gt; {
+  it('ถามซ้อนไม่ได้ ; คำถามใหม่ล้าง notice ; subscribe ได้รับแจ้งทุกครั้งที่เปลี่ยน', async () =&gt; {
+    const store = new ScreenStore();
+    let calls = 0;
+    const off = store.subscribe(() =&gt; void (calls += 1));
+    store.setNotice('รอก่อน');
+    const first = store.request({ kind: 'text', prompt: 'a' });
+    expect(store.getState().notice).toBeUndefined();
+    await expect(store.request({ kind: 'text', prompt: 'b' })).rejects.toThrow('มีคำถามค้างอยู่แล้ว');
+    store.answer({ text: 'x' });
+    await expect(first).resolves.toEqual({ text: 'x' });
+    off();
+    const before = calls;
+    store.print('y');
+    expect(calls).toBe(before);
+    expect(before).toBeGreaterThanOrEqual(3);
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/tui/tui-io.test.ts</code><br>
+     คาดหวัง: FAIL ด้วย "Cannot find module '../../src/tui/screen'"</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: สร้าง <code>src/tui/screen.ts</code></strong></span></p>
+<pre><code>import type { MenuOption } from './menu';
+
+/** ข้อความที่พิมพ์ลงจอแล้ว (ลงสีแล้ว) — Ink พิมพ์แบบถาวรด้วย Static */
+export interface LogLine {
+  id: number;
+  text: string;
+}
+
+/** agent ที่กำลังทำงาน (จาก StatusSink) */
+export interface Activity {
+  label: string;
+  detail?: string;
+  startedAt: number;
+}
+
+export type PromptSpec =
+  | { kind: 'text'; prompt: string }
+  | { kind: 'menu'; prompt: string; options: MenuOption[]; allowText: boolean };
+export type PromptRequest = PromptSpec &amp; { id: number };
+export type MenuPrompt = Extract&lt;PromptRequest, { kind: 'menu' }&gt;;
+export type PromptAnswer = { text: string } | { choice: string };
+
+export interface ScreenState {
+  log: readonly LogLine[];
+  /** คำถามที่รอคำตอบ (มีได้ทีละคำถาม) */
+  prompt?: PromptRequest;
+  activity?: Activity;
+  /** ข้อความเตือนสั้น ๆ ใต้ช่องพิมพ์ (หายเมื่อมีคำถามใหม่) */
+  notice?: string;
+  /** ปิดจอแล้ว: เหลือแต่ log */
+  closed?: boolean;
+}
+
+export interface Mounted {
+  unmount(): void;
+}
+
+/** สถานะจอที่ TuiIO เขียนและ App (Ink) อ่าน — แยกจาก Ink เพื่อให้เทสต์ได้โดยไม่ต้องมี terminal */
+export class ScreenStore {
+  private state: ScreenState = { log: [] };
+  private readonly listeners = new Set&lt;() =&gt; void&gt;();
+  private nextId = 1;
+  private pending: { resolve: (answer: PromptAnswer) =&gt; void; reject: (error: Error) =&gt; void } | undefined;
+
+  readonly getState = (): ScreenState =&gt; this.state;
+
+  readonly subscribe = (listener: () =&gt; void): (() =&gt; void) =&gt; {
+    this.listeners.add(listener);
+    return () =&gt; {
+      this.listeners.delete(listener);
+    };
+  };
+
+  print(text: string): void {
+    this.set({ log: [...this.state.log, { id: this.nextId++, text }] });
+  }
+
+  setActivity(activity: Activity | undefined): void {
+    this.set({ activity });
+  }
+
+  setNotice(notice: string | undefined): void {
+    this.set({ notice });
+  }
+
+  request(spec: PromptSpec): Promise&lt;PromptAnswer&gt; {
+    if (this.state.closed) return Promise.reject(new Error('หน้าจอปิดแล้ว'));
+    if (this.pending) return Promise.reject(new Error('มีคำถามค้างอยู่แล้ว'));
+    return new Promise&lt;PromptAnswer&gt;((resolve, reject) =&gt; {
+      this.pending = { resolve, reject };
+      this.set({ prompt: { ...spec, id: this.nextId++ }, notice: undefined });
+    });
+  }
+
+  answer(answer: PromptAnswer): void {
+    const pending = this.pending;
+    if (!pending) return;
+    this.pending = undefined;
+    this.set({ prompt: undefined });
+    pending.resolve(answer);
+  }
+
+  close(error: Error): void {
+    const pending = this.pending;
+    this.pending = undefined;
+    this.set({ prompt: undefined, activity: undefined, notice: undefined, closed: true });
+    pending?.reject(error);
+  }
+
+  private set(patch: Partial&lt;ScreenState&gt;): void {
+    this.state = { ...this.state, ...patch };
+    for (const listener of this.listeners) listener();
+  }
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: สร้าง <code>src/tui/tui-io.ts</code></strong></span></p>
+<pre><code>import type { StatusSink } from '../activity';
+import { CHOICE_LABELS, EOF_MESSAGE } from '../cli';
+import type { UserIO } from '../deps';
+import { type SayKind, type Styler, styler, styleSay } from '../style';
+import type { MenuOption } from './menu';
+import { type Mounted, type PromptAnswer, type PromptSpec, ScreenStore } from './screen';
+
+export interface TuiIOOptions {
+  store?: ScreenStore;
+  /** ใส่สี ANSI ใน log (ค่าเริ่มต้น true) */
+  color?: boolean;
+  /** เปิดจอ (index ใช้ mountApp ของ Ink ; เทสต์ส่งตัวปลอม) */
+  mount: (store: ScreenStore) =&gt; Mounted;
+  now?: () =&gt; number;
+}
+
+/** prompt ของ readline มี "&gt; " ท้าย — UI ใหม่มีช่องพิมพ์อยู่แล้วจึงตัดออก */
+export function cleanPrompt(prompt: string): string {
+  return prompt.replace(/\s*&gt;\s*$/, '').trimEnd();
+}
+
+export function menuOptions(options: readonly string[]): MenuOption[] {
+  return options.map((value) =&gt; {
+    const label = CHOICE_LABELS[value];
+    return label ? { value, label } : { value };
+  });
+}
+
+/** UserIO + StatusSink ของ UI ใหม่: เขียนสถานะลง ScreenStore และรอคำตอบจากจอ */
+export class TuiIO implements UserIO {
+  readonly store: ScreenStore;
+  readonly status: StatusSink;
+  private readonly s: Styler;
+  private readonly mounted: Mounted;
+  private closed = false;
+
+  constructor(o: TuiIOOptions) {
+    this.store = o.store ?? new ScreenStore();
+    this.s = styler(o.color ?? true);
+    const now = o.now ?? Date.now;
+    this.status = {
+      start: (label) =&gt; this.store.setActivity({ label, startedAt: now() }),
+      update: (detail) =&gt; {
+        const current = this.store.getState().activity;
+        if (current) this.store.setActivity({ ...current, detail });
+      },
+      stop: () =&gt; this.store.setActivity(undefined),
+    };
+    this.mounted = o.mount(this.store);
+  }
+
+  say(text: string, kind?: SayKind): void {
+    this.store.print(styleSay(text, kind, this.s));
+  }
+
+  async ask(prompt: string): Promise&lt;string&gt; {
+    const answer = await this.request({ kind: 'text', prompt: cleanPrompt(prompt) });
+    const text = ('text' in answer ? answer.text : answer.choice).trim();
+    this.store.print(this.s.dim(`&gt; ${text}`));
+    return text;
+  }
+
+  async chooseOrText&lt;T extends string&gt;(prompt: string, options: readonly T[]): Promise&lt;T | { text: string }&gt; {
+    const answer = await this.request({ kind: 'menu', prompt: cleanPrompt(prompt), options: menuOptions(options), allowText: true });
+    if ('choice' in answer) return this.chosen(answer.choice as T);
+    const text = answer.text.trim();
+    this.store.print(this.s.dim(`&gt; ${text}`));
+    return { text };
+  }
+
+  async choose&lt;T extends string&gt;(prompt: string, options: readonly T[]): Promise&lt;T&gt; {
+    const answer = await this.request({ kind: 'menu', prompt: cleanPrompt(prompt), options: menuOptions(options), allowText: false });
+    if (!('choice' in answer)) throw new Error('คำถามนี้ต้องเลือกจากตัวเลือกเท่านั้น');
+    return this.chosen(answer.choice as T);
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.store.close(new Error(EOF_MESSAGE));
+    this.mounted.unmount();
+  }
+
+  private chosen&lt;T extends string&gt;(choice: T): T {
+    const label = CHOICE_LABELS[choice];
+    this.store.print(this.s.dim(`เลือก: ${label ?? choice} (${choice})`));
+    return choice;
+  }
+
+  private request(spec: PromptSpec): Promise&lt;PromptAnswer&gt; {
+    if (this.closed) return Promise.reject(new Error(EOF_MESSAGE));
+    return this.store.request(spec);
+  }
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/tui</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS และไม่มี type error</p>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 5: ส่วนวาดจอด้วย Ink (<code>src/tui/app.ts</code>)</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/tui/app.ts</code></li>
+    <li>เทสต์: <code>tests/tui/app.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: <code>ScreenStore</code>, <code>LogLine</code>, <code>MenuPrompt</code>, <code>Activity</code>, <code>Mounted</code> (Task 4) ; <code>editorKey</code>, <code>emptyEditor</code>, <code>EditorState</code>, <code>KeyInput</code> (Task 2) ; <code>menuKey</code>, <code>newMenu</code>, <code>MenuState</code> (Task 3) ; <code>graphemes</code> (Task 1) ; <code>formatElapsed</code> (<code>src/activity.ts</code>)</li>
+    <li>ส่งต่อ: <code>App(props: { store: ScreenStore; onInterrupt: () =&gt; void; now?: () =&gt; number })</code> ; <code>mountApp(store: ScreenStore, onInterrupt: () =&gt; void): Mounted</code> ; ค่าคงที่ <code>BUSY_NOTICE</code>, <code>TEXT_ROW_PLACEHOLDER</code>, <code>HINT</code></li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>สร้าง <code>tests/tui/app.test.ts</code>:</p>
+<pre><code>import { render } from 'ink-testing-library';
+import React from 'react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { App, BUSY_NOTICE, HINT, TEXT_ROW_PLACEHOLDER } from '../../src/tui/app';
+import { ScreenStore } from '../../src/tui/screen';
+
+const tick = () =&gt; new Promise((resolve) =&gt; setTimeout(resolve, 30));
+const ENTER = '\r';
+const DOWN = '\u001B[B';
+const CTRL_C = '\u0003';
+const MENU = [
+  { value: 'confirm', label: 'ยืนยัน' },
+  { value: 'revise', label: 'ขอแก้' },
+];
+
+const unmounts: Array&lt;() =&gt; void&gt; = [];
+afterEach(() =&gt; {
+  for (const unmount of unmounts.splice(0)) unmount();
+});
+
+/** เปิดจอแล้วรอ 1 tick ให้ Ink ผูกตัวรับปุ่มก่อน (ปุ่มที่กดก่อนหน้านั้นหาย) */
+async function mount() {
+  const store = new ScreenStore();
+  const onInterrupt = vi.fn();
+  const ui = render(React.createElement(App, { store, onInterrupt, now: () =&gt; 0 }));
+  unmounts.push(ui.unmount);
+  await tick();
+  return { store, ui, onInterrupt };
+}
+
+describe('App', () =&gt; {
+  it('log และคำถามแบบพิมพ์: พิมพ์ไทยแล้ว Enter ส่งคำตอบ', async () =&gt; {
+    const { store, ui } = await mount();
+    store.print('PM: สวัสดีครับ');
+    const answer = store.request({ kind: 'text', prompt: 'คุณอยากได้ระบบอะไร?' });
+    await tick();
+    expect(ui.lastFrame()).toContain('สวัสดีครับ');
+    expect(ui.lastFrame()).toContain('คุณอยากได้ระบบอะไร?');
+    expect(ui.lastFrame()).toContain(HINT);
+    ui.stdin.write('ทำหน้า login');
+    await tick();
+    // ข้อความต้องอยู่ต่อจาก "&gt; " ในช่องพิมพ์ ไม่ใช่ไปโผล่บนเส้นขอบ (Ink วัดขนาดผิดเมื่อมีลูกเป็นข้อความว่าง)
+    expect(ui.lastFrame()).toContain('&gt; ทำหน้า login');
+    ui.stdin.write(ENTER);
+    await expect(answer).resolves.toEqual({ text: 'ทำหน้า login' });
+  });
+
+  it('เมนู: ↓ แล้ว Enter เลือกตัวที่สอง ; แถวพิมพ์แสดง placeholder', async () =&gt; {
+    const { store, ui } = await mount();
+    const answer = store.request({ kind: 'menu', prompt: 'ยืนยันไหม?', options: MENU, allowText: true });
+    await tick();
+    expect(ui.lastFrame()).toContain('❯ 1. confirm');
+    expect(ui.lastFrame()).toContain('ยืนยัน');
+    expect(ui.lastFrame()).toContain(TEXT_ROW_PLACEHOLDER);
+    ui.stdin.write(DOWN);
+    await tick();
+    expect(ui.lastFrame()).toContain('❯ 2. revise');
+    ui.stdin.write(ENTER);
+    await expect(answer).resolves.toEqual({ choice: 'revise' });
+  });
+
+  it('เมนู: พิมพ์ข้อความแล้ว Enter ส่งเป็นข้อความถึง PM', async () =&gt; {
+    const { store, ui } = await mount();
+    const answer = store.request({ kind: 'menu', prompt: 'ยืนยันไหม?', options: MENU, allowText: true });
+    await tick();
+    ui.stdin.write('ทำไมต้องแบบนี้');
+    await tick();
+    expect(ui.lastFrame()).toContain('❯ 3. ทำไมต้องแบบนี้');
+    ui.stdin.write(ENTER);
+    await expect(answer).resolves.toEqual({ text: 'ทำไมต้องแบบนี้' });
+  });
+
+  it('ไม่มีคำถาม: พิมพ์ล่วงหน้าได้ Enter ขึ้นคำเตือน ข้อความยังอยู่ และส่งได้เมื่อมีคำถาม', async () =&gt; {
+    const { store, ui } = await mount();
+    ui.stdin.write('ข้อความล่วงหน้า');
+    await tick();
+    ui.stdin.write(ENTER);
+    await tick();
+    expect(ui.lastFrame()).toContain(BUSY_NOTICE);
+    expect(ui.lastFrame()).toContain('ข้อความล่วงหน้า');
+    const answer = store.request({ kind: 'text', prompt: '' });
+    await tick();
+    expect(ui.lastFrame()).not.toContain(BUSY_NOTICE);
+    ui.stdin.write(ENTER);
+    await expect(answer).resolves.toEqual({ text: 'ข้อความล่วงหน้า' });
+  });
+
+  it('agent ทำงาน: แสดง label, tool ล่าสุด และเวลา', async () =&gt; {
+    const { store, ui } = await mount();
+    store.setActivity({ label: '[QA] api', detail: 'Read a.ts', startedAt: 0 });
+    await tick();
+    expect(ui.lastFrame()).toContain('[QA] api · Read a.ts · 0m00s');
+  });
+
+  it('Ctrl+C เรียก onInterrupt ไม่ปิดจอเอง', async () =&gt; {
+    const { ui, onInterrupt } = await mount();
+    ui.stdin.write(CTRL_C);
+    await tick();
+    expect(onInterrupt).toHaveBeenCalledTimes(1);
+  });
+
+  it('ปิดแล้ว: เหลือแต่ log ไม่มีช่องพิมพ์', async () =&gt; {
+    const { store, ui } = await mount();
+    store.print('จบงาน');
+    store.close(new Error('ปิด'));
+    await tick();
+    expect(ui.lastFrame()).toContain('จบงาน');
+    expect(ui.lastFrame()).not.toContain(HINT);
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/tui/app.test.ts</code><br>
+     คาดหวัง: FAIL ด้วย "Cannot find module '../../src/tui/app'"</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p>สร้าง <code>src/tui/app.ts</code>:</p>
+<pre><code>import { Box, render, Static, Text, useInput } from 'ink';
+import React, { useEffect, useReducer, useRef, useState, useSyncExternalStore } from 'react';
+import { formatElapsed } from '../activity';
+import { editorKey, type EditorState, emptyEditor, type KeyInput } from './editor';
+import { menuKey, type MenuState, newMenu } from './menu';
+import type { Activity, LogLine, MenuPrompt, Mounted, ScreenStore } from './screen';
+import { graphemes } from './text';
+
+const h = React.createElement;
+
+export const HINT = 'Enter ส่ง · \\ แล้ว Enter ขึ้นบรรทัด · ↑↓ ประวัติ · Esc ล้าง · Ctrl+C หยุด';
+export const BUSY_NOTICE = 'agent กำลังทำงาน — ข้อความยังอยู่ในช่องพิมพ์ ส่งได้เมื่อมีคำถามถัดไป';
+export const TEXT_ROW_PLACEHOLDER = 'พิมพ์ข้อความถึง PM…';
+const MENU_HINT = '↑↓ เลือก · Enter ยืนยัน · เลข 1-9 · Tab หรือพิมพ์ตัวอักษร = ไปช่องพิมพ์';
+const MENU_TEXT_HINT = 'Enter ส่ง · ↑ กลับไปตัวเลือก · Esc ล้าง/กลับ · \\ แล้ว Enter ขึ้นบรรทัด';
+const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const FRAME_MS = 120;
+
+/** แบ่งบรรทัดที่ cursor อยู่ แล้ววาด cursor ปลอมเป็นช่องสีกลับ (ไม่พึ่งตำแหน่ง cursor จริงของ terminal) */
+const INVERSE = '\x1b[7m';
+const INVERSE_OFF = '\x1b[27m';
+
+/**
+ * บรรทัดเป็นข้อความก้อนเดียว ใส่ cursor ด้วยรหัส ANSI สีกลับ — ห้ามแยกเป็น Text ซ้อนหลายชิ้น:
+ * Ink วัดขนาดใหม่ไม่ถูกตอนมีลูกชิ้นใหม่แทรกเข้ามา (ตัวอักษรไปโผล่บนเส้นขอบล่างของกรอบ)
+ */
+function withCursor(line: string, at: number): string {
+  const g = graphemes(line.slice(at))[0];
+  const after = g ? line.slice(at + g.length) : '';
+  return `${line.slice(0, at)}${INVERSE}${g ?? ' '}${INVERSE_OFF}${after}`;
+}
+
+function EditorLines({ editor, active, prefix }: { editor: EditorState; active: boolean; prefix: string }): React.ReactElement {
+  const lines = editor.value.split('\n');
+  const indent = ' '.repeat(Array.from(prefix).length);
+  let start = 0;
+  return h(
+    Box,
+    { flexDirection: 'column' },
+    ...lines.map((line, i) =&gt; {
+      const lineStart = start;
+      start += line.length + 1;
+      const here = active &amp;&amp; editor.cursor &gt;= lineStart &amp;&amp; editor.cursor &lt;= lineStart + line.length;
+      const body = here ? withCursor(line, editor.cursor - lineStart) : line;
+      return h(Text, { key: i }, `${i === 0 ? prefix : indent}${body}`);
+    }),
+  );
+}
+
+function MenuView({ prompt, menu }: { prompt: MenuPrompt; menu: MenuState }): React.ReactElement {
+  const textRow = prompt.options.length;
+  const onText = prompt.allowText &amp;&amp; menu.index === textRow;
+  const textLine = !prompt.allowText
+    ? null
+    : onText || menu.editor.value !== ''
+      ? h(EditorLines, { key: 'text', editor: menu.editor, active: onText, prefix: `${onText ? '❯' : ' '} ${textRow + 1}. ` })
+      : h(Text, { key: 'text', dimColor: true }, `  ${textRow + 1}. ${TEXT_ROW_PLACEHOLDER}`);
+  return h(
+    Box,
+    { borderStyle: 'round', borderColor: 'cyan', paddingX: 1, flexDirection: 'column' },
+    prompt.prompt ? h(Text, { bold: true }, prompt.prompt) : null,
+    ...prompt.options.map((o, i) =&gt;
+      h(
+        Text,
+        { key: o.value, color: i === menu.index ? 'cyan' : undefined },
+        `${i === menu.index ? '❯' : ' '} ${i + 1}. ${o.value}`,
+        o.label ? h(Text, { dimColor: true }, `  ${o.label}`) : null,
+      ),
+    ),
+    textLine,
+    h(Text, { dimColor: true }, onText ? MENU_TEXT_HINT : MENU_HINT),
+  );
+}
+
+function activityLine(a: Activity, frame: number, now: number): string {
+  const detail = a.detail ? ` · ${a.detail}` : '';
+  return `${FRAMES[frame % FRAMES.length]} ${a.label}${detail} · ${formatElapsed(now - a.startedAt)}`;
+}
+
+export interface AppProps {
+  store: ScreenStore;
+  /** Ctrl+C: index ส่งต่อเป็น process 'SIGINT' ให้ handler หยุดงานเดิม */
+  onInterrupt: () =&gt; void;
+  now?: () =&gt; number;
+}
+
+export function App({ store, onInterrupt, now = Date.now }: AppProps): React.ReactElement {
+  const state = useSyncExternalStore(store.subscribe, store.getState);
+  // เก็บสถานะช่องพิมพ์/เมนูใน ref: ปุ่มที่มาติดกันก่อน React วาดใหม่ (พิมพ์เร็ว) ต้องเห็นค่าล่าสุดเสมอ
+  const ui = useRef&lt;{ editor: EditorState; menu: MenuState; menuFor?: number }&gt;({ editor: emptyEditor(), menu: newMenu() });
+  const [, redraw] = useReducer((n: number) =&gt; n + 1, 0);
+  const [frame, setFrame] = useState(0);
+  const busy = state.activity !== undefined;
+
+  useEffect(() =&gt; {
+    if (!busy) return undefined;
+    const timer = setInterval(() =&gt; setFrame((f) =&gt; f + 1), FRAME_MS);
+    return () =&gt; clearInterval(timer);
+  }, [busy]);
+
+  /** เมนูของคำถามปัจจุบัน (คำถามใหม่ = เริ่มเมนูใหม่) */
+  const menuFor = (prompt: MenuPrompt): MenuState =&gt; {
+    if (ui.current.menuFor !== prompt.id) {
+      ui.current.menu = newMenu();
+      ui.current.menuFor = prompt.id;
+    }
+    return ui.current.menu;
+  };
+
+  useInput(
+    (input, key) =&gt; {
+      if (key.ctrl &amp;&amp; input === 'c') {
+        onInterrupt();
+        return;
+      }
+      const k: KeyInput = { ...key, input };
+      const prompt = store.getState().prompt;
+      if (prompt?.kind === 'menu') {
+        const r = menuKey(menuFor(prompt), k, prompt.options, prompt.allowText);
+        ui.current.menu = r.state;
+        if (r.choice !== undefined) store.answer({ choice: r.choice });
+        else if (r.text !== undefined) store.answer({ text: r.text });
+        redraw();
+        return;
+      }
+      const r = editorKey(ui.current.editor, k);
+      if (r.submit !== undefined &amp;&amp; prompt?.kind !== 'text') {
+        // flow ของทีมรับข้อความได้เฉพาะตอนถาม: เก็บข้อความไว้ในช่อง
+        store.setNotice(BUSY_NOTICE);
+        return;
+      }
+      ui.current.editor = r.state;
+      if (r.submit !== undefined) store.answer({ text: r.submit });
+      redraw();
+    },
+    { isActive: state.closed !== true },
+  );
+
+  const prompt = state.prompt;
+  const log = h(Static&lt;LogLine&gt;, { items: [...state.log], children: (line: LogLine) =&gt; h(Text, { key: line.id }, line.text) });
+  if (state.closed) return h(Box, { flexDirection: 'column' }, log);
+  return h(
+    Box,
+    { flexDirection: 'column' },
+    log,
+    h(
+      Box,
+      { flexDirection: 'column', marginTop: 1 },
+      state.activity ? h(Text, { color: 'yellow' }, activityLine(state.activity, frame, now())) : null,
+      prompt?.kind === 'text' &amp;&amp; prompt.prompt ? h(Text, { bold: true }, prompt.prompt) : null,
+      prompt?.kind === 'menu'
+        ? h(MenuView, { prompt, menu: menuFor(prompt) })
+        : h(
+            Box,
+            { borderStyle: 'round', borderColor: prompt ? 'white' : 'gray', paddingX: 1 },
+            h(EditorLines, { editor: ui.current.editor, active: true, prefix: '&gt; ' }),
+          ),
+      state.notice ? h(Text, { color: 'yellow' }, state.notice) : null,
+      prompt?.kind === 'menu' ? null : h(Text, { dimColor: true }, HINT),
+    ),
+  );
+}
+
+/** เปิดจอจริง: ปิดการจัดการ Ctrl+C ของ Ink เพื่อส่งต่อให้ handler หยุดงานเดิม */
+export function mountApp(store: ScreenStore, onInterrupt: () =&gt; void): Mounted {
+  const instance = render(h(App, { store, onInterrupt }), { exitOnCtrlC: false });
+  return { unmount: () =&gt; instance.unmount() };
+}</code></pre>
+  <p class="meta">หมายเหตุจากการลงมือ: cursor ต้องเป็นรหัส ANSI สีกลับในข้อความก้อนเดียว — ถ้าแยกเป็น Text ซ้อน Ink วัดขนาดใหม่ไม่ถูกตอนมีชิ้นใหม่แทรกเข้ามา (ตัวอักษรไปโผล่บนเส้นขอบล่าง) ; เทสต์ต้องรอ 1 tick หลังเปิดจอให้ Ink ผูกตัวรับปุ่มก่อน</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/tui</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS และไม่มี type error</p>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 6: เลือก UI ตอนเริ่ม (<code>src/tui/select.ts</code>), ต่อเข้า <code>index.ts</code>, เอกสาร และทดลองจริง</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/tui/select.ts</code></li>
+    <li>แก้ไข: <code>src/index.ts</code> (import และบรรทัด <code>const cli = new CliIO();</code>), <code>README.md</code></li>
+    <li>เทสต์: <code>tests/tui/select.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: <code>TuiIO</code> (Task 4), <code>mountApp</code> (Task 5), <code>CliIO</code> (<code>src/cli.ts</code>), <code>colorEnabled</code> (<code>src/style.ts</code>)</li>
+    <li>ส่งต่อ: <code>type UiKind = 'tui' | 'classic'</code> ; <code>pickUi(o: { stdinTTY: boolean; stdoutTTY: boolean; rawMode: boolean; env: NodeJS.ProcessEnv }): UiKind</code> ; <code>interface TerminalIO extends UserIO { readonly status: StatusSink; close(): void }</code> ; <code>createTerminalIO(o?: { env?: NodeJS.ProcessEnv; warn?: (message: string) =&gt; void }): TerminalIO</code></li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>สร้าง <code>tests/tui/select.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import { pickUi } from '../../src/tui/select';
+
+const terminal = { stdinTTY: true, stdoutTTY: true, rawMode: true, env: {} };
+
+describe('pickUi', () =&gt; {
+  it('terminal จริง -&gt; UI ใหม่', () =&gt; {
+    expect(pickUi(terminal)).toBe('tui');
+  });
+
+  it.each([
+    { stdinTTY: false },
+    { stdoutTTY: false },
+    { rawMode: false },
+    { env: { AGENT_TEAM_UI: 'classic' } },
+  ])('%j -&gt; classic', (over) =&gt; {
+    expect(pickUi({ ...terminal, ...over })).toBe('classic');
+  });
+
+  it('AGENT_TEAM_UI ค่าอื่นไม่มีผล', () =&gt; {
+    expect(pickUi({ ...terminal, env: { AGENT_TEAM_UI: 'tui' } })).toBe('tui');
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/tui/select.test.ts</code><br>
+     คาดหวัง: FAIL ด้วย "Cannot find module '../../src/tui/select'"</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: สร้าง <code>src/tui/select.ts</code></strong></span></p>
+<pre><code>import type { StatusSink } from '../activity';
+import { CliIO } from '../cli';
+import type { UserIO } from '../deps';
+import { colorEnabled } from '../style';
+import { mountApp } from './app';
+import { TuiIO } from './tui-io';
+
+export type UiKind = 'tui' | 'classic';
+
+/** หน้าจอโหมดโต้ตอบ: UI ใหม่ (TuiIO) หรือแบบเดิม (CliIO) — index ใช้ status กับ close ด้วย */
+export interface TerminalIO extends UserIO {
+  readonly status: StatusSink;
+  close(): void;
+}
+
+/** UI ใหม่เฉพาะ terminal จริงที่เปิด raw mode ได้ ; AGENT_TEAM_UI=classic = ใช้แบบเดิมเสมอ */
+export function pickUi(o: { stdinTTY: boolean; stdoutTTY: boolean; rawMode: boolean; env: NodeJS.ProcessEnv }): UiKind {
+  if (o.env.AGENT_TEAM_UI === 'classic') return 'classic';
+  return o.stdinTTY &amp;&amp; o.stdoutTTY &amp;&amp; o.rawMode ? 'tui' : 'classic';
+}
+
+export function createTerminalIO(o: { env?: NodeJS.ProcessEnv; warn?: (message: string) =&gt; void } = {}): TerminalIO {
+  const env = o.env ?? process.env;
+  const kind = pickUi({
+    stdinTTY: process.stdin.isTTY === true,
+    stdoutTTY: process.stdout.isTTY === true,
+    rawMode: typeof process.stdin.setRawMode === 'function',
+    env,
+  });
+  if (kind === 'tui') {
+    try {
+      return new TuiIO({
+        color: colorEnabled(process.stdout, env),
+        // Ctrl+C ส่งต่อเป็น SIGINT เหมือน CliIO ให้ handler หยุดงานใน index ทำงาน
+        mount: (store) =&gt; mountApp(store, () =&gt; process.emit('SIGINT')),
+      });
+    } catch (e) {
+      const warn = o.warn ?? ((message: string) =&gt; console.error(message));
+      warn(`เปิดหน้าจอแบบใหม่ไม่สำเร็จ (${e instanceof Error ? e.message : String(e)}) — ใช้หน้าจอแบบเดิมแทน`);
+    }
+  }
+  return new CliIO();
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: ต่อเข้า <code>src/index.ts</code></strong></span></p>
+  <p>แทน <code>import { CliIO } from './cli';</code> ด้วย <code>import { createTerminalIO } from './tui/select';</code> แล้วแทนสองบรรทัด</p>
+<pre><code>  const cli = new CliIO();
+  // CliIO ส่ง Ctrl+C ต่อเป็น process 'SIGINT' แต่ handler หลักยังไม่ถูกตั้งตอนอยู่ในเมนูโปรเจกต์</code></pre>
+  <p>ด้วย</p>
+<pre><code>  // terminal จริง = หน้าจอแบบใหม่ (Ink) ; pipe หรือ AGENT_TEAM_UI=classic = CliIO เดิม
+  const cli = createTerminalIO();
+  // ทั้งสองแบบส่ง Ctrl+C ต่อเป็น process 'SIGINT' แต่ handler หลักยังไม่ถูกตั้งตอนอยู่ในเมนูโปรเจกต์</code></pre>
+  <p class="meta">ส่วนอื่นของ <code>index.ts</code> ใช้ <code>cli.say</code>, <code>cli.status</code>, <code>cli.close()</code> ซึ่ง <code>TerminalIO</code> มีครบ ไม่ต้องแก้</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: README</strong></span></p>
+  <p>เพิ่มหัวข้อใน <code>README.md</code> ก่อน <code>## ระดับงาน: quick / standard / full</code>:</p>
+<pre><code>## หน้าจอ
+เมื่อรันใน terminal จริง agent-team ใช้หน้าจอแบบ Claude CLI: ข้อความเก่าอยู่ด้านบน ช่องพิมพ์มีกรอบอยู่ล่างสุด
+
+- ช่องพิมพ์: Enter ส่ง · `\` แล้ว Enter ขึ้นบรรทัดใหม่ · ← → เลื่อนทีละตัวอักษร (รองรับสระบน/ล่าง) · ↑↓ ข้อความที่เคยส่ง · Esc ล้าง · Ctrl+A / Ctrl+E ต้น/ท้ายบรรทัด
+- paste ข้อความหลายบรรทัดได้ (ไม่ส่งจนกว่าจะกด Enter) ; ระหว่าง agent ทำงานพิมพ์ล่วงหน้าได้ แล้วกด Enter เมื่อมีคำถามถัดไป
+- เมนูตัวเลือก: ↑↓ แล้ว Enter หรือกดเลข ; แถวสุดท้าย "พิมพ์ข้อความถึง PM…" ใช้ถาม PM ก่อนตัดสินใจ (Tab หรือพิมพ์ได้เลย, ↑ กลับไปตัวเลือก)
+- Ctrl+C หยุดงานเหมือนเดิม
+
+ใช้หน้าจอแบบเดิม (พิมพ์ทีละบรรทัด) ได้ด้วย `AGENT_TEAM_UI=classic`:
+
+    set AGENT_TEAM_UI=classic          (cmd)
+    $env:AGENT_TEAM_UI = 'classic'     (PowerShell)
+
+ถ้า stdin/stdout ไม่ใช่ terminal (pipe, CI) จะใช้แบบเดิมเอง</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: รัน test ทั้งชุด</strong></span></p>
+  <p>รัน: <code>npm test</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS ทั้งหมด ไม่มี type error</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: ทดลองจริง (ผู้ใช้เป็นคนรัน — ไม่ใช้โควตาถ้าไม่กด Enter ที่คำถามของ PM)</strong></span></p>
+  <p>ทำใน cmd แบบเดิม, Windows Terminal และ terminal ของ VS Code ที่โฟลเดอร์ repo:</p>
+<pre><code>cmd:
+  mkdir "%TEMP%\at-demo"
+  npm start -- --project "%TEMP%\at-demo"
+
+PowerShell:
+  New-Item -ItemType Directory -Force "$env:TEMP\at-demo" | Out-Null
+  npm start -- --project "$env:TEMP\at-demo"</code></pre>
+  <p>คาดหวัง: เมนูงาน (ถ้ามี) และคำถามของ PM อยู่ในช่องพิมพ์มีกรอบ ; พิมพ์ <code>ที่นี่มีน้ำไหม</code> แล้ว ← → / Backspace ทำงานถูก กรอบไม่เบี้ยว ; <code>\</code> แล้ว Enter ขึ้นบรรทัด ; Ctrl+C หยุดได้และ terminal กลับมาปกติ (cursor แสดง พิมพ์คำสั่งต่อได้) ; จากนั้นลอง <code>set AGENT_TEAM_UI=classic</code> (cmd) หรือ <code>$env:AGENT_TEAM_UI = 'classic'</code> (PowerShell) แล้วรันซ้ำ ต้องได้หน้าจอแบบเดิม — changes are ready for review</p>
+</div>
+
+</body>
+</html>

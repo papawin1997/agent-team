@@ -4,7 +4,8 @@ import type { RoleName } from './config';
 export interface StatusSink {
   start(label: string): void;
   update(detail: string): void;
-  stop(): void;
+  /** ok = agent ได้ผลลัพธ์ (false = ล้ม) — หน้าจอใหม่ใช้เลือก ⏺ / ✗ ; Spinner ไม่สนค่านี้ */
+  stop(ok?: boolean): void;
 }
 
 export const nullStatus: StatusSink = { start: () => {}, update: () => {}, stop: () => {} };
