@@ -5,6 +5,7 @@ import type { UserIO } from './deps';
 import { presentBillingVars } from './env';
 import { JobRepository } from './jobs';
 import { FileLogger } from './logger';
+import { QuotaMonitor } from './quota';
 import { SdkRoleRunner } from './runner';
 import type { SayKind } from './style';
 import { GitSnapshots, type SnapshotProvider } from './snapshot';
@@ -19,6 +20,8 @@ export interface RunContext {
   repo: JobRepository;
   /** snapshot working tree ของโปรเจกต์ (ใช้หา diff รอบแก้ให้ QA) */
   snapshots: SnapshotProvider;
+  /** ส่วนที่ 3: สถานะโควตาจาก rate_limit_event (ใช้ร่วมกันทั้งรอบรัน) */
+  quota: QuotaMonitor;
 }
 
 /** ของที่ทั้งโหมดโต้ตอบและ headless ต้องใช้ในการรันงาน (config, log, runner, repo) */
@@ -30,6 +33,7 @@ export function createRunContext(
   const abortController = new AbortController();
   const logFile = path.join(ensureTeamDir(projectDir), 'agent-team.log');
   const logger = new FileLogger(logFile);
+  const quota = new QuotaMonitor();
   const runner = new SdkRoleRunner({
     projectDir,
     config,
@@ -38,10 +42,11 @@ export function createRunContext(
     log: opts.say,
     status: opts.status,
     debug: process.env.AGENT_TEAM_DEBUG === '1',
+    quota,
   });
   const repo = new JobRepository(projectDir, { log: logger, headless: opts.headless });
   const snapshots = new GitSnapshots(projectDir);
-  return { config, logger, logFile, abortController, runner, repo, snapshots };
+  return { config, logger, logFile, abortController, runner, repo, snapshots, quota };
 }
 
 /** log run.start และแจ้งที่อยู่ log / env ที่ไม่ส่งให้ agent */

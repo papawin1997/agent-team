@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { QuotaStopError } from '../src/errors';
 import { askNonEmpty, decide } from '../src/io-util';
 import { LoggingIO } from '../src/logger';
 import { newState } from '../src/state';
@@ -183,5 +184,13 @@ describe('decide: kind ของข้อความ', () => {
     await decide(deps, newState(), 'ยืนยัน?', ['confirm', 'revise'] as const);
     const i = io.said.findIndex((t) => t.includes('ถาม PM ไม่สำเร็จ'));
     expect(io.kinds[i]).toBe('error');
+  });
+});
+
+describe('decide: QuotaStopError ไม่ถูกกลืน', () => {
+  it('ถาม PM ระหว่างรอตัดสินใจแล้วโดนโควตา: โยนต่อ ไม่วนถามใหม่', async () => {
+    const { deps, runner } = makeDeps({ pm: [] }, ['ทำไมต้องแบบนี้']);
+    vi.spyOn(runner, 'pmTurn').mockRejectedValueOnce(new QuotaStopError('handoff', 'x'));
+    await expect(decide(deps, newState(), 'เลือก', ['confirm', 'revise'] as const)).rejects.toBeInstanceOf(QuotaStopError);
   });
 });

@@ -1,4 +1,5 @@
 import type { AdvisorRunner, CardEnricher, UserIO } from '../deps';
+import { QuotaStopError } from '../errors';
 import { confirmYesNo } from '../io-util';
 import { buildAskResumePrompt } from '../prompts';
 import type { Handoff } from '../schemas';
@@ -70,6 +71,7 @@ export async function runAsk(deps: AskDeps): Promise<AskOutcome> {
       sessionId = out.sessionId;
       handoff = out.handoff;
     } catch (e) {
+      if (e instanceof QuotaStopError) throw e;
       io.say(`เขียน handoff ไม่สำเร็จ (${errMessage(e)})`, 'error');
       return undefined;
     }
@@ -129,6 +131,10 @@ export async function runAsk(deps: AskDeps): Promise<AskOutcome> {
       failed = undefined;
       io.say(out.text, 'advisor');
     } catch (e) {
+      if (e instanceof QuotaStopError) {
+        e.pendingText = input;
+        throw e;
+      }
       failed = { input, message };
       io.say(
         `advisor ตอบไม่สำเร็จ (${errMessage(e)}) — กด Enter เพื่อส่งข้อความเดิมอีกครั้ง หรือพิมพ์ข้อความใหม่ ` +

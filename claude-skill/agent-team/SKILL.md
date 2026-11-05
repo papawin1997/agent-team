@@ -35,6 +35,7 @@ agent-team เรียกโมเดลที่มีค่าใช้จ่
   1. แสดง `messages` ให้ผู้ใช้ (สรุป requirements / design / ผล QA ที่ต้องใช้ตัดสินใจ ห้ามตัดสาระสำคัญ)
   2. ถาม `question.prompt` กับผู้ใช้ ถ้ามี `question.options` ให้เป็นตัวเลือก (AskUserQuestion) — `kind: choiceOrText` ผู้ใช้พิมพ์ข้อความอิสระเพื่อถาม PM ได้, `kind: text` เป็นข้อความอิสระ, `kind: choice` ต้องเป็นหนึ่งในตัวเลือก
      AskUserQuestion รับได้ไม่เกิน 4 ตัวเลือก: ถ้า `question.options` มีมากกว่า 4 ให้แสดงรายการตัวเลือกทั้งหมดเป็นข้อความ แล้วให้ผู้ใช้พิมพ์ตัวเลือกเอง
+     คำถาม "จะทำอย่างไรต่อ? (handoff ... continue ...)" มาจากการเตือนโควตา — continue อาจใช้โควตาหรือ extra usage ที่คิดเงินเพิ่ม ต้องให้ผู้ใช้ตัดสินเท่านั้น
   3. ส่งคำตอบของผู้ใช้ตามจริง:
 
          agent-team answer --project "<path>" --job <jobId> -- "<คำตอบ>"
@@ -42,6 +43,7 @@ agent-team เรียกโมเดลที่มีค่าใช้จ่
   4. เรียก wait ต่อ
 - `done`: งานเสร็จ สรุป `messages` ให้ผู้ใช้
 - `aborted`: งานถูกยกเลิกตามที่ผู้ใช้เลือก
+- `stopped` ที่มี `reason: "quota"`: หยุดเพราะโควตา subscription (ผู้ใช้เลือก handoff หรือโควตาเต็ม) บอกผู้ใช้ตาม `message` และให้ path `handoffPath` (ไฟล์ส่งต่องานที่ AI ตัวอื่นหรือคนอ่านทำต่อได้) ทำต่อด้วย agent-team ได้หลังโควตารีเซ็ตเท่านั้น และต้องถามผู้ใช้ก่อน
 - `error` / `idle` / `stopped` / `dead`: แจ้ง `message` ถ้าผู้ใช้อยากทำต่อ ให้ทำต่องานเดิม (jobId เดิม) ด้วย `agent-team run --headless --project "<path>" --job <jobId>` แบบ background แล้วทำขั้นตอนเริ่มงานข้อ 3-4 และเข้า loop ใหม่ — ห้ามเริ่มงานใหม่ (`--request`) ซ้ำสำหรับคำขอเดิม
 
 ## กฎ

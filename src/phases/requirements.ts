@@ -1,4 +1,5 @@
 import type { Deps, LevelHintState } from '../deps';
+import { QuotaStopError } from '../errors';
 import { formatRequirements } from '../format';
 import { askNonEmpty } from '../io-util';
 import { confirmAsFull, decideLevel, offersChoice } from '../level';
@@ -25,8 +26,11 @@ export async function runRequirements(
   const noteUserText = (text: string): void => {
     userRisk = mergeRiskFlags(userRisk, riskFlags(text));
   };
+  // ข้อความดิบล่าสุดของผู้ใช้ — ถ้าหยุดเพราะโควตาก่อนถึง PM จะเก็บเป็น pendingPrompt
+  let lastUserText = '';
   // ข้อความผู้ใช้ทุกข้อความที่จะถึง PM ผ่านที่นี่: นับความเสี่ยงจากข้อความดิบ แล้วแนบการ์ด Jira (ถ้ามี)
   const fromUser = async (text: string): Promise<{ prompt: string; title?: string }> => {
+    lastUserText = text;
     noteUserText(text);
     return deps.cards ? deps.cards.enrich(text) : { prompt: text };
   };
@@ -57,6 +61,12 @@ export async function runRequirements(
     try {
       response = await runner.pmTurn({ prompt, sessionId: state.pmSessionId });
     } catch (e) {
+      if (e instanceof QuotaStopError) {
+        // ข้อความนี้ยังไม่ถึง PM: เก็บไว้ให้ -r เล่นซ้ำ (ดิบ ไม่มีการ์ด — รอบใหม่แนบการ์ดเอง)
+        state.pendingPrompt = lastUserText;
+        await store.save(state);
+        throw e;
+      }
       // PM ล้ม (เช่นส่ง JSON ไม่ผ่านซ้ำ) ไม่ควรทำให้ทั้ง run หยุด: ให้ user ส่งข้อความเดิมซ้ำหรือพิมพ์ใหม่
       io.say(
         `\n[PM] PM ตอบไม่สำเร็จ (${e instanceof Error ? e.message : String(e)}) — ` +

@@ -1,8 +1,9 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFIG } from '../../src/config';
+import { QuotaStopError } from '../../src/errors';
 import { headlessPath, readEvents, readJsonSafe, writeJsonAtomic, type ExitInfo, type Question } from '../../src/headless/files';
 import { HeadlessIO } from '../../src/headless/io';
 import { runHeadlessJob, startHeadlessJob } from '../../src/headless/run';
@@ -164,5 +165,32 @@ describe('runHeadlessJob', () => {
     const qa = runner.calls.filter((c) => c.role === 'qa').map((c) => c.input as QaInput);
     // full ไม่ถ่าย startTree (M6: startTree เฉพาะ quick/standard) — t1 คือ "after" ของรอบแรก (baseline ของ QA รอบแก้)
     expect(qa[1]!.roundDiff?.diff).toBe('t1..t2');
+  });
+});
+
+describe('runHeadlessJob: หยุดเพราะโควตา', () => {
+  it('QuotaStopError → stopped พร้อม reason quota และเขียน handoff.md', async () => {
+    const repo = new JobRepository(projectDir);
+    const job = await startHeadlessJob(repo, { request: 'อยากได้ todo', resume: false });
+    const dir = repo.jobDir(job.id);
+    const runner = new FakeRunner({ pm: [] });
+    vi.spyOn(runner, 'pmTurn').mockRejectedValueOnce(new QuotaStopError('rejected', 'โควตาเต็มแล้ว'));
+    const status = await runHeadlessJob({
+      repo,
+      jobId: job.id,
+      store: job.store,
+      runner,
+      config: DEFAULT_CONFIG,
+      logger: nullLogger,
+      io: new HeadlessIO({ dir, idleTimeoutMs: 3000, pollMs: 5 }),
+      onStop: () => {},
+      projectDir,
+    });
+    expect(status).toBe('stopped');
+    const exit = readJsonSafe<ExitInfo>(headlessPath(dir, 'exit'))!;
+    expect(exit).toMatchObject({ status: 'stopped', reason: 'quota' });
+    expect(fs.existsSync(exit.handoffPath!)).toBe(true);
+    expect(exit.message).toContain('โควตาเต็มแล้ว');
+    expect(fs.readFileSync(exit.handoffPath!, 'utf8')).toContain('อยากได้ todo');
   });
 });

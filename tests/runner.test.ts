@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CONFIG, type TeamConfig } from '../src/config';
 import { RoleOutputError, RoleRunError, SdkRoleRunner } from '../src/runner';
+import { QuotaMonitor } from '../src/quota';
 import { failReport, makeDesign, makeRequirements, makeTask, passReport as passReportFor } from './helpers/builders';
 
 type Msg = Record<string, unknown>;
@@ -619,5 +620,47 @@ describe('SdkRoleRunner: เลือกโมเดลตามระดับ�
     ]);
     await runner.plan({ requirements, level: 'standard' });
     expect(calls.map((c) => c.options.model)).toEqual(['claude-sonnet-5', 'claude-sonnet-5']);
+  });
+});
+
+describe('SdkRoleRunner: โควตา', () => {
+  it('rate_limit_event ใน stream -> monitor ได้ข้อมูล และ log quota.event', async () => {
+    const quota = new QuotaMonitor();
+    const events: string[] = [];
+    const queryFn = (() =>
+      (async function* () {
+        yield {
+          type: 'rate_limit_event',
+          rate_limit_info: { status: 'allowed_warning', utilization: 0.85, resetsAt: 1_790_000_000, rateLimitType: 'five_hour' },
+          uuid: 'u1',
+          session_id: 's1',
+        };
+        yield okResult(validTurn);
+      })()) as never;
+    const runner = new SdkRoleRunner({
+      projectDir: 'proj',
+      config: DEFAULT_CONFIG,
+      queryFn,
+      quota,
+      logger: { log: (_level, event) => void events.push(event) },
+    });
+    await runner.pmTurn({ prompt: 'x' });
+    expect(quota.last).toMatchObject({ status: 'allowed_warning', utilization: 0.85, rateLimitType: 'five_hour' });
+    expect(events).toContain('quota.event');
+  });
+
+  it('โควตาเต็ม (rejected) แล้วการเรียกล้ม: ไม่ retry', async () => {
+    const quota = new QuotaMonitor();
+    let calls = 0;
+    const queryFn = (() => {
+      calls += 1;
+      return (async function* () {
+        yield { type: 'rate_limit_event', rate_limit_info: { status: 'rejected' }, uuid: 'u1', session_id: 's1' };
+        throw new Error('rate limited');
+      })();
+    }) as never;
+    const runner = new SdkRoleRunner({ projectDir: 'proj', config: DEFAULT_CONFIG, queryFn, quota, sleep: async () => {} });
+    await expect(runner.pmTurn({ prompt: 'x' })).rejects.toThrow('rate limited');
+    expect(calls).toBe(1);
   });
 });

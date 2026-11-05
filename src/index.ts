@@ -4,17 +4,20 @@ import { parseArgs } from './args';
 import { HandoffStore } from './ask/handoff-store';
 import { askJobPrompt, runAsk } from './ask/session';
 import { CliIO } from './cli';
+import { QuotaStopError } from './errors';
 import { isHeadlessCommand, parseHeadlessCommand } from './headless/args';
 import { runHeadlessCommand } from './headless/commands';
 import { runHeadless } from './headless/run';
 import { makeInterruptHandler } from './interrupt';
 import { jiraCardsFor } from './jira-cards';
+import { handleQuotaStop } from './job-handoff';
 import { createAskJob, selectJob, type SelectedJob } from './job-menu';
 import { LoggingIO } from './logger';
 import { runLogsCommand } from './logview/command';
 import { runTeam } from './orchestrator';
 import { selectProject } from './project-menu';
 import { ProjectRegistry, teamRootError } from './projects';
+import { guardAdvisor, guardRunner, QuotaGate } from './quota-gate';
 import { announceRun, createRunContext } from './run-context';
 
 async function main(): Promise<void> {
@@ -83,6 +86,10 @@ async function main(): Promise<void> {
   io = loggingIO;
   announceRun(ctx, loggingIO, { projectDir, resume: args.resume, ...(args.command === 'ask' ? { mode: 'ask' } : {}) });
   const { config, logger, runner, repo, abortController } = ctx;
+  // ส่วนที่ 3: เช็คโควตาก่อนเรียก agent ทุกครั้ง (จุดปลอดภัย)
+  const gate = new QuotaGate(ctx.quota, loggingIO, logger);
+  const teamRunner = guardRunner(runner, gate);
+  const advisorRunner = guardAdvisor(runner, gate);
   let jobId: string | undefined;
 
   const onSignal = makeInterruptHandler({
@@ -101,7 +108,7 @@ async function main(): Promise<void> {
     let job: SelectedJob;
     if (args.command === 'ask') {
       const outcome = await runAsk({
-        runner,
+        runner: advisorRunner,
         io: loggingIO,
         store: new HandoffStore(projectDir),
         resume: args.resume,
@@ -130,7 +137,7 @@ async function main(): Promise<void> {
     jobId = job.id;
     logger.log('INFO', 'job.selected', { jobId, resume: args.command === 'ask' ? false : args.resume });
     const final = await runTeam({
-      runner,
+      runner: teamRunner,
       io: loggingIO,
       store: job.store,
       config,
@@ -154,6 +161,13 @@ async function main(): Promise<void> {
     );
     logger.log('INFO', 'run.end', { phase: final.phase, jobId });
   } catch (e) {
+    if (e instanceof QuotaStopError) {
+      const out = await handleQuotaStop({ error: e, jobId, repo, projectDir, logger });
+      console.error(`\n${out.lines.join('\n')}`);
+      logger.log('INFO', 'run.end', { jobId, reason: 'quota' });
+      process.exitCode = 2;
+      return;
+    }
     console.error(`\nหยุดเพราะ error: ${e instanceof Error ? e.message : String(e)}`);
     if (jobId) console.error('รันใหม่แล้วเลือกงานนี้จากเมนู หรือใช้ --resume เพื่อทำต่องานล่าสุด');
     console.error(`ดูสาเหตุ: agent-team logs "${projectDir}"`);

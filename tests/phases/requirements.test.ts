@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { PlanInput, PmInput } from '../../src/deps';
 import { initProgress, quickDesign } from '../../src/domain';
 import { runDesign } from '../../src/phases/design';
+import { QuotaStopError } from '../../src/errors';
 import { runRequirements } from '../../src/phases/requirements';
 import { newState } from '../../src/state';
 import {
@@ -653,5 +654,17 @@ describe('runRequirements: การ์ด Jira', () => {
     await runRequirements(deps, newState());
     expect(cards.calls).toEqual(['RTRPMS-1']);
     expect(pmInput(runner, 0).prompt).toBe('[CARD RTRPMS-1]\n\nRTRPMS-1');
+  });
+});
+
+describe('runRequirements: หยุดเพราะโควตา', () => {
+  it('ข้อความที่ยังไม่ถึง PM ถูกเก็บเป็น pendingPrompt (ดิบ ไม่มีการ์ด) แล้วโยนต่อ', async () => {
+    const { deps, runner, store } = makeDeps({ pm: [] }, ['ทำตาม RTRPMS-1']);
+    deps.cards = new FakeCards();
+    vi.spyOn(runner, 'pmTurn').mockRejectedValueOnce(new QuotaStopError('handoff', 'x'));
+    const state = newState();
+    await expect(runRequirements(deps, state)).rejects.toBeInstanceOf(QuotaStopError);
+    expect(state.pendingPrompt).toBe('ทำตาม RTRPMS-1');
+    expect(store.state?.pendingPrompt).toBe('ทำตาม RTRPMS-1');
   });
 });

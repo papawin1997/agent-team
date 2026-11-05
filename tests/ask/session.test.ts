@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { HandoffStore } from '../../src/ask/handoff-store';
 import { askJobPrompt, runAsk } from '../../src/ask/session';
+import { QuotaStopError } from '../../src/errors';
 import type { AdviseInput, AdvisorRunner } from '../../src/deps';
 import type { Handoff } from '../../src/schemas';
 import { FakeCards, ScriptedIO } from '../helpers/fakes';
@@ -216,5 +217,14 @@ describe('runAsk: การ์ด Jira', () => {
     const cards = new FakeCards();
     await runAsk({ runner: new FakeAdvisor([]), io: new ScriptedIO(['/help', '/exit']), store: newStore(), resume: false, cards });
     expect(cards.calls).toEqual([]);
+  });
+});
+
+describe('runAsk: หยุดเพราะโควตา', () => {
+  it('โยน QuotaStopError ต่อ พร้อมข้อความที่ยังไม่ถึง advisor', async () => {
+    const runner = new FakeAdvisor([new QuotaStopError('handoff', 'x')]);
+    const err = await runAsk({ runner, io: new ScriptedIO(['คำถามล่าสุด']), store: newStore(), resume: false }).catch((e) => e);
+    expect(err).toBeInstanceOf(QuotaStopError);
+    expect((err as QuotaStopError).pendingText).toBe('คำถามล่าสุด');
   });
 });

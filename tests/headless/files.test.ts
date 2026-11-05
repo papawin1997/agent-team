@@ -77,3 +77,18 @@ describe('writeExit', () => {
     expect(readJsonSafe<ExitInfo>(headlessPath(dir, 'exit'))).not.toHaveProperty('message');
   });
 });
+
+describe('writeExit: เหตุผลโควตา', () => {
+  it('เขียน reason และ handoffPath เมื่อระบุ ; ไม่ระบุ = รูปเดิม', () => {
+    writeExit(dir, 'stopped', 'โควตา', new Date('2026-11-05T07:00:00Z'), { reason: 'quota', handoffPath: 'h.md' });
+    expect(readJsonSafe<ExitInfo>(headlessPath(dir, 'exit'))).toEqual({
+      status: 'stopped',
+      message: 'โควตา',
+      at: '2026-11-05T07:00:00.000Z',
+      reason: 'quota',
+      handoffPath: 'h.md',
+    });
+    writeExit(dir, 'stopped', 'x', new Date('2026-11-05T07:00:00Z'));
+    expect(Object.keys(readJsonSafe<ExitInfo>(headlessPath(dir, 'exit'))!)).toEqual(['status', 'message', 'at']);
+  });
+});

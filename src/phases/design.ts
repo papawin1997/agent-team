@@ -1,6 +1,7 @@
 import { askNonEmpty, decide } from '../io-util';
 import type { Deps } from '../deps';
 import { DesignError, initProgress, orderTasks } from '../domain';
+import { rethrowQuotaStop } from '../errors';
 import { formatDesign } from '../format';
 import { logLevelDecided } from '../level';
 import { nullLogger } from '../logger';
@@ -21,6 +22,7 @@ async function reviewDesignSecurity(
   try {
     return await deps.runner.securityDesign({ design, requirements, level });
   } catch (e) {
+    rethrowQuotaStop(e);
     (deps.log ?? nullLogger).log('WARN', 'security.design_failed', { reason: String(e) });
     deps.io.say(`[Security] ตรวจ design ไม่สำเร็จ (${String(e)}) — ยังไม่มีผลตรวจความปลอดภัยของ design นี้`, 'warn');
     return undefined;

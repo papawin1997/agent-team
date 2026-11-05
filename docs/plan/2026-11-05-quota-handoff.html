@@ -1,0 +1,1215 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>เตือนโควตาและ handoff Implementation Plan</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; line-height: 1.55;
+         max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1f2933;
+         background: #f5f7fa; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  pre { background: #1f2933; color: #e4e7eb; padding: .9rem 1rem;
+        border-radius: 6px; overflow-x: auto; }
+  code { background: #e4e7eb; padding: .1rem .35rem; border-radius: 4px; }
+  pre code { background: none; padding: 0; color: inherit; }
+  .frame { border-left: 6px solid; border-radius: 8px; padding: 1rem 1.25rem;
+           margin: 1.25rem 0; background: #ffffff;
+           box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .frame-header     { border-color: #2563eb; background: #eff6ff; }  /* blue  */
+  .frame-constraints{ border-color: #d97706; background: #fffbeb; }  /* amber */
+  .frame-task       { border-color: #059669; background: #ecfdf5; }  /* green */
+  .frame h1, .frame h2, .frame h3 { margin-top: 0; }
+  .note { border-color: #7c3aed; background: #f5f3ff; }              /* violet */
+  .step { display: flex; gap: .5rem; align-items: baseline;
+          margin: .75rem 0 .25rem; }
+  .step input { transform: scale(1.2); margin-top: .15rem; }
+  .meta { color: #52606d; font-size: .9rem; }
+</style>
+</head>
+<body>
+
+<div class="frame frame-header">
+  <h1>เตือนโควตา subscription + handoff (ส่วนที่ 3) Implementation Plan</h1>
+  <p><strong>เป้าหมาย:</strong> เมื่อ SDK บอกว่าโควตาใกล้เต็ม เริ่มใช้ extra usage หรือเต็มแล้ว ให้ agent-team เตือนก่อนเรียก agent ครั้งถัดไป ถามว่าจะ handoff หรือทำต่อ และเมื่อหยุดให้เขียน <code>handoff.md</code> จาก state ด้วยโค้ด (ไม่ใช้ AI) ที่คนหรือ AI ตัวอื่นอ่านแล้วทำต่อได้</p>
+  <p><strong>สถาปัตยกรรม:</strong> <code>SdkRoleRunner</code> อ่าน <code>rate_limit_event</code> จาก stream ส่งให้ <code>QuotaMonitor</code> (<code>src/quota.ts</code>, ตรรกะล้วน) ; <code>QuotaGate</code> + <code>guardRunner</code>/<code>guardAdvisor</code> (<code>src/quota-gate.ts</code>) ห่อ runner ให้เช็คก่อนทุกการเรียก agent ("จุดปลอดภัย") และโยน <code>QuotaStopError</code> เพื่อหยุด ; phases ปล่อย <code>QuotaStopError</code> ผ่านทุก catch ; <code>src/job-handoff.ts</code> สร้าง/เขียน handoff และ <code>index.ts</code> / <code>headless/run.ts</code> จัดการตอนหยุด</p>
+  <p><strong>Tech Stack:</strong> TypeScript, <code>@anthropic-ai/claude-agent-sdk</code> 0.3.278 (<code>SDKRateLimitEvent</code>), vitest — ไม่มี dependency ใหม่</p>
+  <p class="meta">Design: <code>docs/superpowers/specs/2026-10-29-team-skills-jira-quota-design.md</code> ส่วนที่ 3 (รวมข้อตัดสินใจ 3, 4, 5, 7, 8, 10, 11)</p>
+</div>
+
+<div class="frame note">
+  <strong>For agentic workers:</strong> REQUIRED SUB-SKILL: Use
+  tb-subagent-driven-development (recommended) or
+  tb-executing-plans to implement this plan task-by-task. Steps keep
+  the <code>- [ ]</code> marker next to each checkbox for tracking.
+</div>
+
+<div class="frame frame-constraints">
+  <h2>Global Constraints</h2>
+  <ul>
+    <li>TypeScript ตาม style ของ repo, คอมเมนต์ไทย, ไม่มี dependency ใหม่ ; ข้อความในจอภาษาไทยผ่าน <code>io.say(text, kind)</code></li>
+    <li>เทสต์ด้วย vitest และ fakes ใน <code>tests/helpers/</code> — ห้ามเรียก SDK จริง</li>
+    <li>ใช้เกณฑ์ <code>allowed_warning</code> ของ SDK ไม่ตั้งเปอร์เซ็นต์เอง ; <code>utilization</code> &gt; 1 ถือเป็นเปอร์เซ็นต์ ≤ 1 ถือเป็นสัดส่วน ; <code>resetsAt</code> &lt; 1e12 ถือเป็นวินาที</li>
+    <li>extra usage = <code>overageInUse === true</code> หรือ <code>isUsingOverage === true</code> หรือ <code>rateLimitType === 'overage'</code> หรือ <code>overageStatus</code> เป็น <code>allowed_warning</code>/<code>rejected</code> — ข้อความต้องบอกว่า "คิดเงินเพิ่ม"</li>
+    <li>เลือก continue แล้วไม่ถามซ้ำจนกว่า <code>rateLimitType</code>/<code>resetsAt</code> จะเปลี่ยน (จำในหน่วยความจำของรอบรันนี้เท่านั้น) ; extra usage ถามครั้งเดียวต่อรอบรัน แม้เคยตอบ continue ให้คำเตือนปกติแล้ว</li>
+    <li><code>rejected</code> = ไม่ถาม เขียน handoff แล้วหยุด ; ไม่ตัด agent กลางการเรียก (เช็คเฉพาะก่อนเรียก และตอนการเรียกล้ม)</li>
+    <li>handoff สร้างด้วยโค้ดจาก state เท่านั้น ห้ามเรียก AI และห้ามใส่ค่า env ใด ๆ ; เขียนแบบ atomic (tmp + rename) ที่ <code>.agent-team/jobs/&lt;id&gt;/handoff.md</code></li>
+    <li>ข้อความผู้ใช้ที่ยังไม่ถึง PM ตอนหยุด (เฟส REQUIREMENTS) บันทึกเป็น <code>state.pendingPrompt</code> เพื่อให้ <code>-r</code> เล่นซ้ำได้</li>
+    <li>headless: ใช้ <code>ExitStatus</code> เดิม <code>stopped</code> + field ใหม่ <code>reason: 'quota'</code>, <code>handoffPath</code> (driver เก่ายังเห็น stopped) ; โหมด interactive หยุดด้วย exit code 2</li>
+    <li>log event: <code>quota.event</code>, <code>quota.alert</code>, <code>quota.decision</code>, <code>quota.handoff</code> ; ไม่เปลี่ยนพฤติกรรม Ctrl+C / resume / headless เดิม ; ห้าม commit — ผู้ใช้ตรวจ diff และ commit เอง</li>
+  </ul>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 1: <code>QuotaMonitor</code> และข้อความเตือน (<code>src/quota.ts</code>)</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/quota.ts</code></li>
+    <li>เทสต์: <code>tests/quota.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ส่งต่อ:
+      <ul>
+        <li><code>interface RateLimitInfo { status: 'allowed' | 'allowed_warning' | 'rejected'; resetsAt?: number; rateLimitType?: string; utilization?: number; overageStatus?: 'allowed' | 'allowed_warning' | 'rejected'; overageResetsAt?: number; isUsingOverage?: boolean; overageInUse?: boolean }</code></li>
+        <li><code>type QuotaAlert = { kind: 'rejected' | 'overage' | 'warning'; info: RateLimitInfo }</code></li>
+        <li><code>usingOverage(info: RateLimitInfo): boolean</code></li>
+        <li><code>class QuotaMonitor { record(info): void; get last(): RateLimitInfo | undefined; isRejected(): boolean; pending(): QuotaAlert | undefined; acknowledge(alert: QuotaAlert): void }</code></li>
+        <li><code>formatQuotaAlert(alert: QuotaAlert, now?: Date): string</code></li>
+      </ul>
+    </li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>สร้าง <code>tests/quota.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import { formatQuotaAlert, QuotaMonitor, type RateLimitInfo, usingOverage } from '../src/quota';
+
+const now = new Date(2026, 10, 5, 12, 0);
+const at = (h: number, m: number, day = 5) =&gt; new Date(2026, 10, day, h, m).getTime() / 1000;
+const warning = (over: Partial&lt;RateLimitInfo&gt; = {}): RateLimitInfo =&gt; ({
+  status: 'allowed_warning',
+  rateLimitType: 'five_hour',
+  utilization: 0.85,
+  resetsAt: at(16, 30),
+  ...over,
+});
+
+describe('QuotaMonitor', () =&gt; {
+  it('ยังไม่มี event หรือ allowed ธรรมดา: ไม่มีอะไรค้าง', () =&gt; {
+    const m = new QuotaMonitor();
+    expect(m.pending()).toBeUndefined();
+    m.record({ status: 'allowed', utilization: 0.2 });
+    expect(m.pending()).toBeUndefined();
+    expect(m.last).toEqual({ status: 'allowed', utilization: 0.2 });
+  });
+
+  it('allowed_warning: ค้างจน continue แล้วไม่ถามซ้ำในรอบเดียวกัน แต่ถามใหม่เมื่อ resetsAt เปลี่ยน', () =&gt; {
+    const m = new QuotaMonitor();
+    m.record(warning());
+    const alert = m.pending();
+    expect(alert?.kind).toBe('warning');
+    m.acknowledge(alert!);
+    m.record(warning({ utilization: 0.9 }));
+    expect(m.pending()).toBeUndefined();
+    m.record(warning({ resetsAt: at(21, 30) }));
+    expect(m.pending()?.kind).toBe('warning');
+  });
+
+  it('เริ่มใช้ extra usage: ถามแม้เคย continue คำเตือนปกติ และถามครั้งเดียวต่อรอบ', () =&gt; {
+    const m = new QuotaMonitor();
+    m.record(warning());
+    m.acknowledge(m.pending()!);
+    m.record({ status: 'allowed', overageInUse: true });
+    const alert = m.pending();
+    expect(alert?.kind).toBe('overage');
+    m.acknowledge(alert!);
+    m.record({ status: 'allowed', overageInUse: true });
+    expect(m.pending()).toBeUndefined();
+  });
+
+  it('rejected: ค้างเสมอ (continue ไม่ได้) และ isRejected = true', () =&gt; {
+    const m = new QuotaMonitor();
+    m.record({ status: 'rejected', resetsAt: at(16, 30) });
+    expect(m.isRejected()).toBe(true);
+    expect(m.pending()?.kind).toBe('rejected');
+  });
+});
+
+describe('usingOverage', () =&gt; {
+  it.each([
+    [{ overageInUse: true }, true],
+    [{ isUsingOverage: true }, true],
+    [{ rateLimitType: 'overage' }, true],
+    [{ overageStatus: 'allowed_warning' as const }, true],
+    [{ overageStatus: 'rejected' as const }, true],
+    [{ overageStatus: 'allowed' as const }, false],
+    [{}, false],
+  ])('%j -&gt; %s', (over, expected) =&gt; {
+    expect(usingOverage({ status: 'allowed', ...over })).toBe(expected);
+  });
+});
+
+describe('formatQuotaAlert', () =&gt; {
+  it('warning: ประเภทภาษาไทย เปอร์เซ็นต์ และเวลารีเซ็ตท้องถิ่น', () =&gt; {
+    expect(formatQuotaAlert({ kind: 'warning', info: warning() }, now)).toBe('⚠ โควตา 5 ชม. · ใช้ไป 85% · รีเซ็ต 16:30');
+  });
+
+  it('utilization เป็นเปอร์เซ็นต์อยู่แล้ว (&gt; 1) และ resetsAt เป็นมิลลิวินาที', () =&gt; {
+    const info = warning({ utilization: 92, resetsAt: at(16, 30) * 1000, rateLimitType: 'seven_day' });
+    expect(formatQuotaAlert({ kind: 'warning', info }, now)).toBe('⚠ โควตา 7 วัน · ใช้ไป 92% · รีเซ็ต 16:30');
+  });
+
+  it('รีเซ็ตคนละวัน: มีวันที่ ; ไม่มีข้อมูล: ละส่วนนั้น', () =&gt; {
+    expect(formatQuotaAlert({ kind: 'warning', info: warning({ resetsAt: at(9, 5, 7) }) }, now)).toContain('รีเซ็ต 7/11 09:05');
+    expect(formatQuotaAlert({ kind: 'warning', info: { status: 'allowed_warning' } }, now)).toBe('⚠ โควตา');
+  });
+
+  it('overage บอกชัดว่าคิดเงินเพิ่ม ; rejected บอกว่าเต็มแล้ว', () =&gt; {
+    expect(formatQuotaAlert({ kind: 'overage', info: { status: 'allowed', overageInUse: true } }, now)).toContain(
+      'กำลังใช้ extra usage (คิดเงินเพิ่ม)',
+    );
+    expect(formatQuotaAlert({ kind: 'rejected', info: { status: 'rejected', rateLimitType: 'five_hour', resetsAt: at(16, 30) } }, now)).toBe(
+      'โควตาเต็มแล้ว (โควตา 5 ชม.) · รีเซ็ต 16:30',
+    );
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/quota.test.ts</code><br>
+     คาดหวัง: FAIL ด้วย "Cannot find module '../src/quota'"</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p>สร้าง <code>src/quota.ts</code>:</p>
+<pre><code>/**
+ * ส่วนที่ 3: ติดตามโควตา subscription จาก rate_limit_event ของ SDK
+ * (SDKRateLimitInfo ใน sdk.d.ts — เก็บเฉพาะ field ที่ใช้ ; type อื่นของ SDK ส่งเข้ามาได้เพราะเป็น structural)
+ */
+export interface RateLimitInfo {
+  status: 'allowed' | 'allowed_warning' | 'rejected';
+  resetsAt?: number;
+  rateLimitType?: string;
+  utilization?: number;
+  overageStatus?: 'allowed' | 'allowed_warning' | 'rejected';
+  overageResetsAt?: number;
+  isUsingOverage?: boolean;
+  overageInUse?: boolean;
+}
+
+export type QuotaAlert = { kind: 'rejected' | 'overage' | 'warning'; info: RateLimitInfo };
+
+/** กำลังใช้ (หรือกำลังจะใช้) extra usage ที่คิดเงินจริง */
+export function usingOverage(info: RateLimitInfo): boolean {
+  return (
+    info.overageInUse === true ||
+    info.isUsingOverage === true ||
+    info.rateLimitType === 'overage' ||
+    info.overageStatus === 'allowed_warning' ||
+    info.overageStatus === 'rejected'
+  );
+}
+
+const warningKey = (info: RateLimitInfo): string =&gt; `${info.rateLimitType ?? '?'}|${info.resetsAt ?? '?'}`;
+
+/** ใช้ร่วมกันทั้งรอบรัน: runner บันทึก event, QuotaGate ถามที่จุดปลอดภัย */
+export class QuotaMonitor {
+  private latest: RateLimitInfo | undefined;
+  /** คำเตือนปกติที่ผู้ใช้ตอบ continue แล้ว (key = ประเภท|เวลารีเซ็ต) */
+  private readonly continued = new Set&lt;string&gt;();
+  private overageContinued = false;
+
+  record(info: RateLimitInfo): void {
+    this.latest = info;
+  }
+
+  get last(): RateLimitInfo | undefined {
+    return this.latest;
+  }
+
+  isRejected(): boolean {
+    return this.latest?.status === 'rejected';
+  }
+
+  /** สิ่งที่ต้องแจ้ง/ถามที่จุดปลอดภัยถัดไป (ไม่มี = เรียก agent ต่อได้เลย) */
+  pending(): QuotaAlert | undefined {
+    const info = this.latest;
+    if (!info) return undefined;
+    if (info.status === 'rejected') return { kind: 'rejected', info };
+    if (usingOverage(info) &amp;&amp; !this.overageContinued) return { kind: 'overage', info };
+    if (info.status === 'allowed_warning' &amp;&amp; !this.continued.has(warningKey(info))) return { kind: 'warning', info };
+    return undefined;
+  }
+
+  /** ผู้ใช้เลือก continue */
+  acknowledge(alert: QuotaAlert): void {
+    if (alert.kind === 'overage') this.overageContinued = true;
+    else if (alert.kind === 'warning') this.continued.add(warningKey(alert.info));
+  }
+}
+
+const TYPE_LABEL: Record&lt;string, string&gt; = {
+  five_hour: 'โควตา 5 ชม.',
+  seven_day: 'โควตา 7 วัน',
+  seven_day_opus: 'โควตา 7 วัน (Opus)',
+  seven_day_sonnet: 'โควตา 7 วัน (Sonnet)',
+  seven_day_overage_included: 'โควตา 7 วัน',
+  overage: 'extra usage',
+};
+
+const pad = (n: number): string =&gt; String(n).padStart(2, '0');
+
+/** เวลาท้องถิ่น HH:MM (คนละวันกับ now = d/M HH:MM) ; รับได้ทั้งวินาทีและมิลลิวินาที */
+function formatReset(value: number, now: Date): string {
+  const d = new Date(value &lt; 1e12 ? value * 1000 : value);
+  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return d.toDateString() === now.toDateString() ? time : `${d.getDate()}/${d.getMonth() + 1} ${time}`;
+}
+
+const percent = (u: number): number =&gt; Math.round(u &gt; 1 ? u : u * 100);
+
+export function formatQuotaAlert(alert: QuotaAlert, now: Date = new Date()): string {
+  const { info } = alert;
+  const label = TYPE_LABEL[info.rateLimitType ?? ''] ?? 'โควตา';
+  const parts: string[] = [];
+  if (alert.kind === 'rejected') parts.push(`โควตาเต็มแล้ว (${label})`);
+  else if (alert.kind === 'overage') parts.push('⚠ กำลังใช้ extra usage (คิดเงินเพิ่ม)');
+  else parts.push(`⚠ ${label}`);
+  if (alert.kind === 'warning' &amp;&amp; info.utilization !== undefined) parts.push(`ใช้ไป ${percent(info.utilization)}%`);
+  const reset = alert.kind === 'overage' ? (info.overageResetsAt ?? info.resetsAt) : info.resetsAt;
+  if (reset !== undefined) parts.push(`รีเซ็ต ${formatReset(reset, now)}`);
+  return parts.join(' · ');
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/quota.test.ts</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS และไม่มี type error</p>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 2: runner บันทึก <code>rate_limit_event</code> และไม่ retry เมื่อโควตาเต็ม</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/runner.ts</code> (<code>SdkRunnerDeps</code>, <code>withRetry</code>, loop ใน <code>once</code>)</li>
+    <li>เทสต์: <code>tests/runner.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: <code>QuotaMonitor</code> (Task 1)</li>
+    <li>ส่งต่อ: <code>SdkRunnerDeps.quota?: QuotaMonitor</code></li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>เพิ่ม import ใน <code>tests/runner.test.ts</code>: <code>import { QuotaMonitor } from '../src/quota';</code> แล้วต่อท้ายไฟล์:</p>
+<pre><code>describe('SdkRoleRunner: โควตา', () =&gt; {
+  it('rate_limit_event ใน stream -&gt; monitor ได้ข้อมูล และ log quota.event', async () =&gt; {
+    const quota = new QuotaMonitor();
+    const events: string[] = [];
+    const queryFn = (() =&gt;
+      (async function* () {
+        yield {
+          type: 'rate_limit_event',
+          rate_limit_info: { status: 'allowed_warning', utilization: 0.85, resetsAt: 1_790_000_000, rateLimitType: 'five_hour' },
+          uuid: 'u1',
+          session_id: 's1',
+        };
+        yield okResult(validTurn);
+      })()) as never;
+    const runner = new SdkRoleRunner({
+      projectDir: 'proj',
+      config: DEFAULT_CONFIG,
+      queryFn,
+      quota,
+      logger: { log: (_level, event) =&gt; void events.push(event) },
+    });
+    await runner.pmTurn({ prompt: 'x' });
+    expect(quota.last).toMatchObject({ status: 'allowed_warning', utilization: 0.85, rateLimitType: 'five_hour' });
+    expect(events).toContain('quota.event');
+  });
+
+  it('โควตาเต็ม (rejected) แล้วการเรียกล้ม: ไม่ retry', async () =&gt; {
+    const quota = new QuotaMonitor();
+    let calls = 0;
+    const queryFn = (() =&gt; {
+      calls += 1;
+      return (async function* () {
+        yield { type: 'rate_limit_event', rate_limit_info: { status: 'rejected' }, uuid: 'u1', session_id: 's1' };
+        throw new Error('rate limited');
+      })();
+    }) as never;
+    const runner = new SdkRoleRunner({ projectDir: 'proj', config: DEFAULT_CONFIG, queryFn, quota, sleep: async () =&gt; {} });
+    await expect(runner.pmTurn({ prompt: 'x' })).rejects.toThrow('rate limited');
+    expect(calls).toBe(1);
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/runner.test.ts -t "โควตา"</code><br>
+     คาดหวัง: FAIL — type error ที่ <code>quota</code> ไม่อยู่ใน <code>SdkRunnerDeps</code>, <code>quota.last</code> เป็น undefined, และ calls = 3 (retry)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p>ใน <code>src/runner.ts</code> เพิ่ม import <code>import type { QuotaMonitor } from './quota';</code> และใน <code>SdkRunnerDeps</code>:</p>
+<pre><code>  /** ส่วนที่ 3: รับ rate_limit_event (ใช้ร่วมกันทั้งรอบรัน) */
+  quota?: QuotaMonitor;</code></pre>
+  <p>ใน <code>withRetry</code> เปลี่ยนเงื่อนไขโยนต่อเป็น:</p>
+<pre><code>        // โควตาเต็ม: retry ไม่ช่วยและเสียเวลา — ให้ QuotaGate จัดการหยุดงาน
+        const rejected = this.deps.quota?.isRejected() ?? false;
+        if (aborted || rejected || !retryable || attempt &gt;= BACKOFF_MS.length) throw e;</code></pre>
+  <p>ใน loop <code>for await (const msg of stream)</code> ของ <code>once</code> เพิ่มต่อจากบล็อก <code>api_retry</code>:</p>
+<pre><code>        if (msg.type === 'rate_limit_event') {
+          const info = msg.rate_limit_info;
+          this.logger.log(info.status === 'allowed' ? 'INFO' : 'WARN', 'quota.event', { role, ...info });
+          this.deps.quota?.record(info);
+        }</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/runner.test.ts</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS (รวมเทสต์ runner เดิมทั้งหมด) ไม่มี type error</p>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 3: <code>QuotaStopError</code>, <code>QuotaGate</code> และ runner ที่ถูกห่อ</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/errors.ts</code> (เพิ่ม <code>QuotaStopError</code>, <code>rethrowQuotaStop</code>)</li>
+    <li>สร้าง: <code>src/quota-gate.ts</code></li>
+    <li>เทสต์: <code>tests/quota-gate.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: <code>QuotaMonitor</code>, <code>formatQuotaAlert</code> (Task 1) ; <code>RoleRunner</code>, <code>AdvisorRunner</code>, <code>UserIO</code> (<code>src/deps.ts</code>)</li>
+    <li>ส่งต่อ:
+      <ul>
+        <li><code>class QuotaStopError extends Error { readonly reason: 'handoff' | 'rejected'; pendingText?: string }</code></li>
+        <li><code>rethrowQuotaStop(e: unknown): void</code></li>
+        <li><code>class QuotaGate { constructor(monitor, io: Pick&lt;UserIO, 'say' | 'choose'&gt;, log: Logger, now?: () =&gt; Date); check(): Promise&lt;void&gt;; failed(e: unknown): never }</code></li>
+        <li><code>guardRunner(runner: RoleRunner, gate: QuotaGate): RoleRunner</code> ; <code>guardAdvisor(runner: AdvisorRunner, gate: QuotaGate): AdvisorRunner</code></li>
+      </ul>
+    </li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>สร้าง <code>tests/quota-gate.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import { QuotaStopError } from '../src/errors';
+import { QuotaMonitor } from '../src/quota';
+import { guardAdvisor, guardRunner, QuotaGate } from '../src/quota-gate';
+import { asking } from './helpers/builders';
+import { makeDeps, ScriptedIO } from './helpers/fakes';
+
+const warning = { status: 'allowed_warning' as const, rateLimitType: 'five_hour', utilization: 0.85, resetsAt: 1_790_000_000 };
+const nullLog = { log: () =&gt; {} };
+
+function setup(answers: string[]) {
+  const monitor = new QuotaMonitor();
+  const io = new ScriptedIO(answers);
+  const gate = new QuotaGate(monitor, io, nullLog);
+  return { monitor, io, gate };
+}
+
+describe('QuotaGate.check', () =&gt; {
+  it('ไม่มีคำเตือน: ผ่านโดยไม่พูดอะไร', async () =&gt; {
+    const { io, gate } = setup([]);
+    await gate.check();
+    expect(io.said).toEqual([]);
+  });
+
+  it('warning + continue: เตือน ถาม แล้วไม่ถามซ้ำ', async () =&gt; {
+    const { monitor, io, gate } = setup(['continue']);
+    monitor.record(warning);
+    await gate.check();
+    await gate.check();
+    expect(io.kinds).toEqual(['warn']);
+    expect(io.said[0]).toContain('โควตา 5 ชม.');
+    expect(io.asked).toHaveLength(1);
+    expect(io.asked[0]).toContain('handoff');
+  });
+
+  it('warning + handoff: โยน QuotaStopError reason handoff', async () =&gt; {
+    const { monitor, gate } = setup(['handoff']);
+    monitor.record(warning);
+    await expect(gate.check()).rejects.toMatchObject({ name: 'QuotaStopError', reason: 'handoff' });
+  });
+
+  it('rejected: ไม่ถาม แจ้ง error แล้วโยน reason rejected', async () =&gt; {
+    const { monitor, io, gate } = setup([]);
+    monitor.record({ status: 'rejected' });
+    await expect(gate.check()).rejects.toMatchObject({ reason: 'rejected' });
+    expect(io.asked).toEqual([]);
+    expect(io.kinds).toEqual(['error']);
+  });
+
+  it('failed(): โควตาเต็ม -&gt; QuotaStopError ; ไม่เต็ม -&gt; โยน error เดิม', () =&gt; {
+    const { monitor, gate } = setup([]);
+    const boom = new Error('boom');
+    expect(() =&gt; gate.failed(boom)).toThrow(boom);
+    monitor.record({ status: 'rejected' });
+    expect(() =&gt; gate.failed(boom)).toThrow(QuotaStopError);
+  });
+});
+
+describe('guardRunner / guardAdvisor', () =&gt; {
+  it('ถามก่อนเรียก agent และเรียกต่อเมื่อ continue', async () =&gt; {
+    const { deps, runner } = makeDeps({ pm: [asking('?')] }, []);
+    const { monitor, io, gate } = setup(['continue']);
+    monitor.record(warning);
+    const guarded = guardRunner(runner, gate);
+    await guarded.pmTurn({ prompt: 'x' });
+    expect(io.asked).toHaveLength(1);
+    expect(runner.calls).toHaveLength(1);
+    expect(deps.runner).toBe(runner);
+  });
+
+  it('handoff: ไม่เรียก agent เลย', async () =&gt; {
+    const { runner } = makeDeps({ pm: [asking('?')] }, []);
+    const { monitor, gate } = setup(['handoff']);
+    monitor.record(warning);
+    await expect(guardRunner(runner, gate).pmTurn({ prompt: 'x' })).rejects.toBeInstanceOf(QuotaStopError);
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  it('agent ล้มระหว่างโควตาเต็ม -&gt; QuotaStopError', async () =&gt; {
+    const { monitor, gate } = setup([]);
+    const advisor = {
+      advise: async () =&gt; {
+        monitor.record({ status: 'rejected' });
+        throw new Error('rate limited');
+      },
+      handoff: async () =&gt; {
+        throw new Error('unused');
+      },
+    };
+    await expect(guardAdvisor(advisor, gate).advise({ prompt: 'x' })).rejects.toBeInstanceOf(QuotaStopError);
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/quota-gate.test.ts</code><br>
+     คาดหวัง: FAIL ด้วย "Cannot find module '../src/quota-gate'" / <code>QuotaStopError</code> ไม่ถูก export</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เพิ่ม QuotaStopError ใน src/errors.ts</strong></span></p>
+<pre><code>/** หยุดงานเพราะโควตา (ผู้ใช้เลือก handoff หรือโควตาเต็ม) — phases ต้องปล่อยผ่านทุก catch */
+export class QuotaStopError extends Error {
+  /** ข้อความล่าสุดของผู้ใช้ที่ยังไม่ถึง agent (โหมด ask ใส่ให้ก่อนโยนต่อ) */
+  pendingText?: string;
+
+  constructor(
+    readonly reason: 'handoff' | 'rejected',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'QuotaStopError';
+  }
+}
+
+/** ใช้บรรทัดแรกของ catch ที่กลืน error ของ agent: QuotaStopError ต้องหยุดงานเสมอ */
+export function rethrowQuotaStop(e: unknown): void {
+  if (e instanceof QuotaStopError) throw e;
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: สร้าง src/quota-gate.ts</strong></span></p>
+<pre><code>import type { AdvisorRunner, RoleRunner, UserIO } from './deps';
+import { QuotaStopError } from './errors';
+import type { Logger } from './logger';
+import { formatQuotaAlert, type QuotaMonitor } from './quota';
+
+const QUESTION = 'จะทำอย่างไรต่อ? (handoff = หยุดแล้วเขียนไฟล์ส่งต่องาน, continue = ทำต่อ)\n&gt; ';
+
+/** จุดปลอดภัย: เช็คโควตาก่อนเรียก agent ทุกครั้ง (ไม่ตัด agent กลางการเรียก) */
+export class QuotaGate {
+  constructor(
+    private readonly monitor: QuotaMonitor,
+    private readonly io: Pick&lt;UserIO, 'say' | 'choose'&gt;,
+    private readonly log: Logger,
+    private readonly now: () =&gt; Date = () =&gt; new Date(),
+  ) {}
+
+  async check(): Promise&lt;void&gt; {
+    const alert = this.monitor.pending();
+    if (!alert) return;
+    const text = formatQuotaAlert(alert, this.now());
+    this.log.log('WARN', 'quota.alert', { kind: alert.kind, ...alert.info });
+    if (alert.kind === 'rejected') {
+      this.io.say(text, 'error');
+      throw new QuotaStopError('rejected', text);
+    }
+    this.io.say(text, 'warn');
+    const answer = await this.io.choose(QUESTION, ['handoff', 'continue'] as const);
+    this.log.log('INFO', 'quota.decision', { kind: alert.kind, answer });
+    if (answer === 'handoff') throw new QuotaStopError('handoff', text);
+    this.monitor.acknowledge(alert);
+  }
+
+  /** การเรียก agent ล้ม: ถ้าเป็นเพราะโควตาเต็ม แปลงเป็น QuotaStopError ไม่งั้นโยน error เดิม */
+  failed(e: unknown): never {
+    if (!(e instanceof QuotaStopError) &amp;&amp; this.monitor.isRejected()) {
+      const alert = this.monitor.pending() ?? { kind: 'rejected' as const, info: { status: 'rejected' as const } };
+      const text = formatQuotaAlert(alert, this.now());
+      this.io.say(text, 'error');
+      throw new QuotaStopError('rejected', text);
+    }
+    throw e;
+  }
+
+  async run&lt;T&gt;(call: () =&gt; Promise&lt;T&gt;): Promise&lt;T&gt; {
+    await this.check();
+    try {
+      return await call();
+    } catch (e) {
+      return this.failed(e);
+    }
+  }
+}
+
+export function guardRunner(runner: RoleRunner, gate: QuotaGate): RoleRunner {
+  return {
+    pmTurn: (input) =&gt; gate.run(() =&gt; runner.pmTurn(input)),
+    plan: (input) =&gt; gate.run(() =&gt; runner.plan(input)),
+    work: (input) =&gt; gate.run(() =&gt; runner.work(input)),
+    qa: (input) =&gt; gate.run(() =&gt; runner.qa(input)),
+    securityDesign: (input) =&gt; gate.run(() =&gt; runner.securityDesign(input)),
+    security: (input) =&gt; gate.run(() =&gt; runner.security(input)),
+  };
+}
+
+export function guardAdvisor(runner: AdvisorRunner, gate: QuotaGate): AdvisorRunner {
+  return {
+    advise: (input) =&gt; gate.run(() =&gt; runner.advise(input)),
+    handoff: (sessionId) =&gt; gate.run(() =&gt; runner.handoff(sessionId)),
+  };
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/quota-gate.test.ts</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS และไม่มี type error</p>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 4: phases ปล่อย <code>QuotaStopError</code> ผ่าน และ REQUIREMENTS เก็บข้อความที่ยังไม่ส่ง</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/phases/requirements.ts</code> (catch ของ <code>pmTurn</code>), <code>src/io-util.ts</code> (catch ใน <code>decide</code>), <code>src/phases/design.ts</code> (catch ใน <code>reviewDesignSecurity</code>), <code>src/phases/build.ts</code> (catch ของ worker resume และ catch ของขั้น security)</li>
+    <li>แก้ไข: <code>src/ask/session.ts</code> (catch ของ <code>advise</code>)</li>
+    <li>เทสต์: <code>tests/phases/requirements.test.ts</code>, <code>tests/phases/build.test.ts</code>, <code>tests/phases/design.test.ts</code>, <code>tests/io-util.test.ts</code>, <code>tests/ask/session.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: <code>QuotaStopError</code>, <code>rethrowQuotaStop</code> (Task 3)</li>
+    <li>ส่งต่อ: พฤติกรรม — <code>QuotaStopError</code> หลุดจาก <code>runTeam</code>/<code>runAsk</code> เสมอ ; หยุดใน REQUIREMENTS แล้ว <code>state.pendingPrompt</code> = ข้อความล่าสุดของผู้ใช้ (ดิบ ไม่มีการ์ด) ; ask ใส่ <code>error.pendingText</code></li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>ใน <code>tests/phases/requirements.test.ts</code> เพิ่ม import <code>import { QuotaStopError } from '../../src/errors';</code> แล้วต่อท้าย:</p>
+<pre><code>describe('runRequirements: หยุดเพราะโควตา', () =&gt; {
+  it('ข้อความที่ยังไม่ถึง PM ถูกเก็บเป็น pendingPrompt (ดิบ ไม่มีการ์ด) แล้วโยนต่อ', async () =&gt; {
+    const { deps, runner, store } = makeDeps({ pm: [] }, ['ทำตาม RTRPMS-1']);
+    deps.cards = new FakeCards();
+    vi.spyOn(runner, 'pmTurn').mockRejectedValueOnce(new QuotaStopError('handoff', 'x'));
+    const state = newState();
+    await expect(runRequirements(deps, state)).rejects.toBeInstanceOf(QuotaStopError);
+    expect(state.pendingPrompt).toBe('ทำตาม RTRPMS-1');
+    expect(store.state?.pendingPrompt).toBe('ทำตาม RTRPMS-1');
+  });
+});</code></pre>
+  <p>ใน <code>tests/phases/build.test.ts</code> เพิ่ม <code>QuotaStopError</code> ใน import จาก <code>'../../src/errors'</code> แล้วต่อท้าย:</p>
+<pre><code>describe('runBuild: QuotaStopError ไม่ถูกกลืน', () =&gt; {
+  it('security ล้มเพราะโควตาหลัง QA ผ่าน: โยนต่อ ไม่ถือเป็น "ไม่ได้ตรวจ"', async () =&gt; {
+    const { deps } = makeDeps({ qa: [passReport('api')], security: [new QuotaStopError('rejected', 'เต็ม')] }, []);
+    await expect(runBuild(deps, buildState(single()))).rejects.toBeInstanceOf(QuotaStopError);
+  });
+
+  it('worker resume ล้มเพราะโควตา: โยนต่อ ไม่ fallback ไปเปิด session ใหม่', async () =&gt; {
+    const { deps, runner } = makeDeps(
+      { qa: [failReport('api'), passReport('api')], work: [undefined, new QuotaStopError('handoff', 'x')] },
+      [],
+    );
+    await expect(runBuild(deps, buildState(single()))).rejects.toBeInstanceOf(QuotaStopError);
+    expect(workInputs(runner.calls).map((w) =&gt; w.resumeSessionId)).toEqual([undefined, 'api-s1']);
+  });
+});</code></pre>
+  <p>ใน <code>tests/phases/design.test.ts</code> (เพิ่ม import ที่ยังไม่มี: <code>vi</code> จาก vitest, <code>QuotaStopError</code>, <code>runDesign</code>, <code>newState</code>, <code>makeDeps</code>, <code>makeDesign</code>, <code>makeRequirements</code>) ต่อท้าย:</p>
+<pre><code>describe('runDesign: QuotaStopError ไม่ถูกกลืน', () =&gt; {
+  it('Security ตรวจ design ล้มเพราะโควตา: โยนต่อ', async () =&gt; {
+    const { deps, runner } = makeDeps({ plans: [makeDesign()] }, []);
+    vi.spyOn(runner, 'securityDesign').mockRejectedValueOnce(new QuotaStopError('rejected', 'เต็ม'));
+    const state = { ...newState(), phase: 'DESIGN' as const, requirements: makeRequirements() };
+    await expect(runDesign(deps, state)).rejects.toBeInstanceOf(QuotaStopError);
+  });
+});</code></pre>
+  <p>ใน <code>tests/io-util.test.ts</code> (เพิ่ม import ที่ยังไม่มี: <code>vi</code>, <code>QuotaStopError</code>, <code>decide</code>, <code>newState</code>, <code>makeDeps</code>) ต่อท้าย:</p>
+<pre><code>describe('decide: QuotaStopError ไม่ถูกกลืน', () =&gt; {
+  it('ถาม PM ระหว่างรอตัดสินใจแล้วโดนโควตา: โยนต่อ ไม่วนถามใหม่', async () =&gt; {
+    const { deps, runner } = makeDeps({ pm: [] }, ['ทำไมต้องแบบนี้']);
+    vi.spyOn(runner, 'pmTurn').mockRejectedValueOnce(new QuotaStopError('handoff', 'x'));
+    await expect(decide(deps, newState(), 'เลือก', ['confirm', 'revise'] as const)).rejects.toBeInstanceOf(QuotaStopError);
+  });
+});</code></pre>
+  <p>ใน <code>tests/ask/session.test.ts</code> เพิ่ม import <code>import { QuotaStopError } from '../../src/errors';</code> แล้วต่อท้าย:</p>
+<pre><code>describe('runAsk: หยุดเพราะโควตา', () =&gt; {
+  it('โยน QuotaStopError ต่อ พร้อมข้อความที่ยังไม่ถึง advisor', async () =&gt; {
+    const runner = new FakeAdvisor([new QuotaStopError('handoff', 'x')]);
+    const err = await runAsk({ runner, io: new ScriptedIO(['คำถามล่าสุด']), store: newStore(), resume: false }).catch((e) =&gt; e);
+    expect(err).toBeInstanceOf(QuotaStopError);
+    expect((err as QuotaStopError).pendingText).toBe('คำถามล่าสุด');
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/phases tests/io-util.test.ts tests/ask/session.test.ts</code><br>
+     คาดหวัง: FAIL เทสต์ใหม่ — requirements/decide/ask ค้างรอคำตอบ (ScriptedIO "ไม่มีคำตอบเหลือ") หรือกลืน error, build ถือเป็น not reviewed / fallback, design แจ้ง warn แล้วไปต่อ</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แก้ทุก catch</strong></span></p>
+  <p><code>src/phases/requirements.ts</code>: import <code>{ QuotaStopError } from '../errors'</code> ; ประกาศ <code>let lastUserText = '';</code> ก่อน <code>fromUser</code> และให้ <code>fromUser</code> ตั้ง <code>lastUserText = text;</code> เป็นบรรทัดแรก ; ใน <code>catch (e)</code> ของ <code>runner.pmTurn</code> เพิ่มบรรทัดแรก:</p>
+<pre><code>      if (e instanceof QuotaStopError) {
+        // ข้อความนี้ยังไม่ถึง PM: เก็บไว้ให้ -r เล่นซ้ำ (ดิบ ไม่มีการ์ด — รอบใหม่แนบการ์ดเอง)
+        state.pendingPrompt = lastUserText;
+        await store.save(state);
+        throw e;
+      }</code></pre>
+  <p class="meta">หมายเหตุ: ข้อความแรกจาก <code>state.pendingPrompt</code> ถูกตั้ง <code>state.pendingPrompt = undefined</code> ก่อน loop — โค้ดนี้คืนค่ากลับ ; prefix "requirements ปัจจุบัน" และ level hint ถูกเติมใหม่ตอนรันรอบหน้าอยู่แล้ว</p>
+  <p><code>src/io-util.ts</code> (<code>decide</code>), <code>src/phases/design.ts</code> (<code>reviewDesignSecurity</code>), <code>src/phases/build.ts</code> (catch ของ <code>deps.runner.work({ ...base, resumeSessionId })</code> และ catch ใหญ่ของขั้น QA/security ที่มี <code>if (step === 'security' &amp;&amp; qaReport)</code>): import <code>{ rethrowQuotaStop }</code> จาก <code>'./errors'</code> / <code>'../errors'</code> แล้วเพิ่มเป็นบรรทัดแรกของแต่ละ catch:</p>
+<pre><code>    rethrowQuotaStop(e);</code></pre>
+  <p><code>src/ask/session.ts</code>: import <code>{ QuotaStopError } from '../errors'</code> ; ใน catch ของ <code>runner.advise</code> เพิ่มบรรทัดแรก:</p>
+<pre><code>      if (e instanceof QuotaStopError) {
+        e.pendingText = input;
+        throw e;
+      }</code></pre>
+  <p>และใน <code>writeHandoff</code> (catch ของ <code>runner.handoff</code>) เพิ่มบรรทัดแรก <code>if (e instanceof QuotaStopError) throw e;</code></p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npm test</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS ทั้งหมด ไม่มี type error</p>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 5: <code>handoff.md</code> จาก state (<code>src/job-handoff.ts</code>)</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/job-handoff.ts</code></li>
+    <li>เทสต์: <code>tests/job-handoff.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: <code>State</code>, <code>TaskProgress</code> (<code>src/state.ts</code>) ; <code>orderTasks</code> (<code>src/domain.ts</code>) ; <code>renameWithRetry</code> (<code>src/fs-retry.ts</code>) ; <code>QuotaStopError</code> (Task 3) ; <code>Logger</code></li>
+    <li>ส่งต่อ (Task 6 ใช้):
+      <ul>
+        <li><code>interface ChangeSummary { git: boolean; stat: string; untracked: string[]; touched: string[] }</code></li>
+        <li><code>collectChanges(projectDir: string, state: State, git?: (args: string[]) =&gt; string): ChangeSummary</code></li>
+        <li><code>buildJobHandoff(i: { state: State; jobId: string; projectDir: string; reason: string; now: Date; changes: ChangeSummary }): string</code></li>
+        <li><code>saveJobHandoff(o: { jobDir: string; jobId: string; projectDir: string; state: State; reason: string; now?: Date; changes?: ChangeSummary }): Promise&lt;string&gt;</code></li>
+        <li><code>handleQuotaStop(o: { error: QuotaStopError; jobId?: string; repo: { jobDir(id: string): string; store(id: string): { load(): Promise&lt;State | undefined&gt; } }; projectDir: string; logger: Logger }): Promise&lt;{ lines: string[]; handoffPath?: string }&gt;</code></li>
+      </ul>
+    </li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>สร้าง <code>tests/job-handoff.test.ts</code>:</p>
+<pre><code>import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { QuotaStopError } from '../src/errors';
+import { buildJobHandoff, type ChangeSummary, collectChanges, handleQuotaStop, saveJobHandoff } from '../src/job-handoff';
+import { newState } from '../src/state';
+import { buildState, failReport, makeDesign, makeTask } from './helpers/builders';
+import { MemoryStore } from './helpers/fakes';
+
+const now = new Date(2026, 10, 5, 14, 0);
+const noGit: ChangeSummary = { git: false, stat: '', untracked: [], touched: [] };
+const dirs: string[] = [];
+const tmp = () =&gt; {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'job-handoff-'));
+  dirs.push(d);
+  return d;
+};
+afterEach(() =&gt; {
+  for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+});
+
+const build = (state = newState(), changes = noGit) =&gt;
+  buildJobHandoff({ state, jobId: 'job-1', projectDir: 'C:/proj', reason: '⚠ โควตา 5 ชม. · รีเซ็ต 16:30', now, changes });
+
+describe('buildJobHandoff', () =&gt; {
+  it('REQUIREMENTS ยังไม่มี requirements/design: ครบทุกหัวข้อ ไม่ล้ม', () =&gt; {
+    const md = build({ ...newState(), title: 'ระบบ login', pendingPrompt: 'เพิ่ม OTP' });
+    expect(md).toContain('# Handoff: ระบบ login');
+    expect(md).toContain('- งาน: job-1');
+    expect(md).toContain('- หยุดเพราะ: ⚠ โควตา 5 ชม. · รีเซ็ต 16:30');
+    expect(md).toContain('- เฟสที่ค้าง: REQUIREMENTS');
+    expect(md).toContain('ยังไม่ได้ยืนยัน requirements');
+    expect(md).toContain('## ข้อความล่าสุดที่ยังไม่ได้ส่ง\nเพิ่ม OTP');
+    expect(md).toContain('agent-team -r');
+    expect(md).toContain('ห้ามแก้ไฟล์ใน `.agent-team/`');
+  });
+
+  it('BUILD: ตาราง task ตามลำดับ dependency พร้อมสถานะ และปัญหาค้างของ task ที่ยังไม่เสร็จ', () =&gt; {
+    const state = buildState(makeDesign([makeTask('api'), makeTask('web', 'frontend', ['api'])]));
+    state.progress.api!.done = true;
+    state.progress.web!.rounds = 2;
+    state.progress.web!.lastReport = failReport('web');
+    const md = build(state);
+    expect(md).toContain('| api | task api | backend | เสร็จ | - |');
+    expect(md).toContain('| web | task web | frontend | กำลังทำ (รอบ 2) | api |');
+    expect(md).toContain('[web] major `src/x.ts`: ผิด (แนะนำ: แก้)');
+    expect(md).toContain('1. web — task web');
+    expect(md).toContain('   - web ทำงานถูกต้อง');
+    expect(md).not.toContain('1. api');
+  });
+
+  it('git: แสดง diff --stat และไฟล์ใหม่ ; ไม่ใช่ git: ใช้ touchedFiles', () =&gt; {
+    const git = build(newState(), { git: true, stat: ' src/a.ts | 3 ++-', untracked: ['src/new.ts'], touched: [] });
+    expect(git).toContain('src/a.ts | 3 ++-');
+    expect(git).toContain('- src/new.ts');
+    expect(git).toContain('อาจรวมการแก้ของผู้ใช้ก่อนเริ่มงาน');
+    const plain = build(newState(), { ...noGit, touched: ['src/b.ts'] });
+    expect(plain).toContain('- src/b.ts');
+  });
+});
+
+describe('collectChanges', () =&gt; {
+  it('git สำเร็จ: เก็บ stat และไฟล์ untracked', () =&gt; {
+    const outputs: Record&lt;string, string&gt; = {
+      'rev-parse --is-inside-work-tree': 'true\n',
+      'diff HEAD --stat': ' src/a.ts | 1 +\n',
+      'ls-files --others --exclude-standard': 'src/new.ts\n\n',
+    };
+    const out = collectChanges('C:/proj', newState(), (args) =&gt; outputs[args.join(' ')] ?? '');
+    expect(out).toEqual({ git: true, stat: 'src/a.ts | 1 +', untracked: ['src/new.ts'], touched: [] });
+  });
+
+  it('ไม่ใช่ git (คำสั่งล้ม): git=false และรวม touchedFiles ทุก task', () =&gt; {
+    const state = buildState();
+    state.progress.api!.touchedFiles = ['src/b.ts', 'src/a.ts'];
+    state.progress.ui!.touchedFiles = ['src/a.ts'];
+    const out = collectChanges('C:/proj', state, () =&gt; {
+      throw new Error('not a git repository');
+    });
+    expect(out).toEqual({ git: false, stat: '', untracked: [], touched: ['src/a.ts', 'src/b.ts'] });
+  });
+});
+
+describe('saveJobHandoff / handleQuotaStop', () =&gt; {
+  it('เขียน handoff.md แบบ atomic แล้วคืน path', async () =&gt; {
+    const dir = tmp();
+    const file = await saveJobHandoff({ jobDir: dir, jobId: 'job-1', projectDir: dir, state: newState(), reason: 'x', changes: noGit });
+    expect(file).toBe(path.join(dir, 'handoff.md'));
+    expect(fs.readFileSync(file, 'utf8')).toContain('# Handoff:');
+    expect(fs.readdirSync(dir)).toEqual(['handoff.md']);
+  });
+
+  it('มีงาน: เขียน handoff, log quota.handoff และบอกวิธีทำต่อ', async () =&gt; {
+    const dir = tmp();
+    const store = new MemoryStore();
+    store.state = { ...newState(), title: 'งาน A' };
+    const events: string[] = [];
+    const out = await handleQuotaStop({
+      error: new QuotaStopError('handoff', '⚠ โควตา 5 ชม.'),
+      jobId: 'job-1',
+      repo: { jobDir: () =&gt; dir, store: () =&gt; store },
+      projectDir: dir,
+      logger: { log: (_l, event) =&gt; void events.push(event) },
+    });
+    expect(out.handoffPath).toBe(path.join(dir, 'handoff.md'));
+    expect(out.lines.join('\n')).toContain(out.handoffPath!);
+    expect(out.lines.join('\n')).toContain('agent-team -r');
+    expect(events).toContain('quota.handoff');
+  });
+
+  it('ยังไม่มีงาน (โหมด ask): ไม่เขียนไฟล์ แต่แสดงข้อความที่ยังไม่ได้ส่ง', async () =&gt; {
+    const error = new QuotaStopError('rejected', 'โควตาเต็มแล้ว');
+    error.pendingText = 'คำถามค้าง';
+    const out = await handleQuotaStop({
+      error,
+      repo: { jobDir: () =&gt; '', store: () =&gt; new MemoryStore() },
+      projectDir: tmp(),
+      logger: { log: () =&gt; {} },
+    });
+    expect(out.handoffPath).toBeUndefined();
+    expect(out.lines.join('\n')).toContain('คำถามค้าง');
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/job-handoff.test.ts</code><br>
+     คาดหวัง: FAIL ด้วย "Cannot find module '../src/job-handoff'"</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p>สร้าง <code>src/job-handoff.ts</code>:</p>
+<pre><code>import { execFileSync } from 'node:child_process';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
+import { orderTasks } from './domain';
+import type { QuotaStopError } from './errors';
+import { renameWithRetry } from './fs-retry';
+import type { Logger } from './logger';
+import type { Task } from './schemas';
+import type { State, TaskProgress } from './state';
+
+// handoff ของงาน (ส่วนที่ 3): สร้างด้วยโค้ดจาก state เท่านั้น — ไม่เรียก AI ไม่อ่าน env
+
+export interface ChangeSummary {
+  git: boolean;
+  /** git diff HEAD --stat (ว่าง = ไม่มีการเปลี่ยนที่ track อยู่) */
+  stat: string;
+  untracked: string[];
+  /** ไฟล์ที่ worker รายงานว่าแก้ (รวมทุก task) — ใช้แทน git เมื่อไม่ใช่ git repo */
+  touched: string[];
+}
+
+const gitIn =
+  (projectDir: string) =&gt;
+  (args: string[]): string =&gt;
+    execFileSync('git', args, { cwd: projectDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+
+export function collectChanges(projectDir: string, state: State, git = gitIn(projectDir)): ChangeSummary {
+  const touched = [...new Set(Object.values(state.progress).flatMap((p) =&gt; p.touchedFiles ?? []))].sort();
+  try {
+    git(['rev-parse', '--is-inside-work-tree']);
+    const stat = git(['diff', 'HEAD', '--stat']).trim();
+    const untracked = git(['ls-files', '--others', '--exclude-standard'])
+      .split('\n')
+      .map((s) =&gt; s.trim())
+      .filter(Boolean);
+    return { git: true, stat, untracked, touched };
+  } catch {
+    return { git: false, stat: '', untracked: [], touched };
+  }
+}
+
+const bullets = (items: readonly string[]): string =&gt; (items.length &gt; 0 ? items.map((i) =&gt; `- ${i}`).join('\n') : '-');
+
+function taskStatus(p: TaskProgress | undefined): string {
+  if (!p) return 'ยังไม่เริ่ม';
+  if (p.done) return p.acceptedWithIssues ? 'เสร็จแบบรับตามสภาพ' : 'เสร็จ';
+  return p.rounds &gt; 0 ? `กำลังทำ (รอบ ${p.rounds})` : 'ยังไม่เริ่ม';
+}
+
+function safeOrder(tasks: readonly Task[]): Task[] {
+  try {
+    return orderTasks(tasks);
+  } catch {
+    return [...tasks];
+  }
+}
+
+const cell = (s: string): string =&gt; s.replace(/\|/g, '\\|').replace(/\n/g, ' ');
+
+export function buildJobHandoff(i: {
+  state: State;
+  jobId: string;
+  projectDir: string;
+  reason: string;
+  now: Date;
+  changes: ChangeSummary;
+}): string {
+  const { state } = i;
+  const req = state.requirements;
+  const design = state.design;
+  const tasks = design ? safeOrder(design.tasks) : [];
+  const out: string[] = [
+    `# Handoff: ${state.title ?? '(ไม่มีชื่องาน)'}`,
+    '',
+    `- งาน: ${i.jobId}`,
+    `- หยุดเพราะ: ${i.reason}`,
+    `- เขียนเมื่อ: ${i.now.toLocaleString('th-TH')}`,
+    `- โปรเจกต์: ${i.projectDir}`,
+    `- เฟสที่ค้าง: ${state.phase} · ระดับงาน: ${state.level ?? 'full'}`,
+    '',
+    '## เป้าหมาย',
+    req?.goal ?? state.title ?? '-',
+    '',
+    '## Requirements',
+  ];
+  if (req) {
+    out.push(
+      '### Features', bullets(req.features), '',
+      '### Constraints', bullets(req.constraints), '',
+      '### Out of scope', bullets(req.outOfScope), '',
+      '### Acceptance criteria', bullets(req.acceptanceCriteria),
+    );
+  } else {
+    out.push('- ยังไม่ได้ยืนยัน requirements (ดูการคุยกับ PM ในข้อความล่าสุดด้านล่าง)');
+  }
+  out.push('', '## Design');
+  if (design) {
+    out.push(
+      `**Overview:** ${design.overview}`, '',
+      `**Architecture:** ${design.architecture}`, '',
+      `**API contract:** ${design.apiContract || '-'}`, '',
+      `**Data model:** ${design.dataModel || '-'}`, '',
+      '**Security notes:**', bullets(design.securityNotes ?? []),
+    );
+  } else {
+    out.push('-');
+  }
+  out.push('', '## Tasks');
+  if (tasks.length &gt; 0) {
+    out.push('| id | title | owner | สถานะ | dependsOn |', '|---|---|---|---|---|');
+    for (const t of tasks) {
+      const deps = t.dependsOn.length &gt; 0 ? t.dependsOn.join(', ') : '-';
+      out.push(`| ${t.id} | ${cell(t.title)} | ${t.owner} | ${taskStatus(state.progress[t.id])} | ${deps} |`);
+    }
+  } else {
+    out.push('-');
+  }
+  const open = tasks.filter((t) =&gt; !state.progress[t.id]?.done);
+  const issues = open.flatMap((t) =&gt;
+    (state.progress[t.id]?.lastReport?.issues ?? [])
+      .filter((x) =&gt; x.severity === 'blocker' || x.severity === 'major')
+      .map((x) =&gt; `[${t.id}] ${x.severity} \`${x.file || '-'}\`: ${x.description} (แนะนำ: ${x.suggestedFix || '-'})`),
+  );
+  out.push('', '## ปัญหาค้าง', bullets(issues), '', '## ไฟล์ที่แก้ไปแล้ว (ยังไม่ได้ commit)');
+  if (i.changes.git) {
+    out.push(
+      'การเปลี่ยนทั้งหมดใน working tree (อาจรวมการแก้ของผู้ใช้ก่อนเริ่มงาน):',
+      '```',
+      i.changes.stat || '(ไม่มีไฟล์ที่ track แล้วถูกแก้)',
+      '```',
+      'ไฟล์ใหม่ที่ยังไม่ track:',
+      bullets(i.changes.untracked),
+    );
+  } else {
+    out.push('ไม่ใช่ git repo — ไฟล์ที่ worker รายงานว่าแก้:', bullets(i.changes.touched));
+  }
+  out.push(
+    '',
+    '## ข้อความล่าสุดที่ยังไม่ได้ส่ง',
+    state.pendingPrompt ?? '-',
+    '',
+    '## วิธีทำต่อ',
+    '### ด้วย agent-team (หลังโควตารีเซ็ต)',
+    '- `agent-team -r` ในโฟลเดอร์โปรเจกต์ (ทำต่องานค้างล่าสุด) หรือเปิด `agent-team` แล้วเลือกงานนี้จากเมนู',
+    `- headless: \`agent-team run --headless --project "${i.projectDir}" --job ${i.jobId}\``,
+    '',
+    '### ด้วย AI ตัวอื่นหรือคนทำต่อ',
+  );
+  if (open.length &gt; 0) {
+    out.push('ทำ task ที่ค้างตามลำดับนี้ (เรียงตาม dependency แล้ว):');
+    open.forEach((t, n) =&gt; {
+      out.push(`${n + 1}. ${t.id} — ${t.title}`, `   ${t.description.replace(/\n/g, ' ')}`, ...t.acceptanceCriteria.map((c) =&gt; `   - ${c}`));
+    });
+  } else if (state.quickTask &amp;&amp; tasks.length === 0) {
+    out.push(`1. ${state.quickTask.title}`, `   ${state.quickTask.description}`, ...state.quickTask.acceptanceCriteria.map((c) =&gt; `   - ${c}`));
+  } else {
+    out.push('- ยังไม่มี task ที่ต้องทำ: เริ่มจากยืนยัน requirements และออกแบบตามหัวข้อด้านบน');
+  }
+  out.push(
+    '',
+    '- ตรวจงานด้วยคำสั่ง build/lint/test ของโปรเจกต์ ผล QA ล่าสุดของแต่ละ task อยู่ใน `.agent-team/jobs/' + i.jobId + '/reports/`',
+    '- ข้อมูลอ้างอิง: `.agent-team/jobs/' + i.jobId + '/state.json`, `design.json`, `requirements.json`',
+    '- ห้ามแก้ไฟล์ใน `.agent-team/` ถ้าจะกลับมาใช้ agent-team ทำต่อ',
+    '',
+  );
+  return out.join('\n');
+}
+
+export async function saveJobHandoff(o: {
+  jobDir: string;
+  jobId: string;
+  projectDir: string;
+  state: State;
+  reason: string;
+  now?: Date;
+  changes?: ChangeSummary;
+}): Promise&lt;string&gt; {
+  const file = path.join(o.jobDir, 'handoff.md');
+  const markdown = buildJobHandoff({
+    state: o.state,
+    jobId: o.jobId,
+    projectDir: o.projectDir,
+    reason: o.reason,
+    now: o.now ?? new Date(),
+    changes: o.changes ?? collectChanges(o.projectDir, o.state),
+  });
+  const tmp = `${file}.tmp`;
+  await fs.mkdir(o.jobDir, { recursive: true });
+  await fs.writeFile(tmp, markdown, 'utf8');
+  await renameWithRetry(tmp, file);
+  return file;
+}
+
+/** หยุดเพราะโควตา: มีงาน = เขียน handoff.md ; ยังไม่มีงาน (ask) = แสดงข้อความที่ยังไม่ได้ส่ง — คืนบรรทัดที่ต้องพิมพ์ */
+export async function handleQuotaStop(o: {
+  error: QuotaStopError;
+  jobId?: string;
+  repo: { jobDir(id: string): string; store(id: string): { load(): Promise&lt;State | undefined&gt; } };
+  projectDir: string;
+  logger: Logger;
+}): Promise&lt;{ lines: string[]; handoffPath?: string }&gt; {
+  const lines = [`หยุดเพราะโควตา: ${o.error.message}`];
+  if (o.error.pendingText) lines.push(`ข้อความล่าสุดที่ยังไม่ได้ส่ง: ${o.error.pendingText}`);
+  if (!o.jobId) {
+    o.logger.log('WARN', 'quota.handoff', { reason: o.error.reason });
+    return { lines };
+  }
+  const state = await o.repo.store(o.jobId).load();
+  if (!state) return { lines };
+  const handoffPath = await saveJobHandoff({
+    jobDir: o.repo.jobDir(o.jobId),
+    jobId: o.jobId,
+    projectDir: o.projectDir,
+    state,
+    reason: o.error.message,
+  });
+  o.logger.log('WARN', 'quota.handoff', { jobId: o.jobId, path: handoffPath, reason: o.error.reason });
+  lines.push(`เขียน handoff ที่ ${handoffPath} (ให้ AI ตัวอื่นหรือคนอ่านทำต่อได้)`, 'ทำต่อด้วย agent-team หลังโควตารีเซ็ต: agent-team -r');
+  return { lines, handoffPath };
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/job-handoff.test.ts</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS และไม่มี type error (ถ้า <code>failReport</code> ใน builders ใช้ข้อความ issue ต่างจาก <code>'ผิด'</code>/<code>'แก้'</code>/<code>'src/x.ts'</code> ให้ปรับ expectation ให้ตรงกับ builders)</p>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 6: ต่อสายใน run-context, index, headless, status และเอกสาร</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/run-context.ts</code> (สร้าง <code>QuotaMonitor</code> ส่งให้ runner และคืนใน <code>RunContext.quota</code>)</li>
+    <li>แก้ไข: <code>src/index.ts</code> (ห่อ runner ด้วย gate ทั้ง ask และงาน ; catch <code>QuotaStopError</code>)</li>
+    <li>แก้ไข: <code>src/headless/files.ts</code> (<code>ExitInfo.reason</code>, <code>ExitInfo.handoffPath</code>, พารามิเตอร์ <code>extra</code> ของ <code>writeExit</code>)</li>
+    <li>แก้ไข: <code>src/headless/status.ts</code> (<code>StatusReport.reason</code>, <code>handoffPath</code>)</li>
+    <li>แก้ไข: <code>src/headless/run.ts</code> (ห่อ runner, catch <code>QuotaStopError</code>)</li>
+    <li>แก้ไข: <code>claude-skill/agent-team/SKILL.md</code>, <code>README.md</code></li>
+    <li>เทสต์: <code>tests/headless/files.test.ts</code>, <code>tests/headless/status.test.ts</code>, <code>tests/headless/run.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: <code>QuotaMonitor</code> (Task 1), <code>QuotaGate</code>/<code>guardRunner</code>/<code>guardAdvisor</code> (Task 3), <code>QuotaStopError</code> (Task 3), <code>handleQuotaStop</code> (Task 5)</li>
+    <li>ส่งต่อ: <code>RunContext.quota: QuotaMonitor</code> ; <code>writeExit(dir, status, message?, now?, extra?: { reason?: 'quota'; handoffPath?: string })</code> ; <code>StatusReport.reason?</code>, <code>StatusReport.handoffPath?</code></li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: ดูรูปเทสต์ headless เดิมก่อนเขียนเทสต์</strong></span></p>
+  <p>รัน: <code>sed -n 1,60p tests/headless/run.test.ts</code> และ <code>grep -n "writeExit\|readStatus\|jobStatus" tests/headless/files.test.ts tests/headless/status.test.ts | head</code> เพื่อดู helper ที่ใช้สร้าง repo/งาน, ชื่อฟังก์ชันอ่านสถานะ และวิธีเรียก <code>runHeadlessJob</code> ในเทสต์เดิม แล้วใช้รูปเดียวกันใน Step 2</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>ต่อท้าย <code>tests/headless/files.test.ts</code> (ใช้ tmp dir แบบเดียวกับเทสต์เดิมในไฟล์):</p>
+<pre><code>describe('writeExit: เหตุผลโควตา', () =&gt; {
+  it('เขียน reason และ handoffPath เมื่อระบุ ; ไม่ระบุ = รูปเดิม', () =&gt; {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'exit-quota-'));
+    writeExit(dir, 'stopped', 'โควตา', new Date('2026-11-05T07:00:00Z'), { reason: 'quota', handoffPath: 'h.md' });
+    expect(JSON.parse(fs.readFileSync(headlessPath(dir, 'exit'), 'utf8'))).toEqual({
+      status: 'stopped',
+      message: 'โควตา',
+      at: '2026-11-05T07:00:00.000Z',
+      reason: 'quota',
+      handoffPath: 'h.md',
+    });
+    writeExit(dir, 'stopped', 'x', new Date('2026-11-05T07:00:00Z'));
+    expect(Object.keys(JSON.parse(fs.readFileSync(headlessPath(dir, 'exit'), 'utf8')))).toEqual(['status', 'message', 'at']);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});</code></pre>
+  <p>ใน <code>tests/headless/status.test.ts</code> เพิ่มเทสต์ตามรูปของเทสต์ที่อ่าน <code>exit.json</code> สถานะ <code>stopped</code> ที่มีอยู่ (คัดเทสต์นั้นมา เปลี่ยนเป็นเรียก <code>writeExit(dir, 'stopped', 'โควตา', undefined, { reason: 'quota', handoffPath: 'h.md' })</code>) แล้วเพิ่ม expectation:</p>
+<pre><code>    expect(report.status).toBe('stopped');
+    expect(report.reason).toBe('quota');
+    expect(report.handoffPath).toBe('h.md');</code></pre>
+  <p>ใน <code>tests/headless/run.test.ts</code> เพิ่มเทสต์ตามรูปของเทสต์ <code>runHeadlessJob</code> เดิมที่จบด้วย error โดยให้ runner ปลอมโยน <code>new QuotaStopError('rejected', 'โควตาเต็มแล้ว')</code> (เช่น <code>vi.spyOn(runner, 'pmTurn').mockRejectedValueOnce(...)</code>) และส่ง <code>projectDir</code> เป็นโฟลเดอร์ tmp ของเทสต์ แล้วตรวจ:</p>
+<pre><code>    expect(status).toBe('stopped');
+    const exit = JSON.parse(fs.readFileSync(headlessPath(repo.jobDir(jobId), 'exit'), 'utf8'));
+    expect(exit).toMatchObject({ status: 'stopped', reason: 'quota' });
+    expect(fs.existsSync(exit.handoffPath)).toBe(true);
+    expect(exit.message).toContain('โควตาเต็มแล้ว');</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/headless</code><br>
+     คาดหวัง: FAIL — type error ที่ <code>writeExit</code> ไม่รับ argument ที่ 5 / <code>report.reason</code> ไม่มี / runHeadlessJob คืน <code>'error'</code></p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: headless files + status</strong></span></p>
+  <p><code>src/headless/files.ts</code>: ใน <code>ExitInfo</code> เพิ่ม</p>
+<pre><code>  /** quota = หยุดเพราะโควตา (driver ใหม่บอกผู้ใช้ ; driver เก่าเห็นแค่ stopped) */
+  reason?: 'quota';
+  /** path ของ handoff.md ที่เขียนตอนหยุด */
+  handoffPath?: string;</code></pre>
+  <p>และแทน <code>writeExit</code> ด้วย:</p>
+<pre><code>export function writeExit(
+  dir: string,
+  status: ExitStatus,
+  message?: string,
+  now: Date = new Date(),
+  extra: Pick&lt;ExitInfo, 'reason' | 'handoffPath'&gt; = {},
+): void {
+  const at = now.toISOString();
+  const info: ExitInfo = message === undefined ? { status, at } : { status, message, at };
+  if (extra.reason) info.reason = extra.reason;
+  if (extra.handoffPath) info.handoffPath = extra.handoffPath;
+  writeJsonAtomic(headlessPath(dir, 'exit'), info);
+}</code></pre>
+  <p><code>src/headless/status.ts</code>: ใน <code>StatusReport</code> เพิ่ม <code>reason?: 'quota';</code> และ <code>handoffPath?: string;</code> ; ในบล็อก <code>if (exit) {</code> เพิ่มต่อจาก <code>if (exit.message) ...</code>:</p>
+<pre><code>    if (exit.reason) report.reason = exit.reason;
+    if (exit.handoffPath) report.handoffPath = exit.handoffPath;</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: run-context</strong></span></p>
+  <p>ใน <code>src/run-context.ts</code> import <code>{ QuotaMonitor } from './quota'</code> ; เพิ่ม <code>quota: QuotaMonitor;</code> ใน <code>RunContext</code> ; ใน <code>createRunContext</code> สร้าง <code>const quota = new QuotaMonitor();</code> ก่อนสร้าง runner, ส่ง <code>quota</code> ใน deps ของ <code>new SdkRoleRunner({...})</code> และเพิ่ม <code>quota</code> ใน object ที่ return</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: headless/run.ts</strong></span></p>
+  <p>import: <code>QuotaStopError</code> จาก <code>'../errors'</code>, <code>handleQuotaStop</code> จาก <code>'../job-handoff'</code>, <code>guardRunner, QuotaGate</code> จาก <code>'../quota-gate'</code> ; ใน catch ของ <code>runHeadlessJob</code> เพิ่มเป็นบรรทัดแรก:</p>
+<pre><code>    if (e instanceof QuotaStopError) {
+      const out = await handleQuotaStop({
+        error: e,
+        jobId: o.jobId,
+        repo: o.repo,
+        projectDir: o.projectDir ?? process.cwd(),
+        logger: o.logger,
+      });
+      writeExit(dir, 'stopped', out.lines.join(' — '), undefined, { reason: 'quota', handoffPath: out.handoffPath });
+      return 'stopped';
+    }</code></pre>
+  <p>ใน <code>runHeadless</code> ตอนเรียก <code>runHeadlessJob</code> เปลี่ยน <code>runner: ctx.runner,</code> เป็น:</p>
+<pre><code>    runner: guardRunner(ctx.runner, new QuotaGate(ctx.quota, io, ctx.logger)),</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 7: index.ts</strong></span></p>
+  <p>import: <code>QuotaStopError</code> จาก <code>'./errors'</code>, <code>handleQuotaStop</code> จาก <code>'./job-handoff'</code>, <code>guardAdvisor, guardRunner, QuotaGate</code> จาก <code>'./quota-gate'</code> ; หลังบรรทัด <code>const { config, logger, runner, repo, abortController } = ctx;</code> เพิ่ม:</p>
+<pre><code>  // ส่วนที่ 3: เช็คโควตาก่อนเรียก agent ทุกครั้ง (จุดปลอดภัย)
+  const gate = new QuotaGate(ctx.quota, loggingIO, logger);
+  const teamRunner = guardRunner(runner, gate);
+  const advisorRunner = guardAdvisor(runner, gate);</code></pre>
+  <p>เปลี่ยน <code>runAsk({ runner, ...</code> เป็น <code>runAsk({ runner: advisorRunner, ...</code> และ <code>runTeam({ runner, ...</code> เป็น <code>runTeam({ runner: teamRunner, ...</code> ; ใน <code>catch (e)</code> ใหญ่เพิ่มเป็นบรรทัดแรก:</p>
+<pre><code>    if (e instanceof QuotaStopError) {
+      const out = await handleQuotaStop({ error: e, jobId, repo, projectDir, logger });
+      console.error(`\n${out.lines.join('\n')}`);
+      logger.log('INFO', 'run.end', { jobId, reason: 'quota' });
+      process.exitCode = 2;
+      return;
+    }</code></pre>
+  <p class="meta">คง <code>finally</code> เดิม (unlock + ปิด CLI) — <code>return</code> ใน catch ยังวิ่ง finally</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 8: เอกสาร</strong></span></p>
+  <p><code>claude-skill/agent-team/SKILL.md</code>: แทนบรรทัด <code>- `error` / `idle` / `stopped` / `dead`: ...</code> ด้วยสองบรรทัด:</p>
+<pre><code>- `stopped` ที่มี `reason: "quota"`: หยุดเพราะโควตา subscription (ผู้ใช้เลือก handoff หรือโควตาเต็ม) บอกผู้ใช้ตาม `message` และให้ path `handoffPath` (ไฟล์ส่งต่องานที่ AI ตัวอื่นหรือคนอ่านทำต่อได้) ทำต่อด้วย agent-team ได้หลังโควตารีเซ็ตเท่านั้น และต้องถามผู้ใช้ก่อน
+- `error` / `idle` / `stopped` / `dead`: แจ้ง `message` ถ้าผู้ใช้อยากทำต่อ ให้ทำต่องานเดิม (jobId เดิม) ด้วย `agent-team run --headless --project "&lt;path&gt;" --job &lt;jobId&gt;` แบบ background แล้วทำขั้นตอนเริ่มงานข้อ 3-4 และเข้า loop ใหม่ — ห้ามเริ่มงานใหม่ (`--request`) ซ้ำสำหรับคำขอเดิม</code></pre>
+  <p>และในข้อ <code>question</code> ข้อ 2 เพิ่มประโยค: <code>คำถาม "จะทำอย่างไรต่อ? (handoff ... continue ...)" มาจากการเตือนโควตา — continue อาจใช้โควตาหรือ extra usage ที่คิดเงินเพิ่ม ต้องให้ผู้ใช้ตัดสินเท่านั้น</code></p>
+  <p><code>README.md</code>: เพิ่มหัวข้อก่อน <code>## ตั้งค่า (ไม่บังคับ)</code>:</p>
+<pre><code>## เตือนโควตาและ handoff
+agent-team ใช้โควตา subscription ที่ login ไว้เท่านั้น เมื่อ Claude แจ้งว่าโควตาใกล้เต็ม (เช่น `⚠ โควตา 5 ชม. · ใช้ไป 85% · รีเซ็ต 16:30`)
+หรือเริ่มใช้ extra usage ที่คิดเงินเพิ่ม จะเตือนก่อนเรียก agent ตัวถัดไป (ไม่ตัด agent ที่กำลังทำงาน) แล้วถาม:
+
+- `continue` ทำต่อ (ไม่ถามซ้ำจนกว่าจะเป็นรอบโควตาใหม่ ; extra usage ถามครั้งเดียวต่อการรัน)
+- `handoff` หยุดแล้วเขียน `.agent-team/jobs/&lt;id&gt;/handoff.md` สรุปเป้าหมาย requirements design task ที่ค้าง ปัญหาค้าง ไฟล์ที่แก้แล้ว
+  และวิธีทำต่อ — ส่งให้ AI ตัวอื่นหรือคนอ่านทำต่อได้ หรือกลับมา `agent-team -r` หลังโควตารีเซ็ต
+
+โควตาเต็มแล้ว = ไม่ถาม เขียน handoff แล้วหยุดทันที (exit code 2 ; headless: `stopped` พร้อม `reason: "quota"` และ `handoffPath`)
+ข้อความที่พิมพ์ถึง PM แต่ยังไม่ได้ส่งถูกเก็บไว้ `-r` จะส่งให้ PM ต่อ ; ใน `agent-team ask` จะแสดงข้อความที่ยังไม่ได้ส่งให้ copy เก็บ
+handoff เขียนด้วยโค้ดจาก state ไม่ใช้ AI จึงเขียนได้แม้โควตาเต็ม</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 9: รัน test ทั้งชุด</strong></span></p>
+  <p>รัน: <code>npm test</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS ทั้งหมด ไม่มี type error</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 10: ทดลองจริง (ผู้ใช้เป็นคนรัน — ใช้โควตาจริง)</strong></span></p>
+  <p>ใน cmd ที่โฟลเดอร์ repo: <code>npm start -- ask --project "%TEMP%\at-demo"</code> ส่ง 1–2 ข้อความ แล้ว <code>/exit</code> จากนั้นดู <code>%TEMP%\at-demo\.agent-team\agent-team.log</code> หา <code>quota.event</code><br>
+     คาดหวัง: มี <code>quota.event</code> อย่างน้อย 1 บรรทัด (บันทึกค่า <code>status</code>, <code>utilization</code>, <code>resetsAt</code>, <code>rateLimitType</code> จริง) — ส่งบรรทัดนั้นให้ผู้พัฒนาเพื่อยืนยันว่า <code>utilization</code> เป็น 0–1 หรือ 0–100 และ <code>resetsAt</code> เป็นวินาทีหรือมิลลิวินาที ถ้าไม่มี event เลยแปลว่า SDK ส่งเฉพาะตอนสถานะเปลี่ยน (คำเตือนยังทำงานเมื่อใกล้เต็ม) — changes are ready for review</p>
+</div>
+
+</body>
+</html>
