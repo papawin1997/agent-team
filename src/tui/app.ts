@@ -1,9 +1,11 @@
-import { Box, render, Static, Text, useInput } from 'ink';
+import { Box, render, Static, Text, useInput, useStdout } from 'ink';
 import React, { useEffect, useReducer, useRef, useState, useSyncExternalStore } from 'react';
 import { formatElapsed } from '../activity';
+import type { QuotaBadge } from '../quota';
 import { editorKey, type EditorState, emptyEditor, type KeyInput } from './editor';
 import { menuKey, type MenuState, newMenu } from './menu';
 import type { Activity, LogLine, MenuPrompt, Mounted, ScreenStore } from './screen';
+import { layoutBar } from './status-bar';
 import { graphemes } from './text';
 
 const h = React.createElement;
@@ -19,6 +21,10 @@ const FRAME_MS = 120;
 /** แบ่งบรรทัดที่ cursor อยู่ แล้ววาด cursor ปลอมเป็นช่องสีกลับ (ไม่พึ่งตำแหน่ง cursor จริงของ terminal) */
 const INVERSE = '\x1b[7m';
 const INVERSE_OFF = '\x1b[27m';
+const DIM = '\x1b[2m';
+const DIM_OFF = '\x1b[22m';
+const TONE_COLOR: Record<QuotaBadge['tone'], string> = { normal: 'gray', warn: 'yellow', overage: 'magenta', danger: 'red' };
+const DEFAULT_COLUMNS = 80;
 
 /**
  * บรรทัดเป็นข้อความก้อนเดียว ใส่ cursor ด้วยรหัส ANSI สีกลับ — ห้ามแยกเป็น Text ซ้อนหลายชิ้น:
@@ -30,7 +36,21 @@ function withCursor(line: string, at: number): string {
   return `${line.slice(0, at)}${INVERSE}${g ?? ' '}${INVERSE_OFF}${after}`;
 }
 
-function EditorLines({ editor, active, prefix }: { editor: EditorState; active: boolean; prefix: string }): React.ReactElement {
+function EditorLines({
+  editor,
+  active,
+  prefix,
+  placeholder,
+}: {
+  editor: EditorState;
+  active: boolean;
+  prefix: string;
+  placeholder?: string;
+}): React.ReactElement {
+  if (editor.value === '' && placeholder) {
+    const cursor = active ? `${INVERSE} ${INVERSE_OFF}` : ' ';
+    return h(Text, null, `${prefix}${cursor}${DIM}${placeholder}${DIM_OFF}`);
+  }
   const lines = editor.value.split('\n');
   const indent = ' '.repeat(Array.from(prefix).length);
   let start = 0;
@@ -89,14 +109,17 @@ export function App({ store, onInterrupt, now = Date.now }: AppProps): React.Rea
   // เก็บสถานะช่องพิมพ์/เมนูใน ref: ปุ่มที่มาติดกันก่อน React วาดใหม่ (พิมพ์เร็ว) ต้องเห็นค่าล่าสุดเสมอ
   const ui = useRef<{ editor: EditorState; menu: MenuState; menuFor?: number }>({ editor: emptyEditor(), menu: newMenu() });
   const [, redraw] = useReducer((n: number) => n + 1, 0);
+  const { stdout } = useStdout();
   const [frame, setFrame] = useState(0);
   const busy = state.activity !== undefined;
+  const closed = state.closed === true;
 
+  // นาฬิกาในแถบสถานะเดินทุกวินาที ; ตอน agent ทำงานเร็วขึ้นเพื่อ spinner
   useEffect(() => {
-    if (!busy) return undefined;
-    const timer = setInterval(() => setFrame((f) => f + 1), FRAME_MS);
+    if (closed) return undefined;
+    const timer = setInterval(() => setFrame((f) => f + 1), busy ? FRAME_MS : 1000);
     return () => clearInterval(timer);
-  }, [busy]);
+  }, [busy, closed]);
 
   /** เมนูของคำถามปัจจุบัน (คำถามใหม่ = เริ่มเมนูใหม่) */
   const menuFor = (prompt: MenuPrompt): MenuState => {
@@ -137,7 +160,8 @@ export function App({ store, onInterrupt, now = Date.now }: AppProps): React.Rea
   );
 
   const prompt = state.prompt;
-  const log = h(Static<LogLine>, { items: [...state.log], children: (line: LogLine) => h(Text, { key: line.id }, line.text) });
+  const bar = layoutBar(state.bar, formatElapsed(now() - state.startedAt), stdout.columns ?? DEFAULT_COLUMNS);
+  const log =h(Static<LogLine>, { items: [...state.log], children: (line: LogLine) => h(Text, { key: line.id }, line.text) });
   if (state.closed) return h(Box, { flexDirection: 'column' }, log);
   return h(
     Box,
@@ -153,10 +177,15 @@ export function App({ store, onInterrupt, now = Date.now }: AppProps): React.Rea
         : h(
             Box,
             { borderStyle: 'round', borderColor: prompt ? 'white' : 'gray', paddingX: 1 },
-            h(EditorLines, { editor: ui.current.editor, active: true, prefix: '> ' }),
+            h(EditorLines, { editor: ui.current.editor, active: true, prefix: '> ', placeholder: HINT }),
           ),
       state.notice ? h(Text, { color: 'yellow' }, state.notice) : null,
-      prompt?.kind === 'menu' ? null : h(Text, { dimColor: true }, HINT),
+      h(
+        Box,
+        { justifyContent: 'space-between' },
+        h(Text, { dimColor: true }, bar.left),
+        state.bar.quota ? h(Text, { color: TONE_COLOR[state.bar.quota.tone] }, bar.right) : null,
+      ),
     ),
   );
 }

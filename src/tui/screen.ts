@@ -1,4 +1,5 @@
 import type { MenuOption } from './menu';
+import type { BarInfo } from './status-bar';
 
 /** ข้อความที่พิมพ์ลงจอแล้ว (ลงสีแล้ว) — Ink พิมพ์แบบถาวรด้วย Static */
 export interface LogLine {
@@ -29,6 +30,10 @@ export interface ScreenState {
   notice?: string;
   /** ปิดจอแล้ว: เหลือแต่ log */
   closed?: boolean;
+  /** แถบสถานะล่างจอ */
+  bar: BarInfo;
+  /** เวลาเริ่มรัน (ใช้คำนวณเวลาในแถบสถานะ) */
+  startedAt: number;
 }
 
 export interface Mounted {
@@ -37,12 +42,20 @@ export interface Mounted {
 
 /** สถานะจอที่ TuiIO เขียนและ App (Ink) อ่าน — แยกจาก Ink เพื่อให้เทสต์ได้โดยไม่ต้องมี terminal */
 export class ScreenStore {
-  private state: ScreenState = { log: [] };
+  private state: ScreenState;
   private readonly listeners = new Set<() => void>();
   private nextId = 1;
   private pending: { resolve: (answer: PromptAnswer) => void; reject: (error: Error) => void } | undefined;
 
+  constructor(now: () => number = Date.now) {
+    this.state = { log: [], bar: {}, startedAt: now() };
+  }
+
   readonly getState = (): ScreenState => this.state;
+
+  setBar(patch: Partial<BarInfo>): void {
+    this.set({ bar: { ...this.state.bar, ...patch } });
+  }
 
   readonly subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);

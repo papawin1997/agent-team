@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>UI terminal แบบ Claude CLI (plan 2) Implementation Plan</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; line-height: 1.55;
+         max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1f2933;
+         background: #f5f7fa; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  pre { background: #1f2933; color: #e4e7eb; padding: .9rem 1rem;
+        border-radius: 6px; overflow-x: auto; }
+  code { background: #e4e7eb; padding: .1rem .35rem; border-radius: 4px; }
+  pre code { background: none; padding: 0; color: inherit; }
+  .frame { border-left: 6px solid; border-radius: 8px; padding: 1rem 1.25rem;
+           margin: 1.25rem 0; background: #ffffff;
+           box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .frame-header     { border-color: #2563eb; background: #eff6ff; }  /* blue  */
+  .frame-constraints{ border-color: #d97706; background: #fffbeb; }  /* amber */
+  .frame-task       { border-color: #059669; background: #ecfdf5; }  /* green */
+  .frame h1, .frame h2, .frame h3 { margin-top: 0; }
+  .note { border-color: #7c3aed; background: #f5f3ff; }              /* violet */
+  .step { display: flex; gap: .5rem; align-items: baseline;
+          margin: .75rem 0 .25rem; }
+  .step input { transform: scale(1.2); margin-top: .15rem; }
+  .meta { color: #52606d; font-size: .9rem; }
+</style>
+</head>
+<body>
+
+<div class="frame frame-header">
+  <h1>UI terminal แบบ Claude CLI — plan 2: แถบสถานะล่างจอ Implementation Plan</h1>
+  <p><strong>เป้าหมาย:</strong> เพิ่มแถบสถานะใต้ช่องพิมพ์ที่บอกชื่องาน เฟส งานที่เสร็จ/ทั้งหมด (เฟส BUILD) เวลาตั้งแต่เริ่มรัน และโควตา โดยอัปเดตเองเมื่อ state ถูกบันทึกหรือมี rate_limit_event และย้ายคำแนะนำปุ่มไปเป็นข้อความจางในช่องพิมพ์ตอนว่าง</p>
+  <p><strong>สถาปัตยกรรม:</strong> ตรรกะล้วนใน <code>src/tui/status-bar.ts</code> (<code>jobBar</code>, <code>layoutBar</code>, <code>watchStore</code>) และ <code>formatQuotaShort</code> ใน <code>src/quota.ts</code> ; <code>QuotaMonitor</code> แจ้งผู้ฟังทุกครั้งที่ <code>record</code> ; <code>ScreenStore</code> เก็บ <code>bar</code> และ <code>startedAt</code> ; <code>TuiIO</code> มี <code>showJob</code> / <code>showQuota</code> / <code>showMode</code> ; <code>index.ts</code> ห่อ store ของงานด้วย <code>watchStore</code> และฟัง <code>QuotaMonitor</code> — ไม่แก้ phases</p>
+  <p><strong>Tech Stack:</strong> TypeScript, Ink 5.2.1 (<code>useStdout</code> สำหรับความกว้างจอ), vitest, ink-testing-library</p>
+  <p class="meta">Design: ส่วนที่ 3 ของ UI ใหม่ (ตกลงใน conversation 2026-11-05) ต่อจาก plan 1 (<code>docs/plan/2026-11-05-tui-ink-plan1.html</code>, commit 52ac7e1) — เปลี่ยนจาก design เล็กน้อย: โควตาใช้การแจ้งจาก <code>QuotaMonitor.subscribe</code> แทนการอ่านทุกวินาที (ง่ายกว่าและเทสต์ได้ตรง)</p>
+</div>
+
+<div class="frame note">
+  <strong>For agentic workers:</strong> REQUIRED SUB-SKILL: Use
+  tb-subagent-driven-development (recommended) or
+  tb-executing-plans to implement this plan task-by-task. Steps keep
+  the <code>- [ ]</code> marker next to each checkbox for tracking.
+</div>
+
+<div class="frame frame-constraints">
+  <h2>Global Constraints</h2>
+  <ul>
+    <li>รูปแถบ: ซ้าย <code>ชื่องาน · เฟส · งาน x/y · เวลา</code> (คั่นด้วย <code> · </code>) ขวา = โควตา ; เฟสโหมด ask = <code>ปรึกษา</code> ; จำนวนงานแสดงเฉพาะเฟส <code>BUILD</code> ; เวลาใช้ <code>formatElapsed</code> เดิม (เช่น <code>12m34s</code>)</li>
+    <li>จอแคบ: ตัดชื่องานก่อน แล้วเวลา แล้วจำนวนงาน — เฟสและโควตาแสดงเสมอ ; วัดความกว้างด้วย <code>displayWidth</code> ของ <code>src/tui/text.ts</code> ; ชื่องานยาวเกิน 30 grapheme ตัดเป็น <code>…</code></li>
+    <li>โควตา: <code>โควตา 5 ชม. 25%</code> สีเทา (allowed), สีเหลือง (allowed_warning), <code>extra usage (คิดเงินเพิ่ม)</code> สีม่วง (กำลังใช้จริงตาม <code>usingOverage</code>), <code>โควตา 5 ชม. เต็มแล้ว</code> สีแดง (rejected) ; ยังไม่มี event หรือ allowed ที่ไม่มีเปอร์เซ็นต์ = ไม่แสดง ; เปอร์เซ็นต์อ่านแบบเดียวกับคำเตือน (<code>utilization</code> ชั้นบน แล้ว <code>unifiedWindows</code>)</li>
+    <li>ข้อความแจ้งจาก <code>watchStore</code> ห้ามทำให้ <code>save</code> ล้ม ; headless และ CliIO เดิมไม่เปลี่ยน (เมธอดแถบสถานะเป็น optional บน <code>TerminalIO</code>)</li>
+    <li>ไม่ใช้ JSX ; คงกฎ plan 1: ข้อความในช่องพิมพ์เป็นข้อความก้อนเดียวต่อบรรทัด (ใส่สีด้วย ANSI ในสตริง ห้ามแยกเป็น Text ซ้อน) ; ห้าม commit</li>
+  </ul>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 1: <code>formatQuotaShort</code> และ <code>QuotaMonitor.subscribe</code> (<code>src/quota.ts</code>)</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/quota.ts</code></li>
+    <li>เทสต์: <code>tests/quota.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ส่งต่อ: <code>interface QuotaBadge { text: string; tone: 'normal' | 'warn' | 'overage' | 'danger' }</code> ; <code>formatQuotaShort(info: RateLimitInfo): QuotaBadge | undefined</code> ; <code>QuotaMonitor.subscribe(listener: (info: RateLimitInfo) =&gt; void): () =&gt; void</code></li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>ใน <code>tests/quota.test.ts</code> เปลี่ยน import เป็น <code>import { formatQuotaAlert, formatQuotaShort, type QuotaBadge, QuotaMonitor, type RateLimitInfo, usingOverage } from '../src/quota';</code> แล้วต่อท้ายไฟล์:</p>
+<pre><code>describe('formatQuotaShort', () =&gt; {
+  it.each([
+    [
+      { status: 'allowed', rateLimitType: 'five_hour', unifiedWindows: { five_hour: { utilization: 0.25 } } },
+      { text: 'โควตา 5 ชม. 25%', tone: 'normal' },
+    ],
+    [{ status: 'allowed_warning', rateLimitType: 'seven_day', utilization: 0.9 }, { text: 'โควตา 7 วัน 90%', tone: 'warn' }],
+    [{ status: 'allowed_warning' }, { text: 'โควตา', tone: 'warn' }],
+    [{ status: 'allowed', isUsingOverage: true }, { text: 'extra usage (คิดเงินเพิ่ม)', tone: 'overage' }],
+    [{ status: 'rejected', rateLimitType: 'five_hour', isUsingOverage: true }, { text: 'โควตา 5 ชม. เต็มแล้ว', tone: 'danger' }],
+  ] as Array&lt;[RateLimitInfo, QuotaBadge]&gt;)('%j', (info, badge) =&gt; {
+    expect(formatQuotaShort(info)).toEqual(badge);
+  });
+
+  it('allowed ที่ไม่มีเปอร์เซ็นต์: ไม่แสดง', () =&gt; {
+    expect(formatQuotaShort({ status: 'allowed' })).toBeUndefined();
+  });
+});
+
+describe('QuotaMonitor.subscribe', () =&gt; {
+  it('แจ้งทุกครั้งที่ record จนกว่าจะยกเลิก', () =&gt; {
+    const m = new QuotaMonitor();
+    const seen: string[] = [];
+    const off = m.subscribe((info) =&gt; seen.push(info.status));
+    m.record({ status: 'allowed' });
+    off();
+    m.record({ status: 'rejected' });
+    expect(seen).toEqual(['allowed']);
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/quota.test.ts</code><br>
+     คาดหวัง: FAIL — <code>formatQuotaShort is not a function</code> / <code>m.subscribe is not a function</code></p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p>ใน <code>class QuotaMonitor</code> เพิ่ม field และเปลี่ยน <code>record</code>:</p>
+<pre><code>  private readonly listeners = new Set&lt;(info: RateLimitInfo) =&gt; void&gt;();
+
+  record(info: RateLimitInfo): void {
+    this.latest = info;
+    for (const listener of this.listeners) listener(info);
+  }
+
+  /** แถบสถานะของหน้าจอใหม่ฟังเพื่ออัปเดตโควตาทันทีที่มี event */
+  subscribe(listener: (info: RateLimitInfo) =&gt; void): () =&gt; void {
+    this.listeners.add(listener);
+    return () =&gt; {
+      this.listeners.delete(listener);
+    };
+  }</code></pre>
+  <p>ต่อท้ายไฟล์ <code>src/quota.ts</code>:</p>
+<pre><code>export interface QuotaBadge {
+  text: string;
+  tone: 'normal' | 'warn' | 'overage' | 'danger';
+}
+
+/** โควตาแบบสั้นสำหรับแถบสถานะ (undefined = ไม่มีอะไรน่าแสดง) */
+export function formatQuotaShort(info: RateLimitInfo): QuotaBadge | undefined {
+  const label = TYPE_LABEL[info.rateLimitType ?? ''] ?? 'โควตา';
+  if (info.status === 'rejected') return { text: `${label} เต็มแล้ว`, tone: 'danger' };
+  if (usingOverage(info)) return { text: 'extra usage (คิดเงินเพิ่ม)', tone: 'overage' };
+  const used = utilizationOf(info);
+  if (used === undefined &amp;&amp; info.status === 'allowed') return undefined;
+  const text = used === undefined ? label : `${label} ${percent(used)}%`;
+  return { text, tone: info.status === 'allowed_warning' ? 'warn' : 'normal' };
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/quota.test.ts</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS และไม่มี type error</p>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 2: ตรรกะแถบสถานะ (<code>src/tui/status-bar.ts</code>)</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>สร้าง: <code>src/tui/status-bar.ts</code></li>
+    <li>เทสต์: <code>tests/tui/status-bar.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: <code>QuotaBadge</code> (Task 1), <code>displayWidth</code>, <code>graphemes</code> (<code>src/tui/text.ts</code>), <code>State</code> (<code>src/state.ts</code>), <code>StateStore</code> (<code>src/deps.ts</code>)</li>
+    <li>ส่งต่อ: <code>interface BarInfo { title?: string; phase?: string; tasks?: { done: number; total: number }; quota?: QuotaBadge }</code> ; <code>jobBar(state: State): Pick&lt;BarInfo, 'title' | 'phase' | 'tasks'&gt;</code> ; <code>layoutBar(bar: BarInfo, elapsed: string, width: number): { left: string; right: string }</code> ; <code>watchStore(store: StateStore, onSave: (state: State) =&gt; void): StateStore</code></li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>สร้าง <code>tests/tui/status-bar.test.ts</code>:</p>
+<pre><code>import { describe, expect, it } from 'vitest';
+import { newState } from '../../src/state';
+import { type BarInfo, jobBar, layoutBar, watchStore } from '../../src/tui/status-bar';
+import { buildState, makeDesign, makeTask } from '../helpers/builders';
+import { MemoryStore } from '../helpers/fakes';
+
+describe('jobBar', () =&gt; {
+  it('REQUIREMENTS: ชื่องานและเฟส ไม่มีจำนวนงาน', () =&gt; {
+    expect(jobBar({ ...newState(), title: 'ระบบ login' })).toEqual({ title: 'ระบบ login', phase: 'REQUIREMENTS' });
+  });
+
+  it('BUILD: นับงานที่เสร็จจาก progress', () =&gt; {
+    const state = buildState(makeDesign([makeTask('api'), makeTask('ui', 'frontend', ['api'])]));
+    state.progress.api!.done = true;
+    expect(jobBar(state)).toEqual({ phase: 'BUILD', tasks: { done: 1, total: 2 } });
+  });
+});
+
+describe('layoutBar', () =&gt; {
+  const full: BarInfo = {
+    title: 'ระบบ login',
+    phase: 'BUILD',
+    tasks: { done: 2, total: 5 },
+    quota: { text: 'โควตา 5 ชม. 85%', tone: 'warn' },
+  };
+
+  it('กว้างพอ: แสดงครบ', () =&gt; {
+    expect(layoutBar(full, '12m34s', 100)).toEqual({ left: 'ระบบ login · BUILD · งาน 2/5 · 12m34s', right: 'โควตา 5 ชม. 85%' });
+  });
+
+  it('จอแคบ: ตัดชื่องาน แล้วเวลา แล้วจำนวนงาน แต่เฟสและโควตาอยู่เสมอ', () =&gt; {
+    expect(layoutBar(full, '12m34s', 45).left).toBe('BUILD · งาน 2/5 · 12m34s');
+    expect(layoutBar(full, '12m34s', 35).left).toBe('BUILD · งาน 2/5');
+    expect(layoutBar(full, '12m34s', 10)).toEqual({ left: 'BUILD', right: 'โควตา 5 ชม. 85%' });
+  });
+
+  it('ชื่องานยาวเกิน 30 ตัวอักษรถูกตัดเป็น … ; ยังไม่มีข้อมูล = เหลือแต่เวลา', () =&gt; {
+    expect(layoutBar({ title: 'ก'.repeat(40), phase: 'DESIGN' }, '0m05s', 200).left).toBe(`${'ก'.repeat(29)}… · DESIGN · 0m05s`);
+    expect(layoutBar({}, '0m05s', 80)).toEqual({ left: '0m05s', right: '' });
+  });
+});
+
+describe('watchStore', () =&gt; {
+  it('save แล้วแจ้ง ; load/saveArtifact ส่งต่อ ; ตัวแจ้งพังไม่ทำให้ save ล้ม', async () =&gt; {
+    const inner = new MemoryStore();
+    const seen: string[] = [];
+    const store = watchStore(inner, (s) =&gt; seen.push(s.phase));
+    await store.save(newState());
+    await store.saveArtifact('design.json', { x: 1 });
+    expect(seen).toEqual(['REQUIREMENTS']);
+    expect(await store.load()).toMatchObject({ phase: 'REQUIREMENTS' });
+    expect(inner.artifacts.get('design.json')).toEqual({ x: 1 });
+    const broken = watchStore(inner, () =&gt; {
+      throw new Error('boom');
+    });
+    await expect(broken.save(newState())).resolves.toBeUndefined();
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/tui/status-bar.test.ts</code><br>
+     คาดหวัง: FAIL ด้วย "Cannot find module '../../src/tui/status-bar'"</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: เขียน implementation</strong></span></p>
+  <p>สร้าง <code>src/tui/status-bar.ts</code>:</p>
+<pre><code>import type { StateStore } from '../deps';
+import type { QuotaBadge } from '../quota';
+import type { State } from '../state';
+import { displayWidth, graphemes } from './text';
+
+/** ข้อมูลแถบสถานะล่างจอ */
+export interface BarInfo {
+  title?: string;
+  /** เฟสของงาน หรือ "ปรึกษา" ในโหมด ask */
+  phase?: string;
+  /** เฉพาะเฟส BUILD */
+  tasks?: { done: number; total: number };
+  quota?: QuotaBadge;
+}
+
+const SEP = ' · ';
+const MAX_TITLE = 30;
+
+export function jobBar(state: State): Pick&lt;BarInfo, 'title' | 'phase' | 'tasks'&gt; {
+  const bar: Pick&lt;BarInfo, 'title' | 'phase' | 'tasks'&gt; = { phase: state.phase };
+  if (state.title) bar.title = state.title;
+  if (state.phase === 'BUILD' &amp;&amp; state.design) {
+    const tasks = state.design.tasks;
+    bar.tasks = { done: tasks.filter((t) =&gt; state.progress[t.id]?.done === true).length, total: tasks.length };
+  }
+  return bar;
+}
+
+function shorten(text: string): string {
+  const parts = graphemes(text);
+  return parts.length &gt; MAX_TITLE ? `${parts.slice(0, MAX_TITLE - 1).join('')}…` : text;
+}
+
+/** จัดแถบตามความกว้างจอ: ตัดชื่องาน → เวลา → จำนวนงาน ; เฟสและโควตาอยู่เสมอ */
+export function layoutBar(bar: BarInfo, elapsed: string, width: number): { left: string; right: string } {
+  const right = bar.quota?.text ?? '';
+  const parts: Array&lt;{ key: 'title' | 'phase' | 'tasks' | 'time'; text: string | undefined }&gt; = [
+    { key: 'title', text: bar.title ? shorten(bar.title) : undefined },
+    { key: 'phase', text: bar.phase },
+    { key: 'tasks', text: bar.tasks ? `งาน ${bar.tasks.done}/${bar.tasks.total}` : undefined },
+    { key: 'time', text: elapsed },
+  ];
+  const dropped = new Set&lt;string&gt;();
+  const left = (): string =&gt;
+    parts
+      .filter((p) =&gt; p.text &amp;&amp; !dropped.has(p.key))
+      .map((p) =&gt; p.text)
+      .join(SEP);
+  const fits = (): boolean =&gt; displayWidth(left()) + (right ? displayWidth(right) + 2 : 0) &lt;= width;
+  for (const key of ['title', 'time', 'tasks']) {
+    if (fits()) break;
+    dropped.add(key);
+  }
+  return { left: left(), right };
+}
+
+/** ห่อ store ของงาน: แจ้งแถบสถานะทุกครั้งที่ save (ตัวแจ้งพังต้องไม่ทำให้การบันทึกล้ม) */
+export function watchStore(store: StateStore, onSave: (state: State) =&gt; void): StateStore {
+  return {
+    load: () =&gt; store.load(),
+    saveArtifact: (name, data) =&gt; store.saveArtifact(name, data),
+    save: async (state) =&gt; {
+      await store.save(state);
+      try {
+        onSave(state);
+      } catch {
+        // แถบสถานะเป็นของแถม: ห้ามกระทบงาน
+      }
+    },
+  };
+}</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/tui/status-bar.test.ts</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS และไม่มี type error</p>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 3: <code>ScreenStore.bar</code> และเมธอดแถบสถานะของ <code>TuiIO</code></h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/tui/screen.ts</code>, <code>src/tui/tui-io.ts</code>, <code>src/tui/select.ts</code> (<code>TerminalIO</code>)</li>
+    <li>เทสต์: <code>tests/tui/tui-io.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: <code>BarInfo</code>, <code>jobBar</code> (Task 2), <code>formatQuotaShort</code>, <code>RateLimitInfo</code> (Task 1)</li>
+    <li>ส่งต่อ: <code>ScreenState.bar: BarInfo</code> และ <code>ScreenState.startedAt: number</code> ; <code>new ScreenStore(now?: () =&gt; number)</code> ; <code>ScreenStore.setBar(patch: Partial&lt;BarInfo&gt;): void</code> ; <code>TuiIO.showJob(state: State)</code>, <code>TuiIO.showQuota(info: RateLimitInfo)</code>, <code>TuiIO.showMode(label: string)</code> ; บน <code>TerminalIO</code> เป็น optional ทั้งสามตัว</li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>ใน <code>tests/tui/tui-io.test.ts</code> เพิ่ม import <code>import { newState } from '../../src/state';</code> ; ใน <code>setup()</code> เปลี่ยน <code>const store = new ScreenStore();</code> เป็น <code>const store = new ScreenStore(() =&gt; 1000);</code> (เวลาเริ่มของจอมาจาก store) แล้วต่อท้ายไฟล์:</p>
+<pre><code>describe('TuiIO: แถบสถานะ', () =&gt; {
+  it('showMode / showJob / showQuota เขียนลง bar ; startedAt มาจาก now', () =&gt; {
+    const { store, io } = setup();
+    expect(store.getState().startedAt).toBe(1000);
+    io.showMode('ปรึกษา');
+    expect(store.getState().bar).toEqual({ phase: 'ปรึกษา' });
+    io.showJob({ ...newState(), title: 'งาน A' });
+    io.showQuota({ status: 'allowed_warning', rateLimitType: 'five_hour', utilization: 0.85 });
+    expect(store.getState().bar).toEqual({ title: 'งาน A', phase: 'REQUIREMENTS', quota: { text: 'โควตา 5 ชม. 85%', tone: 'warn' } });
+  });
+
+  it('showJob ล้างจำนวนงานเก่าเมื่อออกจาก BUILD', () =&gt; {
+    const { store, io } = setup();
+    store.setBar({ tasks: { done: 1, total: 2 } });
+    io.showJob(newState());
+    expect(store.getState().bar.tasks).toBeUndefined();
+  });
+});</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/tui/tui-io.test.ts</code><br>
+     คาดหวัง: FAIL — <code>io.showMode is not a function</code> / <code>startedAt</code> เป็น undefined</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แก้ <code>src/tui/screen.ts</code></strong></span></p>
+  <p>เพิ่ม import <code>import type { BarInfo } from './status-bar';</code> ; ใน <code>ScreenState</code> เพิ่ม</p>
+<pre><code>  /** แถบสถานะล่างจอ */
+  bar: BarInfo;
+  /** เวลาเริ่มรัน (ใช้คำนวณเวลาในแถบสถานะ) */
+  startedAt: number;</code></pre>
+  <p>ใน <code>class ScreenStore</code> เปลี่ยน <code>private state: ScreenState = { log: [] };</code> เป็น field ที่ตั้งใน constructor และเพิ่ม <code>setBar</code>:</p>
+<pre><code>  private state: ScreenState;
+
+  constructor(now: () =&gt; number = Date.now) {
+    this.state = { log: [], bar: {}, startedAt: now() };
+  }
+
+  setBar(patch: Partial&lt;BarInfo&gt;): void {
+    this.set({ bar: { ...this.state.bar, ...patch } });
+  }</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: แก้ <code>src/tui/tui-io.ts</code></strong></span></p>
+  <p>เพิ่ม import <code>import { formatQuotaShort, type RateLimitInfo } from '../quota';</code>, <code>import type { State } from '../state';</code>, <code>import { jobBar } from './status-bar';</code> ; ใน constructor เปลี่ยน <code>this.store = o.store ?? new ScreenStore();</code> เป็น</p>
+<pre><code>    const now = o.now ?? Date.now;
+    this.store = o.store ?? new ScreenStore(now);</code></pre>
+  <p>(ลบบรรทัด <code>const now = o.now ?? Date.now;</code> เดิมที่อยู่ถัดลงไป) แล้วเพิ่มเมธอดในคลาส ต่อจาก <code>say</code>:</p>
+<pre><code>  /** แถบสถานะ: งาน (เรียกทุกครั้งที่ state ถูกบันทึก) — ล้างค่าเก่าที่ไม่มีแล้ว เช่นจำนวนงานหลังออกจาก BUILD */
+  showJob(state: State): void {
+    this.store.setBar({ title: undefined, tasks: undefined, ...jobBar(state) });
+  }
+
+  showQuota(info: RateLimitInfo): void {
+    this.store.setBar({ quota: formatQuotaShort(info) });
+  }
+
+  /** โหมดที่ไม่มีงาน เช่น "ปรึกษา" */
+  showMode(label: string): void {
+    this.store.setBar({ phase: label });
+  }</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 5: แก้ <code>TerminalIO</code> ใน <code>src/tui/select.ts</code></strong></span></p>
+  <p>เพิ่ม import <code>import type { RateLimitInfo } from '../quota';</code> และ <code>import type { State } from '../state';</code> แล้วเพิ่มใน <code>interface TerminalIO</code>:</p>
+<pre><code>  /** แถบสถานะ (มีเฉพาะหน้าจอแบบใหม่ ; CliIO ไม่มี) */
+  showJob?(state: State): void;
+  showQuota?(info: RateLimitInfo): void;
+  showMode?(label: string): void;</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 6: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/tui</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS และไม่มี type error</p>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 4: วาดแถบสถานะ และย้ายคำแนะนำปุ่มเข้าช่องพิมพ์ (<code>src/tui/app.ts</code>)</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/tui/app.ts</code></li>
+    <li>เทสต์: <code>tests/tui/app.test.ts</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: <code>layoutBar</code> (Task 2), <code>QuotaBadge</code> (Task 1), <code>ScreenState.bar</code> / <code>startedAt</code>, <code>ScreenStore.setBar</code> (Task 3)</li>
+    <li>ส่งต่อ: ไม่มี interface ใหม่ (<code>HINT</code> ยัง export แต่ย้ายไปเป็นข้อความจางในช่องพิมพ์ตอนว่าง)</li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: เขียน test ที่ต้อง fail</strong></span></p>
+  <p>ใน <code>tests/tui/app.test.ts</code> เปลี่ยนใน <code>mount()</code> บรรทัด <code>const store = new ScreenStore();</code> เป็น <code>const store = new ScreenStore(() =&gt; 0);</code> แล้วเพิ่มใน <code>describe('App', ...)</code>:</p>
+<pre><code>  it('แถบสถานะ: ชื่องาน เฟส งาน เวลา และโควตา', async () =&gt; {
+    const store = new ScreenStore(() =&gt; 0);
+    const ui = render(React.createElement(App, { store, onInterrupt: () =&gt; {}, now: () =&gt; 754_000 }));
+    unmounts.push(ui.unmount);
+    await tick();
+    store.setBar({ title: 'ระบบ login', phase: 'BUILD', tasks: { done: 2, total: 5 }, quota: { text: 'โควตา 5 ชม. 85%', tone: 'warn' } });
+    await tick();
+    expect(ui.lastFrame()).toContain('ระบบ login · BUILD · งาน 2/5 · 12m34s');
+    expect(ui.lastFrame()).toContain('โควตา 5 ชม. 85%');
+  });
+
+  it('คำแนะนำปุ่มอยู่ในช่องพิมพ์ตอนว่าง และหายเมื่อพิมพ์', async () =&gt; {
+    const { ui } = await mount();
+    expect(ui.lastFrame()).toContain(HINT);
+    ui.stdin.write('ก');
+    await tick();
+    expect(ui.lastFrame()).not.toContain(HINT);
+    expect(ui.lastFrame()).toContain('&gt; ก');
+  });</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: รัน test เพื่อยืนยันว่า fail</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/tui/app.test.ts</code><br>
+     คาดหวัง: FAIL — ไม่มีแถบสถานะในจอ และ <code>HINT</code> ยังอยู่หลังพิมพ์</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: แก้ <code>src/tui/app.ts</code></strong></span></p>
+  <p>import: เปลี่ยนบรรทัดแรกเป็น <code>import { Box, render, Static, Text, useInput, useStdout } from 'ink';</code> และเพิ่ม <code>import type { QuotaBadge } from '../quota';</code>, <code>import { layoutBar } from './status-bar';</code> ; ต่อจาก <code>const INVERSE_OFF = '\x1b[27m';</code> เพิ่ม:</p>
+<pre><code>const DIM = '\x1b[2m';
+const DIM_OFF = '\x1b[22m';
+const TONE_COLOR: Record&lt;QuotaBadge['tone'], string&gt; = { normal: 'gray', warn: 'yellow', overage: 'magenta', danger: 'red' };
+const DEFAULT_COLUMNS = 80;</code></pre>
+  <p>แทน <code>function EditorLines(...)</code> ทั้งฟังก์ชันด้วย (เพิ่ม <code>placeholder</code> — ข้อความก้อนเดียวตามกฎ plan 1):</p>
+<pre><code>function EditorLines({
+  editor,
+  active,
+  prefix,
+  placeholder,
+}: {
+  editor: EditorState;
+  active: boolean;
+  prefix: string;
+  placeholder?: string;
+}): React.ReactElement {
+  if (editor.value === '' &amp;&amp; placeholder) {
+    const cursor = active ? `${INVERSE} ${INVERSE_OFF}` : ' ';
+    return h(Text, null, `${prefix}${cursor}${DIM}${placeholder}${DIM_OFF}`);
+  }
+  const lines = editor.value.split('\n');
+  const indent = ' '.repeat(Array.from(prefix).length);
+  let start = 0;
+  return h(
+    Box,
+    { flexDirection: 'column' },
+    ...lines.map((line, i) =&gt; {
+      const lineStart = start;
+      start += line.length + 1;
+      const here = active &amp;&amp; editor.cursor &gt;= lineStart &amp;&amp; editor.cursor &lt;= lineStart + line.length;
+      const body = here ? withCursor(line, editor.cursor - lineStart) : line;
+      return h(Text, { key: i }, `${i === 0 ? prefix : indent}${body}`);
+    }),
+  );
+}</code></pre>
+  <p>ใน <code>App</code>: แทนบล็อก</p>
+<pre><code>  const [frame, setFrame] = useState(0);
+  const busy = state.activity !== undefined;
+
+  useEffect(() =&gt; {
+    if (!busy) return undefined;
+    const timer = setInterval(() =&gt; setFrame((f) =&gt; f + 1), FRAME_MS);
+    return () =&gt; clearInterval(timer);
+  }, [busy]);</code></pre>
+  <p>ด้วย (นาฬิกาเดินทุกวินาที ; ตอน agent ทำงานเร็วขึ้นเพื่อ spinner):</p>
+<pre><code>  const { stdout } = useStdout();
+  const [frame, setFrame] = useState(0);
+  const busy = state.activity !== undefined;
+  const closed = state.closed === true;
+
+  useEffect(() =&gt; {
+    if (closed) return undefined;
+    const timer = setInterval(() =&gt; setFrame((f) =&gt; f + 1), busy ? FRAME_MS : 1000);
+    return () =&gt; clearInterval(timer);
+  }, [busy, closed]);</code></pre>
+  <p>แทนส่วนท้ายของ <code>return h(...)</code> ใน <code>App</code> ตั้งแต่ <code>prompt?.kind === 'menu'</code> (ตัวที่เลือกระหว่างเมนูกับช่องพิมพ์) จนจบด้วย:</p>
+<pre><code>      prompt?.kind === 'menu'
+        ? h(MenuView, { prompt, menu: menuFor(prompt) })
+        : h(
+            Box,
+            { borderStyle: 'round', borderColor: prompt ? 'white' : 'gray', paddingX: 1 },
+            h(EditorLines, { editor: ui.current.editor, active: true, prefix: '&gt; ', placeholder: HINT }),
+          ),
+      state.notice ? h(Text, { color: 'yellow' }, state.notice) : null,
+      h(
+        Box,
+        { justifyContent: 'space-between' },
+        h(Text, { dimColor: true }, bar.left),
+        state.bar.quota ? h(Text, { color: TONE_COLOR[state.bar.quota.tone] }, bar.right) : null,
+      ),
+    ),
+  );</code></pre>
+  <p>และเพิ่มก่อน <code>const log = ...</code> (ใช้ <code>stdout.columns</code> เป็นความกว้าง — ข้อความแถบต้องเป็นสตริงก้อนเดียวต่อฝั่ง):</p>
+<pre><code>  const bar = layoutBar(state.bar, formatElapsed(now() - state.startedAt), stdout.columns ?? DEFAULT_COLUMNS);</code></pre>
+  <p class="meta">บรรทัด <code>prompt?.kind === 'menu' ? null : h(Text, { dimColor: true }, HINT),</code> เดิมถูกลบไปพร้อมการแทนข้างบน (คำแนะนำย้ายเข้าไปในช่องพิมพ์แล้ว)</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: รัน test เพื่อยืนยันว่า pass</strong></span></p>
+  <p>รัน: <code>npx vitest run tests/tui</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS (รวมเทสต์ plan 1 เดิม: เทสต์ "ปิดแล้ว" ยังไม่เห็น <code>HINT</code> เพราะจอปิดเหลือแต่ log) และไม่มี type error</p>
+</div>
+
+<div class="frame frame-task">
+  <h3>Task 5: ต่อเข้า <code>index.ts</code>, README และทดลองจริง</h3>
+
+  <p class="meta"><strong>ไฟล์:</strong></p>
+  <ul class="meta">
+    <li>แก้ไข: <code>src/index.ts</code>, <code>README.md</code></li>
+  </ul>
+
+  <p class="meta"><strong>Interfaces:</strong></p>
+  <ul class="meta">
+    <li>ใช้จาก: <code>watchStore</code> (Task 2), <code>QuotaMonitor.subscribe</code> (Task 1), <code>TerminalIO.showJob/showQuota/showMode</code> (Task 3)</li>
+  </ul>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 1: ต่อสายใน <code>src/index.ts</code></strong></span></p>
+  <p>เพิ่ม import <code>import { watchStore } from './tui/status-bar';</code> ; หลังบรรทัด <code>const advisorRunner = guardAdvisor(runner, gate);</code> เพิ่ม:</p>
+<pre><code>  // แถบสถานะของหน้าจอใหม่: โควตาอัปเดตทันทีที่มี rate_limit_event (CliIO ไม่มี showQuota = ไม่ทำอะไร)
+  ctx.quota.subscribe((info) =&gt; cli.showQuota?.(info));</code></pre>
+  <p>ในบล็อก <code>if (args.command === 'ask') {</code> เพิ่มเป็นบรรทัดแรก: <code>cli.showMode?.('ปรึกษา');</code> ; หลังบรรทัด <code>jobId = job.id;</code> เพิ่ม:</p>
+<pre><code>    const initial = await job.store.load();
+    if (initial) cli.showJob?.(initial);</code></pre>
+  <p>และใน <code>runTeam({ ... })</code> เปลี่ยน <code>store: job.store,</code> เป็น <code>store: watchStore(job.store, (s) =&gt; cli.showJob?.(s)),</code></p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 2: README</strong></span></p>
+  <p>ในหัวข้อ <code>## หน้าจอ</code> ของ <code>README.md</code> แทนบรรทัดแรกของรายการ (<code>- ช่องพิมพ์: Enter ส่ง · ...</code>) ด้วยสองบรรทัด:</p>
+<pre><code>- ช่องพิมพ์: Enter ส่ง · `\` แล้ว Enter ขึ้นบรรทัดใหม่ · ← → เลื่อนทีละตัวอักษร (รองรับสระบน/ล่าง) · ↑↓ ข้อความที่เคยส่ง · Esc ล้าง · Ctrl+A / Ctrl+E ต้น/ท้ายบรรทัด (คำแนะนำปุ่มแสดงจาง ๆ ในช่องตอนว่าง)
+- แถบสถานะใต้ช่องพิมพ์: `ชื่องาน · เฟส · งาน 2/5 · 12m34s` และโควตาด้านขวา (`โควตา 5 ชม. 25%` เทา, ใกล้เต็มเหลือง, `extra usage (คิดเงินเพิ่ม)` ม่วง, เต็มแล้วแดง) ; จอแคบจะซ่อนชื่องาน เวลา และจำนวนงานตามลำดับ</code></pre>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 3: รัน test ทั้งชุด</strong></span></p>
+  <p>รัน: <code>npm test</code> แล้ว <code>npm run typecheck</code><br>
+     คาดหวัง: PASS ทั้งหมด ไม่มี type error</p>
+
+  <p class="step"><input type="checkbox"> <span>- [ ] <strong>Step 4: ทดลองจริง (ผู้ใช้เป็นคนรัน)</strong></span></p>
+<pre><code>cmd:         npm start -- --project "%TEMP%\at-demo"
+PowerShell:  npm start -- --project "$env:TEMP\at-demo"</code></pre>
+  <p>คาดหวัง: ก่อนส่งข้อความ แถบล่างแสดงเฟสและเวลาที่เดินทุกวินาที ; หลัง PM ตอบครั้งแรก (ใช้โควตา) แถบขวาแสดง <code>โควตา 5 ชม. NN%</code> ; ลองย่อหน้าต่างให้แคบ ชื่องานและเวลาหายตามลำดับ — changes are ready for review</p>
+</div>
+
+</body>
+</html>

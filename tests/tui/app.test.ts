@@ -20,7 +20,7 @@ afterEach(() => {
 
 /** เปิดจอแล้วรอ 1 tick ให้ Ink ผูกตัวรับปุ่มก่อน (ปุ่มที่กดก่อนหน้านั้นหาย) */
 async function mount() {
-  const store = new ScreenStore();
+  const store = new ScreenStore(() => 0);
   const onInterrupt = vi.fn();
   const ui = render(React.createElement(App, { store, onInterrupt, now: () => 0 }));
   unmounts.push(ui.unmount);
@@ -106,5 +106,24 @@ describe('App', () => {
     await tick();
     expect(ui.lastFrame()).toContain('จบงาน');
     expect(ui.lastFrame()).not.toContain(HINT);
+  });
+  it('แถบสถานะ: ชื่องาน เฟส งาน เวลา และโควตา', async () => {
+    const store = new ScreenStore(() => 0);
+    const ui = render(React.createElement(App, { store, onInterrupt: () => {}, now: () => 754_000 }));
+    unmounts.push(ui.unmount);
+    await tick();
+    store.setBar({ title: 'ระบบ login', phase: 'BUILD', tasks: { done: 2, total: 5 }, quota: { text: 'โควตา 5 ชม. 85%', tone: 'warn' } });
+    await tick();
+    expect(ui.lastFrame()).toContain('ระบบ login · BUILD · งาน 2/5 · 12m34s');
+    expect(ui.lastFrame()).toContain('โควตา 5 ชม. 85%');
+  });
+
+  it('คำแนะนำปุ่มอยู่ในช่องพิมพ์ตอนว่าง และหายเมื่อพิมพ์', async () => {
+    const { ui } = await mount();
+    expect(ui.lastFrame()).toContain(HINT);
+    ui.stdin.write('ก');
+    await tick();
+    expect(ui.lastFrame()).not.toContain(HINT);
+    expect(ui.lastFrame()).toContain('> ก');
   });
 });

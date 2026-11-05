@@ -1,9 +1,12 @@
 import type { StatusSink } from '../activity';
 import { CHOICE_LABELS, EOF_MESSAGE } from '../cli';
 import type { UserIO } from '../deps';
+import { formatQuotaShort, type RateLimitInfo } from '../quota';
+import type { State } from '../state';
 import { type SayKind, type Styler, styler, styleSay } from '../style';
 import type { MenuOption } from './menu';
 import { type Mounted, type PromptAnswer, type PromptSpec, ScreenStore } from './screen';
+import { jobBar } from './status-bar';
 
 export interface TuiIOOptions {
   store?: ScreenStore;
@@ -35,9 +38,9 @@ export class TuiIO implements UserIO {
   private closed = false;
 
   constructor(o: TuiIOOptions) {
-    this.store = o.store ?? new ScreenStore();
-    this.s = styler(o.color ?? true);
     const now = o.now ?? Date.now;
+    this.store = o.store ?? new ScreenStore(now);
+    this.s = styler(o.color ?? true);
     this.status = {
       start: (label) => this.store.setActivity({ label, startedAt: now() }),
       update: (detail) => {
@@ -51,6 +54,20 @@ export class TuiIO implements UserIO {
 
   say(text: string, kind?: SayKind): void {
     this.store.print(styleSay(text, kind, this.s));
+  }
+
+  /** แถบสถานะ: งาน (เรียกทุกครั้งที่ state ถูกบันทึก) — ล้างค่าเก่าที่ไม่มีแล้ว เช่นจำนวนงานหลังออกจาก BUILD */
+  showJob(state: State): void {
+    this.store.setBar({ title: undefined, tasks: undefined, ...jobBar(state) });
+  }
+
+  showQuota(info: RateLimitInfo): void {
+    this.store.setBar({ quota: formatQuotaShort(info) });
+  }
+
+  /** โหมดที่ไม่มีงาน เช่น "ปรึกษา" */
+  showMode(label: string): void {
+    this.store.setBar({ phase: label });
   }
 
   async ask(prompt: string): Promise<string> {

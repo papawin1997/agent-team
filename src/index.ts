@@ -19,6 +19,7 @@ import { ProjectRegistry, teamRootError } from './projects';
 import { guardAdvisor, guardRunner, QuotaGate } from './quota-gate';
 import { announceRun, createRunContext } from './run-context';
 import { createTerminalIO } from './tui/select';
+import { watchStore } from './tui/status-bar';
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
@@ -91,6 +92,8 @@ async function main(): Promise<void> {
   const gate = new QuotaGate(ctx.quota, loggingIO, logger);
   const teamRunner = guardRunner(runner, gate);
   const advisorRunner = guardAdvisor(runner, gate);
+  // แถบสถานะของหน้าจอใหม่: โควตาอัปเดตทันทีที่มี rate_limit_event (CliIO ไม่มี showQuota = ไม่ทำอะไร)
+  ctx.quota.subscribe((info) => cli.showQuota?.(info));
   let jobId: string | undefined;
 
   const onSignal = makeInterruptHandler({
@@ -108,6 +111,7 @@ async function main(): Promise<void> {
   try {
     let job: SelectedJob;
     if (args.command === 'ask') {
+      cli.showMode?.('ปรึกษา');
       const outcome = await runAsk({
         runner: advisorRunner,
         io: loggingIO,
@@ -136,11 +140,13 @@ async function main(): Promise<void> {
       job = await selectJob(repo, loggingIO, { resume: args.resume });
     }
     jobId = job.id;
+    const initial = await job.store.load();
+    if (initial) cli.showJob?.(initial);
     logger.log('INFO', 'job.selected', { jobId, resume: args.command === 'ask' ? false : args.resume });
     const final = await runTeam({
       runner: teamRunner,
       io: loggingIO,
-      store: job.store,
+      store: watchStore(job.store, (s) => cli.showJob?.(s)),
       config,
       log: logger,
       levelPreference: args.level,

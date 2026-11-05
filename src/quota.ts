@@ -42,8 +42,19 @@ export class QuotaMonitor {
   private readonly continued = new Set<string>();
   private overageContinued = false;
 
+  private readonly listeners = new Set<(info: RateLimitInfo) => void>();
+
   record(info: RateLimitInfo): void {
     this.latest = info;
+    for (const listener of this.listeners) listener(info);
+  }
+
+  /** แถบสถานะของหน้าจอใหม่ฟังเพื่ออัปเดตโควตาทันทีที่มี event */
+  subscribe(listener: (info: RateLimitInfo) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   get last(): RateLimitInfo | undefined {
@@ -103,4 +114,20 @@ export function formatQuotaAlert(alert: QuotaAlert, now: Date = new Date()): str
   const reset = alert.kind === 'overage' ? (info.overageResetsAt ?? info.resetsAt) : info.resetsAt;
   if (reset !== undefined) parts.push(`รีเซ็ต ${formatReset(reset, now)}`);
   return parts.join(' · ');
+}
+
+export interface QuotaBadge {
+  text: string;
+  tone: 'normal' | 'warn' | 'overage' | 'danger';
+}
+
+/** โควตาแบบสั้นสำหรับแถบสถานะ (undefined = ไม่มีอะไรน่าแสดง) */
+export function formatQuotaShort(info: RateLimitInfo): QuotaBadge | undefined {
+  const label = TYPE_LABEL[info.rateLimitType ?? ''] ?? 'โควตา';
+  if (info.status === 'rejected') return { text: `${label} เต็มแล้ว`, tone: 'danger' };
+  if (usingOverage(info)) return { text: 'extra usage (คิดเงินเพิ่ม)', tone: 'overage' };
+  const used = utilizationOf(info);
+  if (used === undefined && info.status === 'allowed') return undefined;
+  const text = used === undefined ? label : `${label} ${percent(used)}%`;
+  return { text, tone: info.status === 'allowed_warning' ? 'warn' : 'normal' };
 }

@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { newState } from '../../src/state';
 import { ScreenStore } from '../../src/tui/screen';
 import { cleanPrompt, menuOptions, TuiIO } from '../../src/tui/tui-io';
 
 function setup() {
-  const store = new ScreenStore();
+  const store = new ScreenStore(() => 1000);
   let unmounts = 0;
   const io = new TuiIO({
     store,
@@ -119,5 +120,24 @@ describe('ScreenStore', () => {
     store.print('y');
     expect(calls).toBe(before);
     expect(before).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('TuiIO: แถบสถานะ', () => {
+  it('showMode / showJob / showQuota เขียนลง bar ; startedAt มาจาก now', () => {
+    const { store, io } = setup();
+    expect(store.getState().startedAt).toBe(1000);
+    io.showMode('ปรึกษา');
+    expect(store.getState().bar).toEqual({ phase: 'ปรึกษา' });
+    io.showJob({ ...newState(), title: 'งาน A' });
+    io.showQuota({ status: 'allowed_warning', rateLimitType: 'five_hour', utilization: 0.85 });
+    expect(store.getState().bar).toEqual({ title: 'งาน A', phase: 'REQUIREMENTS', quota: { text: 'โควตา 5 ชม. 85%', tone: 'warn' } });
+  });
+
+  it('showJob ล้างจำนวนงานเก่าเมื่อออกจาก BUILD', () => {
+    const { store, io } = setup();
+    store.setBar({ tasks: { done: 1, total: 2 } });
+    io.showJob(newState());
+    expect(store.getState().bar.tasks).toBeUndefined();
   });
 });

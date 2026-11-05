@@ -1,6 +1,8 @@
 import type { StatusSink } from '../activity';
 import { CliIO } from '../cli';
 import type { UserIO } from '../deps';
+import type { RateLimitInfo } from '../quota';
+import type { State } from '../state';
 import { colorEnabled } from '../style';
 import { mountApp } from './app';
 import { TuiIO } from './tui-io';
@@ -11,6 +13,10 @@ export type UiKind = 'tui' | 'classic';
 export interface TerminalIO extends UserIO {
   readonly status: StatusSink;
   close(): void;
+  /** แถบสถานะ (มีเฉพาะหน้าจอแบบใหม่ ; CliIO ไม่มี) */
+  showJob?(state: State): void;
+  showQuota?(info: RateLimitInfo): void;
+  showMode?(label: string): void;
 }
 
 /** UI ใหม่เฉพาะ terminal จริงที่เปิด raw mode ได้ ; AGENT_TEAM_UI=classic = ใช้แบบเดิมเสมอ */
