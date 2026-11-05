@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_CONFIG, loadConfig, mergeConfig, resolveModel, ROLE_NAMES } from '../src/config';
+import { checkSkillNames, DEFAULT_CONFIG, loadConfig, mergeConfig, resolveModel, ROLE_NAMES } from '../src/config';
 
 describe('DEFAULT_CONFIG', () => {
   it('limit QA = 5 รอบ และ continue เพิ่ม 5 รอบ', () => {
@@ -229,5 +229,62 @@ describe('role advisor', () => {
     expect(merged.roles.advisor.model).toBe('claude-opus-5');
     expect(merged.roles.advisor.maxTurns).toBe(60);
     expect(() => mergeConfig(DEFAULT_CONFIG, { roles: { advisor: { modelByLevel: { full: 'x' } } } })).toThrow();
+  });
+});
+
+describe('checkSkillNames', () => {
+  const makePlugin = (...names: string[]) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plugin-'));
+    for (const n of names) {
+      fs.mkdirSync(path.join(dir, 'skills', n), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'skills', n, 'SKILL.md'), `# ${n}`);
+    }
+    return dir;
+  };
+
+  it('ผ่านเมื่อไม่มี role เปิด skill หรือชื่อมีอยู่จริง', () => {
+    const plugin = makePlugin('tb-scrutinize');
+    expect(() => checkSkillNames(DEFAULT_CONFIG, plugin)).not.toThrow();
+    const cfg = mergeConfig(DEFAULT_CONFIG, { roles: { qa: { skills: ['team:tb-scrutinize'] } } });
+    expect(() => checkSkillNames(cfg, plugin)).not.toThrow();
+  });
+
+  it('ชื่อที่ไม่มีหรือไม่ขึ้นต้น team: -> error บอก role, ชื่อผิด และรายชื่อที่มี', () => {
+    const plugin = makePlugin('tb-scrutinize');
+    const cfg = mergeConfig(DEFAULT_CONFIG, {
+      roles: { qa: { skills: ['team:tb-scrutinze'] }, pm: { skills: ['tb-brainstorming'] } },
+    });
+    expect(() => checkSkillNames(cfg, plugin)).toThrow(/qa: team:tb-scrutinze/);
+    expect(() => checkSkillNames(cfg, plugin)).toThrow(/pm: tb-brainstorming/);
+    expect(() => checkSkillNames(cfg, plugin)).toThrow(/team:tb-scrutinize/);
+  });
+
+  it('loadConfig ตรวจชื่อ skill กับ plugin ที่ระบุ', () => {
+    const plugin = makePlugin();
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cfg-')), 'agent-team.config.json');
+    fs.writeFileSync(file, JSON.stringify({ roles: { qa: { skills: ['team:missing'] } } }));
+    expect(() => loadConfig(file, plugin)).toThrow(/team:missing/);
+  });
+});
+
+describe('jira config', () => {
+  it('ค่าเริ่มต้นชี้ site ของ ThaiBev, project RTRPMS และ field Key details', () => {
+    expect(DEFAULT_CONFIG.jira).toEqual({
+      site: 'digital-and-technology.atlassian.net',
+      projects: ['RTRPMS'],
+      keyDetailsFields: ['customfield_10119', 'customfield_10121'],
+    });
+  });
+
+  it('override บาง field ได้ ที่เหลือคงค่าเริ่มต้น', () => {
+    const cfg = mergeConfig(DEFAULT_CONFIG, { jira: { projects: ['RTRPMS', 'PMS'] } });
+    expect(cfg.jira.projects).toEqual(['RTRPMS', 'PMS']);
+    expect(cfg.jira.site).toBe('digital-and-technology.atlassian.net');
+    expect(mergeConfig(DEFAULT_CONFIG, {}).jira).toEqual(DEFAULT_CONFIG.jira);
+  });
+
+  it('ปฏิเสธ project ที่ไม่ใช่ตัวพิมพ์ใหญ่ และ key ที่ไม่รู้จัก', () => {
+    expect(() => mergeConfig(DEFAULT_CONFIG, { jira: { projects: ['rtred'] } })).toThrow();
+    expect(() => mergeConfig(DEFAULT_CONFIG, { jira: { token: 'x' } })).toThrow();
   });
 });

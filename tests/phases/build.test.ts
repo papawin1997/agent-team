@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PlanInput, QaInput, WorkInput } from '../../src/deps';
-import { RoleOutputError, RoleRunError } from '../../src/errors';
+import { QuotaStopError, RoleOutputError, RoleRunError } from '../../src/errors';
 import { initProgress, quickDesign } from '../../src/domain';
 import { restoreBaseDesign } from '../../src/level';
 import { MAX_WORKER_RESUMES, runBuild } from '../../src/phases/build';
@@ -1064,5 +1064,21 @@ describe('runBuild: quick เสนอยกเป็น standard', () => {
     expect(state.level).toBe('standard');
     expect(state.designFeedback).toContain('ไม่ผ่าน QA');
     expect(events.find((e) => e.event === 'level.decided')?.data).toMatchObject({ level: 'standard', by: 'user' });
+  });
+});
+
+describe('runBuild: QuotaStopError ไม่ถูกกลืน', () => {
+  it('security ล้มเพราะโควตาหลัง QA ผ่าน: โยนต่อ ไม่ถือเป็น "ไม่ได้ตรวจ"', async () => {
+    const { deps } = makeDeps({ qa: [passReport('api')], security: [new QuotaStopError('rejected', 'เต็ม')] }, []);
+    await expect(runBuild(deps, buildState(single()))).rejects.toBeInstanceOf(QuotaStopError);
+  });
+
+  it('worker resume ล้มเพราะโควตา: โยนต่อ ไม่ fallback ไปเปิด session ใหม่', async () => {
+    const { deps, runner } = makeDeps(
+      { qa: [failReport('api'), passReport('api')], work: [undefined, new QuotaStopError('handoff', 'x')] },
+      [],
+    );
+    await expect(runBuild(deps, buildState(single()))).rejects.toBeInstanceOf(QuotaStopError);
+    expect(workInputs(runner.calls).map((w) => w.resumeSessionId)).toEqual([undefined, 'api-s1']);
   });
 });

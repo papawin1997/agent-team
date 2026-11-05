@@ -1,4 +1,5 @@
 import type { Deps, UserIO } from './deps';
+import { rethrowQuotaStop } from './errors';
 import type { PmTurn } from './schemas';
 import type { State } from './state';
 
@@ -38,6 +39,7 @@ export async function decide<T extends string>(
       turn = response.turn;
       state.pmSessionId = response.sessionId;
     } catch (e) {
+      rethrowQuotaStop(e);
       io.say(`\n[PM] ถาม PM ไม่สำเร็จ (${e instanceof Error ? e.message : String(e)}) — ลองถามใหม่หรือเลือกตัวเลือกได้เลย\n`, 'error');
       continue;
     }

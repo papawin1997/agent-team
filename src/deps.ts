@@ -90,6 +90,15 @@ export interface StateStore {
   saveArtifact(name: string, data: unknown): Promise<void>;
 }
 
+/**
+ * แนบการ์ด Jira ที่อ้างในข้อความผู้ใช้ก่อนส่ง agent (ส่วนที่ 2)
+ * ต้องไม่ throw: ดึงไม่ได้ให้คืนข้อความเดิม (ผู้ทำแจ้งผู้ใช้เอง)
+ */
+export interface CardEnricher {
+  /** prompt = ข้อความที่จะส่ง agent ; title = "KEY summary" ของการ์ดใบแรกที่ดึงได้ในข้อความนี้ */
+  enrich(text: string): Promise<{ prompt: string; title?: string }>;
+}
+
 export interface Deps {
   runner: RoleRunner;
   io: UserIO;
@@ -104,6 +113,8 @@ export interface Deps {
   projectDir?: string;
   /** ส่งมาจาก ctx.abortController.signal — ใช้เช็คตอน resume worker ล้ม: กำลังถูก abort อยู่ให้โยนต่อ ไม่ fallback ไปเปิด session ใหม่ */
   abortSignal?: AbortSignal;
+  /** แนบการ์ด Jira ในข้อความถึง PM ช่วง REQUIREMENTS — ไม่มี = ส่งข้อความตามเดิม */
+  cards?: CardEnricher;
 }
 
 /**

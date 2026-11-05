@@ -4,9 +4,10 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { HandoffStore } from '../../src/ask/handoff-store';
 import { askJobPrompt, runAsk } from '../../src/ask/session';
+import { QuotaStopError } from '../../src/errors';
 import type { AdviseInput, AdvisorRunner } from '../../src/deps';
 import type { Handoff } from '../../src/schemas';
-import { ScriptedIO } from '../helpers/fakes';
+import { FakeCards, ScriptedIO } from '../helpers/fakes';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -192,5 +193,38 @@ describe('askJobPrompt', () => {
       handoff: H,
     });
     expect(io.kinds).toContain('error');
+  });
+});
+
+describe('runAsk: การ์ด Jira', () => {
+  it('ข้อความที่มีการ์ดถูกแนบก่อนส่ง advisor', async () => {
+    const runner = new FakeAdvisor(['ตอบ']);
+    const io = new ScriptedIO(['RTRPMS-1 คืออะไร', '/exit', 'n']);
+    await runAsk({ runner, io, store: newStore(), resume: false, cards: new FakeCards() });
+    expect(runner.calls[0]!.prompt).toBe('[CARD RTRPMS-1]\n\nRTRPMS-1 คืออะไร');
+  });
+
+  it('advisor ล้มแล้วกด Enter: ส่งข้อความที่แนบแล้วซ้ำ ไม่ดึงการ์ดใหม่', async () => {
+    const runner = new FakeAdvisor([new Error('boom'), 'ตอบ']);
+    const io = new ScriptedIO(['RTRPMS-1', '', '/exit', 'n']);
+    const cards = new FakeCards();
+    await runAsk({ runner, io, store: newStore(), resume: false, cards });
+    expect(cards.calls).toEqual(['RTRPMS-1']);
+    expect(runner.calls[1]!.prompt).toBe('[CARD RTRPMS-1]\n\nRTRPMS-1');
+  });
+
+  it('คำสั่ง /help ไม่ถูกส่งไปดึงการ์ด', async () => {
+    const cards = new FakeCards();
+    await runAsk({ runner: new FakeAdvisor([]), io: new ScriptedIO(['/help', '/exit']), store: newStore(), resume: false, cards });
+    expect(cards.calls).toEqual([]);
+  });
+});
+
+describe('runAsk: หยุดเพราะโควตา', () => {
+  it('โยน QuotaStopError ต่อ พร้อมข้อความที่ยังไม่ถึง advisor', async () => {
+    const runner = new FakeAdvisor([new QuotaStopError('handoff', 'x')]);
+    const err = await runAsk({ runner, io: new ScriptedIO(['คำถามล่าสุด']), store: newStore(), resume: false }).catch((e) => e);
+    expect(err).toBeInstanceOf(QuotaStopError);
+    expect((err as QuotaStopError).pendingText).toBe('คำถามล่าสุด');
   });
 });

@@ -217,6 +217,36 @@ Security ถูกเรียกเฉพาะรอบที่ QA ผ่า�
 `reports/<id>-round<n>.json` ของรอบเดียวกันด้วย) ส่วนรอบที่ QA ไม่ผ่านตั้งแต่แรกจะไม่มี `security.report` เลย
 (ประหยัด API call) — ใช้แยกได้ว่ารอบนั้นเสียเพราะ Security เจอช่องโหว่ ไม่ใช่ QA ไม่ผ่านงานปกติ
 
+## อ่านการ์ด Jira
+พิมพ์ issue key (เช่น `RTRPMS-1920`) หรือลิงก์ `https://digital-and-technology.atlassian.net/browse/RTRPMS-1920`
+ในข้อความถึง PM (ตอนเล่า requirement, คุยต่อ, ขอแก้) หรือใน `agent-team ask` แล้ว agent-team จะดึงการ์ด
+(Key details = Background Story + Acceptance Criteria และรูปแนบ) ให้ PM/advisor อ่านก่อนตอบ
+PM จะถามเฉพาะสิ่งที่การ์ดไม่ชัดหรือขาด และขึ้นต้น goal ด้วย issue key
+
+ตั้ง env ครั้งเดียว (สร้าง token ที่ https://id.atlassian.com/manage-profile/security/api-tokens) แล้วเปิด terminal ใหม่:
+
+    setx JIRA_EMAIL you@thaibev.com
+    setx JIRA_TOKEN <token>
+
+- ดึงเฉพาะ project ใน `jira.projects` (ค่าเริ่มต้น `RTRPMS`) ทั้ง key และลิงก์ project อื่นไม่ถูกดึงเลย
+- เลขเปล่า (`2612`) ไม่นับเป็นการ์ด ; ดึงสูงสุด 3 ใบต่อข้อความ ; รูปแนบสูงสุด 5 รูป (รูปละไม่เกิน 5 MB)
+- การ์ดและรูปเก็บที่ `.agent-team/jobs/<id>/jira/` (ask: `.agent-team/ask/jira/`) งานเดียวกันไม่ดึงซ้ำ
+- ดึงไม่สำเร็จ (ไม่ได้ตั้ง env, ไม่มีสิทธิ์, ไม่พบ, network) จะเตือนแล้วส่งข้อความเดิมให้ PM ตามปกติ งานไม่หยุด
+- `JIRA_EMAIL` / `JIRA_TOKEN` ไม่ถูกส่งให้ agent และเนื้อหาการ์ดถูกส่งให้ agent ในฐานะข้อมูล ไม่ใช่คำสั่ง
+- ปรับได้ใน `agent-team.config.json`: `{ "jira": { "site": "...", "projects": ["RTRPMS"], "keyDetailsFields": ["customfield_10119", "customfield_10121"] } }`
+
+## เตือนโควตาและ handoff
+agent-team ใช้โควตา subscription ที่ login ไว้เท่านั้น เมื่อ Claude แจ้งว่าโควตาใกล้เต็ม (เช่น `⚠ โควตา 5 ชม. · ใช้ไป 85% · รีเซ็ต 16:30`)
+หรือเริ่มใช้ extra usage ที่คิดเงินเพิ่ม จะเตือนก่อนเรียก agent ตัวถัดไป (ไม่ตัด agent ที่กำลังทำงาน) แล้วถาม:
+
+- `continue` ทำต่อ (ไม่ถามซ้ำจนกว่าจะเป็นรอบโควตาใหม่ ; extra usage ถามครั้งเดียวต่อการรัน)
+- `handoff` หยุดแล้วเขียน `.agent-team/jobs/<id>/handoff.md` สรุปเป้าหมาย requirements design task ที่ค้าง ปัญหาค้าง ไฟล์ที่แก้แล้ว
+  และวิธีทำต่อ — ส่งให้ AI ตัวอื่นหรือคนอ่านทำต่อได้ หรือกลับมา `agent-team -r` หลังโควตารีเซ็ต
+
+โควตาเต็มแล้ว = ไม่ถาม เขียน handoff แล้วหยุดทันที (exit code 2 ; headless: `stopped` พร้อม `reason: "quota"` และ `handoffPath`)
+ข้อความที่พิมพ์ถึง PM แต่ยังไม่ได้ส่งถูกเก็บไว้ `-r` จะส่งให้ PM ต่อ ; ใน `agent-team ask` จะแสดงข้อความที่ยังไม่ได้ส่งให้ copy เก็บ
+handoff เขียนด้วยโค้ดจาก state ไม่ใช้ AI จึงเขียนได้แม้โควตาเต็ม
+
 ## ตั้งค่า (ไม่บังคับ)
 สร้าง `agent-team.config.json` ที่ราก repo นี้ ตัวอย่าง:
 (ไฟล์นี้จะอยู่ถาวรเฉพาะเครื่องที่ clone แล้ว `npm link` เท่านั้น — เครื่องที่ติดตั้งแบบ global จาก GitHub
@@ -239,8 +269,23 @@ Security เพิ่มการเรียก Sonnet 1 ครั้งต่�
 `headlessIdleMinutes` — เวลาที่รอการตอบคำถามเป็นนาที ก่อนที่ process headless จะหยุดรอ (สถานะ `idle` งานไม่ถูกยกเลิก ทำต่อได้ด้วย `agent-team run --headless --job <id>`) (ค่าเริ่มต้น 120, ต้องเป็นจำนวนเต็มบวก)
 
 ## Skills
-วาง skill ที่ `skills/skills/<ชื่อ>/SKILL.md` แล้วเปิดให้ role ผ่าน config ด้านบน (ชื่อ `team:<ชื่อ>`)
-ทุก role ค่าเริ่มต้นไม่มี skill และไม่โหลด skill/hook/CLAUDE.md ส่วนตัวใน `~/.claude`
+ทุก role มีวินัยย่อจาก skill ชุด tb-* อยู่ใน system prompt แล้ว (เขียนเทสต์ก่อน, หาต้นเหตุก่อนแก้, QA ไล่ code path จริง ฯลฯ) โดยไม่ต้องเปิด skill
+
+ถ้าอยากให้ agent ใช้ skill ฉบับเต็ม เปิดต่อ role ได้ (ค่าเริ่มต้นไม่เปิด และไม่โหลด skill/hook/CLAUDE.md ส่วนตัวใน `~/.claude`):
+
+    { "roles": {
+        "pm": { "skills": ["team:tb-brainstorming"] },
+        "planning": { "skills": ["team:tb-writing-plans"] },
+        "frontend": { "skills": ["team:tb-test-driven-development"] },
+        "backend": { "skills": ["team:tb-test-driven-development", "team:tb-investigate-error"] },
+        "qa": { "skills": ["team:tb-scrutinize", "team:review-angular"] } } }
+
+agent จะเลือกเรียก skill เองเมื่อเห็นว่าเข้ากับขั้นที่ทำ และได้กฎเพิ่มว่าห้ามสร้าง HTML/spec/plan, ห้ามเปิด browser/subagent, ห้าม commit และผลต้องลงช่อง JSON ตามเดิม
+**เปิด skill แล้วเปลือง token และโควตามากขึ้นชัดเจน** (skill เต็มยาวหลายร้อยบรรทัด โหลดทุกครั้งที่เรียก) เปิดเฉพาะ role ที่คุ้ม
+
+skill ที่มี (sync จาก skill-ai-naja ด้วย `npm run sync-skills` ดู `skills/README.md`):
+gen-subtasks, review-angular, tb-brainstorming, tb-investigate-error, tb-scrutinize, tb-test-driven-development, tb-writing-plans
+วาง skill ที่เขียนเองได้ที่ `skills/skills/<ชื่อ>/SKILL.md` (ชื่อ `team:<ชื่อ>`)
 
 ## ความปลอดภัยและข้อจำกัด
 - เขียนไฟล์ได้เฉพาะในโฟลเดอร์โปรเจกต์ ห้ามแตะ `.git`, `.agent-team`, `.claude`

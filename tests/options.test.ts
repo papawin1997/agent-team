@@ -1,7 +1,7 @@
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CONFIG, ROLE_NAMES } from '../src/config';
-import { buildQueryOptions } from '../src/options';
+import { buildQueryOptions, SKILLS_RULES } from '../src/options';
 
 const projectDir = path.resolve('options-test-project');
 const skillsPluginDir = path.resolve('options-test-skills');
@@ -53,6 +53,27 @@ describe('buildQueryOptions', () => {
     expect(o.tools).toContain('Skill');
     expect(o.plugins).toEqual([{ type: 'local', path: skillsPluginDir }]);
     expect(o.additionalDirectories).toEqual([skillsPluginDir]);
+  });
+
+  it('role ที่เปิด skill: ต่อกฎ Skills ท้าย system prompt', () => {
+    const config = { ...DEFAULT_CONFIG.roles.qa, skills: ['team:tb-scrutinize'] };
+    const o = buildQueryOptions({ ...base, role: 'qa', config });
+    expect(o.systemPrompt).toBe(`sys\n\n${SKILLS_RULES}`);
+  });
+
+  it('กฎ Skills ห้าม HTML/browser/subagent/commit และให้ผลลง JSON schema', () => {
+    expect(SKILLS_RULES).toContain('Never create HTML, spec, plan or report files');
+    expect(SKILLS_RULES).toContain('dispatch subagents');
+    expect(SKILLS_RULES).toContain('commit');
+    expect(SKILLS_RULES).toContain('JSON fields of the required schema');
+    expect(SKILLS_RULES).toContain('skip that step');
+  });
+
+  it('role ที่ไม่เปิด skill: system prompt เดิมทุกตัวอักษร', () => {
+    for (const role of ROLE_NAMES) {
+      const o = buildQueryOptions({ ...base, role, config: DEFAULT_CONFIG.roles[role] });
+      expect(o.systemPrompt).toBe('sys');
+    }
   });
 
   it('ใส่ outputFormat, resume และ abortController เมื่อระบุ', () => {

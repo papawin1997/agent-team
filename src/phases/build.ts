@@ -1,7 +1,7 @@
 import type { Deps } from '../deps';
 import { decide } from '../io-util';
 import { isPass, isSecurityPass, orderTasks } from '../domain';
-import { RoleRunError } from '../errors';
+import { rethrowQuotaStop, RoleRunError } from '../errors';
 import { escalateLevel } from '../level';
 import { nullLogger } from '../logger';
 import { riskFlags } from '../risk';
@@ -191,6 +191,7 @@ async function runWorker(
       log.log('INFO', 'worker.session', { taskId: task.id, round, resumed: true, resumes: progress.workerResumes });
       return out.result;
     } catch (e) {
+      rethrowQuotaStop(e);
       if (isLimitError(e)) throw e;
       if (deps.abortSignal?.aborted) throw e;
       log.log('WARN', 'worker.resume_failed', { taskId: task.id, round, reason: errReason(e) });
@@ -306,6 +307,8 @@ async function runRound(
       securityReviewed: true,
     };
   } catch (e) {
+    // หยุดเพราะโควตาต้องหยุดทั้งงาน ไม่ถือเป็น "ไม่ได้ตรวจ" หรือรอบที่ล้ม
+    rethrowQuotaStop(e);
     if (step === 'security' && qaReport) {
       // QA already passed this round; a security-step failure of ANY kind (SDK limit,
       // schema-retry exhaustion, or anything else) must not discard already-approved

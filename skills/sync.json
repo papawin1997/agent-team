@@ -1,0 +1,13 @@
+{
+  "repo": "https://github.com/papawin1997/skill-ai-naja.git",
+  "deny": [
+    "tb-subagent-driven-development",
+    "tb-executing-plans",
+    "tb-using-git-worktrees",
+    "tb-finishing-a-development-branch",
+    "tb-requesting-code-review",
+    "tb-read-jira",
+    "web-pow",
+    "handoff"
+  ]
+}

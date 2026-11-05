@@ -23,12 +23,23 @@ export function resolveModel(role: RoleConfig, level: Level | undefined): string
   return role.modelByLevel?.[level ?? 'full'] ?? role.model;
 }
 
+/** ส่วนที่ 2: อ่านการ์ด Jira (โค้ดดึงเอง agent ไม่เห็น token) */
+export interface JiraConfig {
+  /** host ของ Jira Cloud ไม่มี https:// */
+  site: string;
+  /** project ที่อนุญาตให้ดึง (ทั้ง key เปล่าและ URL) — project อื่นไม่แตะเลย */
+  projects: string[];
+  /** custom field ที่เป็น "Key details" (Background Story + Acceptance Criteria) */
+  keyDetailsFields: string[];
+}
+
 export interface TeamConfig {
   maxQaRounds: number;
   extraRoundsOnContinue: number;
   quickMaxQaRounds: number;
   /** โหมด headless: รอคำตอบนานสุดกี่นาทีก่อนจบงาน (resume ต่อได้) กัน process ค้างถ้าไม่มีใครตอบ */
   headlessIdleMinutes: number;
+  jira: JiraConfig;
   roles: Record<RoleName, RoleConfig>;
 }
 
@@ -71,6 +82,11 @@ export const DEFAULT_CONFIG: TeamConfig = {
   extraRoundsOnContinue: 5,
   quickMaxQaRounds: 2,
   headlessIdleMinutes: 120,
+  jira: {
+    site: 'digital-and-technology.atlassian.net',
+    projects: ['RTRPMS'],
+    keyDetailsFields: ['customfield_10119', 'customfield_10121'],
+  },
   roles: {
     pm: { model: SONNET, maxTurns: 20, maxBudgetUsd: 2, tools: READ_TOOLS, allowedTools: READ_TOOLS, skills: [] },
     planning: {
@@ -114,6 +130,17 @@ const ConfigOverrideSchema = z
     extraRoundsOnContinue: z.number().int().positive().optional(),
     quickMaxQaRounds: z.number().int().positive().optional(),
     headlessIdleMinutes: z.number().int().positive().optional(),
+    jira: z
+      .object({
+        site: z.string().min(1).optional(),
+        projects: z
+          .array(z.string().regex(/^[A-Z][A-Z0-9]+$/))
+          .min(1)
+          .optional(),
+        keyDetailsFields: z.array(z.string().min(1)).optional(),
+      })
+      .strict()
+      .optional(),
     roles: z
       .object({
         pm: PmOverrideSchema.optional(),
@@ -156,11 +183,42 @@ export function mergeConfig(base: TeamConfig, override: unknown): TeamConfig {
     extraRoundsOnContinue: parsed.extraRoundsOnContinue ?? base.extraRoundsOnContinue,
     quickMaxQaRounds: parsed.quickMaxQaRounds ?? base.quickMaxQaRounds,
     headlessIdleMinutes: parsed.headlessIdleMinutes ?? base.headlessIdleMinutes,
+    jira: {
+      ...base.jira,
+      ...Object.fromEntries(Object.entries(parsed.jira ?? {}).filter(([, value]) => value !== undefined)),
+    },
     roles,
   };
 }
 
-export function loadConfig(file: string = path.join(TEAM_ROOT, 'agent-team.config.json')): TeamConfig {
+/** ชื่อ skill ต้องเป็น team:<ชื่อ> และมี skills/skills/<ชื่อ>/SKILL.md — กันพิมพ์ผิดแล้ว agent ไม่ได้ skill แบบเงียบ ๆ */
+export function checkSkillNames(config: TeamConfig, pluginDir: string): void {
+  const dir = path.join(pluginDir, 'skills');
+  const available = fs.existsSync(dir)
+    ? fs
+        .readdirSync(dir)
+        .filter((n) => fs.existsSync(path.join(dir, n, 'SKILL.md')))
+        .sort()
+    : [];
+  const bad: string[] = [];
+  for (const role of ROLE_NAMES) {
+    for (const skill of config.roles[role].skills) {
+      const name = skill.startsWith('team:') ? skill.slice('team:'.length) : '';
+      if (!available.includes(name)) bad.push(`${role}: ${skill}`);
+    }
+  }
+  if (bad.length === 0) return;
+  const list =
+    available.length > 0 ? available.map((n) => `team:${n}`).join(', ') : '(ยังไม่มี — รัน npm run sync-skills)';
+  throw new Error(`agent-team.config.json เปิด skill ที่ไม่มี: ${bad.join(', ')}\nskill ที่มี: ${list}`);
+}
+
+export function loadConfig(
+  file: string = path.join(TEAM_ROOT, 'agent-team.config.json'),
+  pluginDir: string = SKILLS_PLUGIN_DIR,
+): TeamConfig {
   if (!fs.existsSync(file)) return DEFAULT_CONFIG;
-  return mergeConfig(DEFAULT_CONFIG, JSON.parse(fs.readFileSync(file, 'utf8')));
+  const config = mergeConfig(DEFAULT_CONFIG, JSON.parse(fs.readFileSync(file, 'utf8')));
+  checkSkillNames(config, pluginDir);
+  return config;
 }

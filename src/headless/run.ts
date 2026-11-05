@@ -1,7 +1,11 @@
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { CliArgs } from '../args';
 import type { TeamConfig } from '../config';
-import type { RoleRunner, StateStore, UserIO } from '../deps';
+import type { CardEnricher, RoleRunner, StateStore, UserIO } from '../deps';
+import { QuotaStopError } from '../errors';
+import { jiraCardsFor } from '../jira-cards';
+import { handleQuotaStop } from '../job-handoff';
 import type { SnapshotProvider } from '../snapshot';
 import { makeInterruptHandler, type InterruptSignal } from '../interrupt';
 import { selectJob, type SelectedJob } from '../job-menu';
@@ -9,6 +13,7 @@ import type { JobRepository } from '../jobs';
 import { LoggingIO, type Logger } from '../logger';
 import { runTeam } from '../orchestrator';
 import { ProjectRegistry, teamRootError } from '../projects';
+import { guardRunner, QuotaGate } from '../quota-gate';
 import { announceRun, createRunContext } from '../run-context';
 import type { Level } from '../schemas';
 import { headlessPath, removeQuietly, writeExit, type ExitStatus } from './files';
@@ -75,6 +80,8 @@ export interface HeadlessJobOptions {
   projectDir?: string;
   /** ส่งต่อเข้า Deps.abortSignal (ctx.abortController.signal) */
   abortSignal?: AbortSignal;
+  /** ส่งต่อเข้า Deps.cards (แนบการ์ด Jira ในข้อความถึง PM) */
+  cards?: CardEnricher;
 }
 
 /** รัน orchestrator กับงานที่ lock แล้ว เขียน exit.json ตอนจบทุกทาง และปล่อย lock */
@@ -101,12 +108,24 @@ export async function runHeadlessJob(o: HeadlessJobOptions): Promise<ExitStatus>
       snapshots: o.snapshots,
       projectDir: o.projectDir,
       abortSignal: o.abortSignal,
+      cards: o.cards,
     });
     const status: ExitStatus = final.phase === 'DONE' ? 'done' : 'aborted';
     writeExit(dir, status);
     o.logger.log('INFO', 'run.end', { phase: final.phase, jobId: o.jobId, headless: true });
     return status;
   } catch (e) {
+    if (e instanceof QuotaStopError) {
+      const out = await handleQuotaStop({
+        error: e,
+        jobId: o.jobId,
+        repo: o.repo,
+        projectDir: o.projectDir ?? process.cwd(),
+        logger: o.logger,
+      });
+      writeExit(dir, 'stopped', out.lines.join(' — '), undefined, { reason: 'quota', handoffPath: out.handoffPath });
+      return 'stopped';
+    }
     const status: ExitStatus = e instanceof HeadlessIdleError ? 'idle' : 'error';
     const message = `${errMessage(e)} — ทำต่อด้วย agent-team run --headless --job ${o.jobId}`;
     writeExit(dir, status, message);
@@ -173,7 +192,8 @@ export async function runHeadless(args: CliArgs): Promise<number> {
     repo: ctx.repo,
     jobId: job.id,
     store: job.store,
-    runner: ctx.runner,
+    // ส่วนที่ 3: เช็คโควตาก่อนเรียก agent ทุกครั้ง (คำถาม handoff/continue ไปทาง question.json)
+    runner: guardRunner(ctx.runner, new QuotaGate(ctx.quota, io, ctx.logger)),
     config: ctx.config,
     logger: ctx.logger,
     io,
@@ -182,6 +202,7 @@ export async function runHeadless(args: CliArgs): Promise<number> {
     snapshots: ctx.snapshots,
     projectDir,
     abortSignal: ctx.abortController.signal,
+    cards: jiraCardsFor({ settings: ctx.config.jira, projectDir, dir: path.join(dir, 'jira'), io, log: ctx.logger }),
   });
   console.log(JSON.stringify({ jobId: job.id, status }));
   return status === 'error' || status === 'idle' ? 1 : 0;

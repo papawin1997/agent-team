@@ -44,6 +44,10 @@ export interface ExitInfo {
   status: ExitStatus;
   message?: string;
   at: string;
+  /** quota = หยุดเพราะโควตา (driver ใหม่บอกผู้ใช้ ; driver เก่าเห็นแค่ stopped) */
+  reason?: 'quota';
+  /** path ของ handoff.md ที่เขียนตอนหยุด */
+  handoffPath?: string;
 }
 
 export interface Activity {
@@ -110,8 +114,16 @@ export function appendEvent(dir: string, event: HeadlessEvent): void {
   fs.appendFileSync(headlessPath(dir, 'events'), `${JSON.stringify(event)}\n`, 'utf8');
 }
 
-export function writeExit(dir: string, status: ExitStatus, message?: string, now: Date = new Date()): void {
+export function writeExit(
+  dir: string,
+  status: ExitStatus,
+  message?: string,
+  now: Date = new Date(),
+  extra: Pick<ExitInfo, 'reason' | 'handoffPath'> = {},
+): void {
   const at = now.toISOString();
   const info: ExitInfo = message === undefined ? { status, at } : { status, message, at };
+  if (extra.reason) info.reason = extra.reason;
+  if (extra.handoffPath) info.handoffPath = extra.handoffPath;
   writeJsonAtomic(headlessPath(dir, 'exit'), info);
 }

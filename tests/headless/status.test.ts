@@ -168,3 +168,15 @@ describe('resolveJob', () => {
     await expect(resolveJob(viewer())).rejects.toThrow('ไม่พบงาน headless');
   });
 });
+
+describe('readStatus: หยุดเพราะโควตา', () => {
+  it('exit.json มี reason quota และ handoffPath → ส่งต่อใน report', async () => {
+    const { id, dir } = await headlessJob();
+    writeExit(dir, 'stopped', 'โควตา', undefined, { reason: 'quota', handoffPath: 'h.md' });
+    alive.delete(1000);
+    const report = await readStatus(viewer(), id, 0);
+    expect(report.status).toBe('stopped');
+    expect(report.reason).toBe('quota');
+    expect(report.handoffPath).toBe('h.md');
+  });
+});

@@ -345,3 +345,89 @@ describe('advisor prompts', () => {
     expect(p.endsWith('ถามต่อ')).toBe(true);
   });
 });
+
+describe('วินัยจาก skill: PM และ Planning', () => {
+  it('PM อ่านโค้ดก่อนถาม ถามหาเหตุผล/เกณฑ์สำเร็จ/สิ่งที่ไม่ทำ และเสนอข้อสันนิษฐาน', () => {
+    const pm = SYSTEM_PROMPTS.pm;
+    expect(pm).toContain('Never ask the user what the code already answers');
+    expect(pm).toContain('what result counts as success');
+    expect(pm).toContain('outOfScope');
+    expect(pm).toContain('state it and ask the user to confirm or correct it');
+    // กฎเดิมของงาน quick ยังอยู่
+    expect(pm).toContain('at most ONE clarifying question');
+  });
+
+  it('Planning: task เล็ก ระบุไฟล์ เกณฑ์รันได้ ระบุเทสต์ ไม่มีขั้น commit และตรวจทวนก่อนส่ง', () => {
+    const p = SYSTEM_PROMPTS.planning;
+    expect(p).toContain('finish it in a single session');
+    expect(p).toContain('name the files you expect it to create or change');
+    expect(p).toContain('name the tests the worker should write');
+    expect(p).toContain('Never include a commit step');
+    expect(p).toContain('re-read the requirements');
+  });
+});
+
+describe('วินัยจาก skill: worker', () => {
+  it('frontend/backend: เขียนเทสต์ก่อน เห็น fail แล้วค่อย implement และห้ามลดเงื่อนไขเทสต์', () => {
+    for (const role of ['frontend', 'backend'] as const) {
+      const p = SYSTEM_PROMPTS[role];
+      expect(p).toContain('confirm they fail for the expected reason');
+      expect(p).toContain('then write the minimal code to make them pass');
+      expect(p).toContain('say in summary how you verified the task');
+      expect(p).toContain('Never weaken or delete a test to make it pass');
+    }
+  });
+
+  it('รอบแก้ (buildWorkFixPrompt): ทำซ้ำ ไล่ code path แก้ที่ต้นเหตุ และสรุปสาเหตุใน summary', () => {
+    const p = buildWorkFixPrompt({ task, design, requirements, previousReport: failReport('api') });
+    expect(p).toContain('reproduce it');
+    expect(p).toContain('fix the cause rather than the symptom');
+    expect(p).toContain('root cause you found briefly in summary');
+  });
+
+  it('buildWorkPrompt มีวินัยรอบแก้เฉพาะเมื่อมี previousReport', () => {
+    const withReport = buildWorkPrompt({ task, design, requirements, previousReport: failReport('api') });
+    const fresh = buildWorkPrompt({ task, design, requirements });
+    expect(withReport).toContain('fix the cause rather than the symptom');
+    expect(fresh).not.toContain('fix the cause rather than the symptom');
+  });
+});
+
+describe('วินัยจาก skill: QA, Security และตรวจรวม', () => {
+  it('QA ตรวจเจตนา ไล่ code path จริง เสนอทางที่ง่ายกว่าเป็น minor และ issue ต้องมีเหตุผล+file', () => {
+    const qa = SYSTEM_PROMPTS.qa;
+    expect(qa).toContain('really achieves the intent');
+    expect(qa).toContain('Trace the real code path that calls the new code');
+    expect(qa).toContain('clearly simpler approach');
+    expect(qa).toContain('Every issue must state its reason and a file');
+  });
+
+  it('Security ไล่ data flow ก่อนรายงาน', () => {
+    expect(SYSTEM_PROMPTS.security).toContain('trace the data flow from user input');
+  });
+
+  it('ไม่มี role ไหนถูกสั่งให้ทำ HTML หรือใช้ Skill tool', () => {
+    for (const role of ROLE_NAMES) {
+      expect(SYSTEM_PROMPTS[role]).not.toContain('HTML');
+      expect(SYSTEM_PROMPTS[role]).not.toContain('Skill tool');
+    }
+  });
+
+  it('system prompt แต่ละ role ยาวขึ้นไม่เกิน 1,500 ตัวอักษร', () => {
+    // ความยาวก่อนเพิ่มวินัย (วัดเมื่อ 2026-11-05)
+    const before = { pm: 3231, planning: 1093, frontend: 1073, backend: 1085, qa: 1891, security: 1637, advisor: 842 };
+    for (const role of ROLE_NAMES) {
+      expect(SYSTEM_PROMPTS[role].length - before[role]).toBeLessThanOrEqual(1500);
+    }
+  });
+});
+
+describe('PM กับการ์ด Jira', () => {
+  it('ใช้การ์ดเป็นฐาน ถามเฉพาะที่ไม่ชัด เริ่ม AC จากการ์ด และ goal ขึ้นต้นด้วย key', () => {
+    const pm = SYSTEM_PROMPTS.pm;
+    expect(pm).toContain('Jira card');
+    expect(pm).toContain('never re-ask what it already says');
+    expect(pm).toContain("start acceptanceCriteria from the card's criteria");
+    expect(pm).toContain('begin "goal" with the issue key');
+  });
+});

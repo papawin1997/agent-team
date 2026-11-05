@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { PlanInput, SecurityDesignInput } from '../../src/deps';
 import { DesignError } from '../../src/domain';
-import { RoleRunError } from '../../src/errors';
+import { QuotaStopError, RoleRunError } from '../../src/errors';
 import { runDesign, runReview } from '../../src/phases/design';
 import { newState, type State } from '../../src/state';
 import { asking, buildState, makeDesign, makeRequirements, makeTask } from '../helpers/builders';
@@ -312,5 +312,14 @@ describe('ระดับ standard', () => {
     expect(state.level).toBe('standard');
     expect(state.phase).toBe('BUILD');
     expect(runner.calls.filter((c) => c.role === 'security')).toHaveLength(0);
+  });
+});
+
+describe('runDesign: QuotaStopError ไม่ถูกกลืน', () => {
+  it('Security ตรวจ design ล้มเพราะโควตา: โยนต่อ', async () => {
+    const { deps, runner } = makeDeps({ plans: [makeDesign()] }, []);
+    vi.spyOn(runner, 'securityDesign').mockRejectedValueOnce(new QuotaStopError('rejected', 'เต็ม'));
+    const state = { ...newState(), phase: 'DESIGN' as const, requirements: makeRequirements() };
+    await expect(runDesign(deps, state)).rejects.toBeInstanceOf(QuotaStopError);
   });
 });

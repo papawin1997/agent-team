@@ -1,4 +1,5 @@
 import type { Deps, LevelHintState } from '../deps';
+import { QuotaStopError } from '../errors';
 import { formatRequirements } from '../format';
 import { askNonEmpty } from '../io-util';
 import { confirmAsFull, decideLevel, offersChoice } from '../level';
@@ -25,16 +26,24 @@ export async function runRequirements(
   const noteUserText = (text: string): void => {
     userRisk = mergeRiskFlags(userRisk, riskFlags(text));
   };
+  // ข้อความดิบล่าสุดของผู้ใช้ — ถ้าหยุดเพราะโควตาก่อนถึง PM จะเก็บเป็น pendingPrompt
+  let lastUserText = '';
+  // ข้อความผู้ใช้ทุกข้อความที่จะถึง PM ผ่านที่นี่: นับความเสี่ยงจากข้อความดิบ แล้วแนบการ์ด Jira (ถ้ามี)
+  const fromUser = async (text: string): Promise<{ prompt: string; title?: string }> => {
+    lastUserText = text;
+    noteUserText(text);
+    return deps.cards ? deps.cards.enrich(text) : { prompt: text };
+  };
 
   const opening = state.pmSessionId
     ? 'พิมพ์ข้อความถึง PM เพื่อคุยต่อ\n> '
     : 'คุณอยากได้ระบบอะไร? เล่า requirement ให้ PM ฟังได้เลย\n> ';
   const rawPrompt = state.pendingPrompt ?? (await askNonEmpty(io, opening));
-  noteUserText(rawPrompt);
-  let prompt = rawPrompt;
+  const first = await fromUser(rawPrompt);
+  let prompt = first.prompt;
   if (!state.title && !state.pmSessionId) {
-    // save ก่อนเรียก PM: ถ้า Ctrl+C ระหว่าง PM ตอบ งานก็ยังมีชื่อ ไม่กลายเป็นงานเปล่า
-    state.title = Array.from(prompt).slice(0, 60).join('');
+    // save ก่อนเรียก PM: ถ้า Ctrl+C ระหว่าง PM ตอบ งานก็ยังมีชื่อ ไม่กลายเป็นงานเปล่า (มีการ์ด = ใช้ "KEY summary")
+    state.title = Array.from(first.title ?? rawPrompt).slice(0, 60).join('');
     await store.save(state);
   }
   if (state.requirements) {
@@ -52,6 +61,12 @@ export async function runRequirements(
     try {
       response = await runner.pmTurn({ prompt, sessionId: state.pmSessionId });
     } catch (e) {
+      if (e instanceof QuotaStopError) {
+        // ข้อความนี้ยังไม่ถึง PM: เก็บไว้ให้ -r เล่นซ้ำ (ดิบ ไม่มีการ์ด — รอบใหม่แนบการ์ดเอง)
+        state.pendingPrompt = lastUserText;
+        await store.save(state);
+        throw e;
+      }
       // PM ล้ม (เช่นส่ง JSON ไม่ผ่านซ้ำ) ไม่ควรทำให้ทั้ง run หยุด: ให้ user ส่งข้อความเดิมซ้ำหรือพิมพ์ใหม่
       io.say(
         `\n[PM] PM ตอบไม่สำเร็จ (${e instanceof Error ? e.message : String(e)}) — ` +
@@ -59,10 +74,7 @@ export async function runRequirements(
         'error',
       );
       const retry = (await io.ask('> ')).trim();
-      if (retry !== '') {
-        noteUserText(retry);
-        prompt = retry;
-      }
+      if (retry !== '') prompt = (await fromUser(retry)).prompt;
       continue;
     }
     const { turn } = response;
@@ -75,18 +87,15 @@ export async function runRequirements(
       if (offersChoice(deps, turn)) {
         if (await decideLevel(deps, state, turn, userRisk)) return;
         const revise = await askNonEmpty(io, 'อยากปรับอะไร?\n> ');
-        noteUserText(revise);
-        prompt = revise;
+        prompt = (await fromUser(revise)).prompt;
         continue;
       }
       if (await confirmAsFull(deps, state, turn)) return;
       const revise = await askNonEmpty(io, 'อยากปรับอะไร?\n> ');
-      noteUserText(revise);
-      prompt = revise;
+      prompt = (await fromUser(revise)).prompt;
       continue;
     }
     const next = await askNonEmpty(io, '> ');
-    noteUserText(next);
-    prompt = next;
+    prompt = (await fromUser(next)).prompt;
   }
 }

@@ -6,6 +6,7 @@ import type { AdviseInput, AdvisorRunner, PlanInput, PmInput, QaInput, RoleRunne
 import { RoleOutputError, RoleRunError } from './errors';
 import { type Logger, nullLogger } from './logger';
 import { buildQueryOptions } from './options';
+import type { QuotaMonitor } from './quota';
 import type { SayKind } from './style';
 import {
   buildPlanPrompt,
@@ -51,6 +52,8 @@ export interface SdkRunnerDeps {
   logger?: Logger;
   /** บรรทัดสถานะระหว่าง agent ทำงาน (index.ts ส่ง cli.status) */
   status?: StatusSink;
+  /** ส่วนที่ 3: รับ rate_limit_event (ใช้ร่วมกันทั้งรอบรัน) */
+  quota?: QuotaMonitor;
 }
 
 const BACKOFF_MS = [1000, 3000];
@@ -185,7 +188,9 @@ export class SdkRoleRunner implements RoleRunner, AdvisorRunner {
       } catch (e) {
         const retryable = !(e instanceof RoleRunError) || e.retryable;
         const aborted = this.deps.abortController?.signal.aborted ?? false;
-        if (aborted || !retryable || attempt >= BACKOFF_MS.length) throw e;
+        // โควตาเต็ม: retry ไม่ช่วยและเสียเวลา — ให้ QuotaGate จัดการหยุดงาน
+        const rejected = this.deps.quota?.isRejected() ?? false;
+        if (aborted || rejected || !retryable || attempt >= BACKOFF_MS.length) throw e;
         const reason = e instanceof Error ? e.message : String(e);
         this.log(`[${role}] ล้มเหลว (${reason}) — retry ครั้งที่ ${attempt + 1}`, 'warn');
         await this.sleep(BACKOFF_MS[attempt] ?? 3000);
@@ -246,6 +251,11 @@ export class SdkRoleRunner implements RoleRunner, AdvisorRunner {
             status: msg.error_status,
             error: msg.error,
           });
+        }
+        if (msg.type === 'rate_limit_event') {
+          const info = msg.rate_limit_info;
+          this.logger.log(info.status === 'allowed' ? 'INFO' : 'WARN', 'quota.event', { role, ...info });
+          this.deps.quota?.record(info);
         }
         if (msg.type === 'system' && msg.subtype === 'init' && this.deps.debug) {
           const init = msg as unknown as { skills?: unknown; plugins?: unknown; tools?: unknown };

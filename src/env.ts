@@ -12,10 +12,14 @@ const BILLING_ENV_VARS: readonly string[] = [
 // Windows ไม่สนตัวพิมพ์ของชื่อตัวแปร
 const isBilling = (name: string): boolean => BILLING_ENV_VARS.includes(name.toUpperCase());
 
+// secret ที่ agent-team ใช้เอง (โค้ดดึงการ์ด Jira) — ห้ามส่งต่อให้ agent แต่ไม่ใช่ตัวแปรคิดเงิน
+const TEAM_SECRET_ENV_VARS: readonly string[] = ['JIRA_TOKEN', 'JIRA_EMAIL'];
+const isTeamSecret = (name: string): boolean => TEAM_SECRET_ENV_VARS.includes(name.toUpperCase());
+
 export function agentEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(source)) {
-    if (value === undefined || isBilling(name)) continue;
+    if (value === undefined || isBilling(name) || isTeamSecret(name)) continue;
     env[name] = value;
   }
   env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = '1';

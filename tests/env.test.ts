@@ -53,3 +53,13 @@ describe('presentBillingVars', () => {
     expect(presentBillingVars({ ANTHROPIC_API_KEY: '', PATH: 'x' })).toEqual([]);
   });
 });
+
+describe('Jira secret', () => {
+  it('ไม่ส่ง JIRA_TOKEN / JIRA_EMAIL ให้ agent (ไม่สนตัวพิมพ์) และไม่นับเป็นตัวแปรคิดเงิน', () => {
+    const env = agentEnv({ JIRA_TOKEN: 't', Jira_Email: 'e@x', KEEP: '1' });
+    expect(Object.keys(env).map((k) => k.toUpperCase())).not.toContain('JIRA_TOKEN');
+    expect(Object.keys(env).map((k) => k.toUpperCase())).not.toContain('JIRA_EMAIL');
+    expect(env.KEEP).toBe('1');
+    expect(presentBillingVars({ JIRA_TOKEN: 't' })).toEqual([]);
+  });
+});

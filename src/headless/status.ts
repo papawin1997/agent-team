@@ -25,6 +25,9 @@ export interface StatusReport {
   question?: Question;
   /** คำอธิบายสถานะจบ/ตาย เช่น error หรือวิธีทำต่อ */
   message?: string;
+  /** quota = หยุดเพราะโควตา (มี handoffPath ให้ส่งต่องาน) */
+  reason?: 'quota';
+  handoffPath?: string;
   /** ข้อความที่ agent-team แสดง (say) ตั้งแต่ since */
   messages: string[];
   /** ส่งค่านี้เป็น --since ครั้งถัดไป */
@@ -79,6 +82,8 @@ export async function readStatus(repo: JobRepository, jobId: string, since?: num
   if (exit) {
     report.status = exit.status;
     if (exit.message) report.message = exit.message;
+    if (exit.reason) report.reason = exit.reason;
+    if (exit.handoffPath) report.handoffPath = exit.handoffPath;
     return report;
   }
   report.status = 'dead';
